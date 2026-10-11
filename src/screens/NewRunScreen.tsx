@@ -1,13 +1,15 @@
-import { useMemo, useState } from 'react'
+import { useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { GameBackdrop } from '../components/GameBackdrop'
 import { PixelButton } from '../components/PixelButton'
+import { getGameRuntimeSupport } from '../core/game/gameSupport'
+import { formatRomSize, loadRomFile, type LoadedRom } from '../core/rom/RomLoader'
 import type { GameDefinition, RunState } from '../types'
 
 interface Props {
   game: GameDefinition
   onHome: () => void
-  onStart: (runType: RunState['runType'], ruleset: RunState['ruleset'], seed: string) => void
+  onStart: (runType: RunState['runType'], ruleset: RunState['ruleset'], seed: string, rom: LoadedRom) => void
 }
 
 function makeSeed() {
@@ -18,7 +20,25 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
   const [runType, setRunType] = useState<RunState['runType']>('Randomized')
   const [ruleset, setRuleset] = useState<RunState['ruleset']>('Hardcore')
   const [seed, setSeed] = useState(makeSeed)
-  const romStatus = useMemo(() => 'NOT LOADED', [])
+  const [rom, setRom] = useState<LoadedRom | null>(null)
+  const [romMessage, setRomMessage] = useState('NOT LOADED')
+  const [romError, setRomError] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const runtime = getGameRuntimeSupport(game.id)
+
+  async function chooseRom(file: File | undefined) {
+    if (!file) return
+    try {
+      const loaded = await loadRomFile(file, game)
+      setRom(loaded)
+      setRomMessage(`${loaded.fileName} • ${formatRomSize(loaded.size)}`)
+      setRomError(false)
+    } catch (error) {
+      setRom(null)
+      setRomMessage(error instanceof Error ? error.message : 'ROM could not be loaded.')
+      setRomError(true)
+    }
+  }
 
   return (
     <main className="screen themed-screen" style={{
@@ -36,15 +56,27 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
           <div>
             <span className="eyebrow">NEW RUN</span>
             <h1>{game.title.toUpperCase()}</h1>
-            <p>GEN {game.generation} • {game.region.toUpperCase()} • {game.platform}</p>
+            <p>GEN {game.generation} • {game.region.toUpperCase()} • {game.platform} • {runtime.emulator.toUpperCase()}</p>
           </div>
           <button className="game-chip pixel-border" onClick={onHome}>CHANGE GAME</button>
         </section>
 
         <div className="setup-layout">
           <section className="setup-steps pixel-border">
-            <SetupStep number="01" title="ROM" subtitle="Your ROM stays on this device.">
-              <div className="inline-row"><PixelButton>CHOOSE ROM</PixelButton><span className="status-chip warning">{romStatus}</span></div>
+            <SetupStep number="01" title="ROM" subtitle={`Choose your own ${runtime.acceptedRomExtensions.join(' / ')} file. It stays on this device.`}>
+              <div className="rom-picker">
+                <input
+                  ref={fileInput}
+                  className="rom-file-input"
+                  type="file"
+                  accept={runtime.acceptedRomExtensions.join(',')}
+                  onChange={event => void chooseRom(event.target.files?.[0])}
+                />
+                <div className="inline-row">
+                  <PixelButton onClick={() => fileInput.current?.click()}>{rom ? 'CHANGE ROM' : 'CHOOSE ROM'}</PixelButton>
+                  <span className={`status-chip ${romError ? 'error' : rom ? 'ready' : 'warning'}`}>{romMessage}</span>
+                </div>
+              </div>
             </SetupStep>
 
             <SetupStep number="02" title="RUN TYPE" subtitle="Choose how PokéRun should prepare the cartridge.">
@@ -68,6 +100,8 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
               <div><dt>RULES</dt><dd>{ruleset.toUpperCase()}</dd></div>
               <div><dt>SEED</dt><dd>{seed}</dd></div>
               <div><dt>PLATFORM</dt><dd>{game.platform}</dd></div>
+              <div><dt>CORE</dt><dd>{runtime.emulator.toUpperCase()}</dd></div>
+              <div><dt>ROM</dt><dd>{rom ? 'READY' : 'REQUIRED'}</dd></div>
             </dl>
             {runType === 'Randomized' && (
               <div className="randomizer-summary">
@@ -78,8 +112,8 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
                 <PixelButton tone="ghost">EDIT DETAILS</PixelButton>
               </div>
             )}
-            <PixelButton className="start-run" onClick={() => onStart(runType, ruleset, seed)}>START RUN</PixelButton>
-            <small>Prototype: ROM selection is visual only for now.</small>
+            <PixelButton className="start-run" disabled={!rom} onClick={() => rom && onStart(runType, ruleset, seed, rom)}>START RUN</PixelButton>
+            <small>{rom ? 'ROM bytes are held locally for this browser session.' : 'Select a ROM before starting the run.'}</small>
           </aside>
         </div>
       </div>
