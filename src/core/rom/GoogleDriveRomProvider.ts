@@ -98,18 +98,8 @@ export class GoogleDriveRomProvider {
     await loadGoogleIdentityServices()
     if (!window.google?.accounts?.oauth2) throw new Error('Google Identity Services is unavailable.')
 
-    if (!this.tokenClient) {
-      this.tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: clientId,
-        scope: DRIVE_SCOPE,
-        callback: () => undefined,
-      })
-    }
-
     await new Promise<void>((resolve, reject) => {
-      if (!this.tokenClient || !window.google?.accounts?.oauth2) return reject(new Error('Google Drive sign-in is unavailable.'))
-
-      this.tokenClient = window.google.accounts.oauth2.initTokenClient({
+      this.tokenClient = window.google!.accounts.oauth2.initTokenClient({
         client_id: clientId,
         scope: DRIVE_SCOPE,
         callback: response => {
@@ -128,6 +118,7 @@ export class GoogleDriveRomProvider {
 
   disconnect() {
     this.accessToken = null
+    this.tokenClient = null
   }
 
   async listRomCandidates(game: GameDefinition): Promise<RomSourceReference[]> {
@@ -206,13 +197,10 @@ export class GoogleDriveRomProvider {
 
   private async driveFetch<T>(url: string, init: RequestInit = {}): Promise<T> {
     const token = this.requireToken()
-    const response = await fetch(url, {
-      ...init,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        ...(init.headers ?? {}),
-      },
-    })
+    const headers = new Headers(init.headers)
+    headers.set('Authorization', `Bearer ${token}`)
+
+    const response = await fetch(url, { ...init, headers })
     if (!response.ok) throw new Error(`Google Drive request failed (${response.status}).`)
     return response.json() as Promise<T>
   }
