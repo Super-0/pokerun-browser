@@ -1,0 +1,14 @@
+.drive-rom-chooser { display: flex; flex-direction: column; gap: 10px; }
+.drive-rom-chooser .status-chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drive-linked-rom { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; padding: 10px; border: 3px solid var(--ink); background: #e9f5e9; }
+.drive-linked-rom > div { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.drive-linked-rom strong { font-family: 'Silkscreen', sans-serif; font-size: 10px; }
+.drive-linked-rom span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+.drive-file-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 9px; }
+.drive-file-row select { min-width: 0; border: 3px solid var(--ink); background: #f8fcf7; color: var(--ink); padding: 8px; font-family: 'IBM Plex Mono', monospace; font-size: 10px; }
+.drive-rom-chooser small { font-size: 9px; color: #4e6b86; }
+.local-rom-fallback { margin-top: 10px; border-top: 2px dashed #9eb2c0; padding-top: 10px; }
+.local-rom-fallback summary { cursor: pointer; font-family: 'Silkscreen', sans-serif; font-size: 9px; margin-bottom: 9px; }
+.status-chip.ready { background: #d7efd9; }
+.status-chip.error { background: #f5d3d6; }
+.pixel-button:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow: 3px 3px 0 rgba(32,54,79,.12); }
