@@ -46,8 +46,6 @@ export class RunEngine {
       badges: snapshot.badges,
       party: snapshot.party.map(member => ({ ...member })),
       playTimeSeconds: snapshot.playTimeSeconds ?? currentRun.playTimeSeconds,
-      levelCap: snapshot.levelCap ?? currentRun.levelCap,
-      nextBoss: snapshot.nextBoss ?? currentRun.nextBoss,
       updatedAt: new Date().toISOString(),
     }
 
