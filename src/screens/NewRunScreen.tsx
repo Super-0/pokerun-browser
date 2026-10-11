@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
+import { DriveRomChooser } from '../components/DriveRomChooser'
 import { GameBackdrop } from '../components/GameBackdrop'
 import { PixelButton } from '../components/PixelButton'
 import { getGameRuntimeSupport } from '../core/game/gameSupport'
@@ -26,13 +27,16 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
   const fileInput = useRef<HTMLInputElement>(null)
   const runtime = getGameRuntimeSupport(game.id)
 
-  async function chooseRom(file: File | undefined) {
+  function acceptRom(loaded: LoadedRom) {
+    setRom(loaded)
+    setRomMessage(`${loaded.fileName} • ${formatRomSize(loaded.size)}`)
+    setRomError(false)
+  }
+
+  async function chooseLocalRom(file: File | undefined) {
     if (!file) return
     try {
-      const loaded = await loadRomFile(file, game)
-      setRom(loaded)
-      setRomMessage(`${loaded.fileName} • ${formatRomSize(loaded.size)}`)
-      setRomError(false)
+      acceptRom(await loadRomFile(file, game))
     } catch (error) {
       setRom(null)
       setRomMessage(error instanceof Error ? error.message : 'ROM could not be loaded.')
@@ -63,20 +67,23 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
 
         <div className="setup-layout">
           <section className="setup-steps pixel-border">
-            <SetupStep number="01" title="ROM" subtitle={`Choose your own ${runtime.acceptedRomExtensions.join(' / ')} file. It stays on this device.`}>
-              <div className="rom-picker">
+            <SetupStep number="01" title="ROM LIBRARY" subtitle="Connect Google Drive once, link this game, then load it from any computer.">
+              <DriveRomChooser game={game} onLoaded={acceptRom} />
+
+              <details className="local-rom-fallback">
+                <summary>USE A LOCAL ROM INSTEAD</summary>
                 <input
                   ref={fileInput}
                   hidden
                   type="file"
                   accept={runtime.acceptedRomExtensions.join(',')}
-                  onChange={event => void chooseRom(event.target.files?.[0])}
+                  onChange={event => void chooseLocalRom(event.target.files?.[0])}
                 />
                 <div className="inline-row">
-                  <PixelButton onClick={() => fileInput.current?.click()}>{rom ? 'CHANGE ROM' : 'CHOOSE ROM'}</PixelButton>
+                  <PixelButton tone="ghost" onClick={() => fileInput.current?.click()}>{rom ? 'CHANGE LOCAL ROM' : 'CHOOSE LOCAL ROM'}</PixelButton>
                   <span className={`status-chip ${romError ? 'error' : rom ? 'ready' : 'warning'}`}>{romMessage}</span>
                 </div>
-              </div>
+              </details>
             </SetupStep>
 
             <SetupStep number="02" title="RUN TYPE" subtitle="Choose how PokéRun should prepare the cartridge.">
@@ -113,7 +120,7 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
               </div>
             )}
             <PixelButton className="start-run" disabled={!rom} onClick={() => rom && onStart(runType, ruleset, seed, rom)}>START RUN</PixelButton>
-            <small>{rom ? 'ROM bytes are held locally for this browser session.' : 'Select a ROM before starting the run.'}</small>
+            <small>{rom ? 'ROM loaded into this browser session. The Drive link stays portable.' : 'Connect Drive and load a linked ROM before starting.'}</small>
           </aside>
         </div>
       </div>
