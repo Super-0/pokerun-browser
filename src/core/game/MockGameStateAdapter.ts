@@ -34,8 +34,6 @@ export class MockGameStateAdapter implements GameStateAdapter {
       party: run.party.map(member => ({ ...member })),
       battle: { kind: 'none' },
       playTimeSeconds: run.playTimeSeconds,
-      levelCap: run.levelCap,
-      nextBoss: run.nextBoss,
     }
   }
 
