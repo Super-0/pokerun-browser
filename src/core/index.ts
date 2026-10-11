@@ -11,6 +11,9 @@ export type { EmulatorId, GameRuntimeSupport, ScreenLayout } from './game/gameSu
 export { formatRomSize, loadRomFile, validateRomFile } from './rom/RomLoader'
 export type { LoadedRom, RomMetadata, RomValidationResult } from './rom/RomLoader'
 export { romSessionStore } from './rom/RomSessionStore'
+export { googleDriveRomProvider, GoogleDriveRomProvider } from './rom/GoogleDriveRomProvider'
+export { emptyRomLibraryManifest } from './rom/RomSource'
+export type { RomLibraryManifest, RomSourceProviderId, RomSourceReference } from './rom/RomSource'
 
 export { RunEngine } from './run/RunEngine'
 export type { RunEvent, RunSyncResult } from './run/RunEngine'
