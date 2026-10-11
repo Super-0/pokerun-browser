@@ -1,3 +1,4 @@
+import type { RomMetadata } from '../core/rom/RomLoader'
 import { runRepository } from '../core/storage/RunRepository'
 import type { GameId, RunState } from '../types'
 
@@ -17,7 +18,13 @@ export function saveRuns(runs: RunState[]) {
   runRepository.saveAll(runs)
 }
 
-export function createRun(gameId: GameId, runType: RunState['runType'], ruleset: RunState['ruleset'], seed: string): RunState {
+export function createRun(
+  gameId: GameId,
+  runType: RunState['runType'],
+  ruleset: RunState['ruleset'],
+  seed: string,
+  rom?: RomMetadata,
+): RunState {
   const now = new Date().toISOString()
   const prior = runRepository.list().filter(run => run.gameId === gameId)
   return {
@@ -29,7 +36,9 @@ export function createRun(gameId: GameId, runType: RunState['runType'], ruleset:
     runType,
     ruleset,
     seed,
-    romLoaded: false,
+    romLoaded: Boolean(rom),
+    romFileName: rom?.fileName,
+    romSize: rom?.size,
     currentMap: gameId === 'black2' ? 'Route 6' : 'Starter Town',
     encounterStatus: 'AVAILABLE',
     badges: gameId === 'black2' ? 4 : 0,
