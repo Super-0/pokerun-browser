@@ -67,7 +67,7 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
               <div className="rom-picker">
                 <input
                   ref={fileInput}
-                  className="rom-file-input"
+                  hidden
                   type="file"
                   accept={runtime.acceptedRomExtensions.join(',')}
                   onChange={event => void chooseRom(event.target.files?.[0])}
