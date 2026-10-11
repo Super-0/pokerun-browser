@@ -17,8 +17,6 @@ export interface GameSnapshot {
   battle: BattleSnapshot
   playTimeSeconds?: number
   money?: number
-  levelCap?: number
-  nextBoss?: string
 }
 
 /**
