@@ -46,6 +46,8 @@ export interface RunState {
   ruleset: 'Standard' | 'Hardcore' | 'Custom'
   seed: string
   romLoaded: boolean
+  romFileName?: string
+  romSize?: number
   currentMap: string
   encounterStatus: 'AVAILABLE' | 'IN_PROGRESS' | 'CAUGHT' | 'MISSED'
   encounterSpecies?: string
