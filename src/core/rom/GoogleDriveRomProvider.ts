@@ -143,7 +143,7 @@ export class GoogleDriveRomProvider {
 
     return results
       .filter(file => runtime.acceptedRomExtensions.includes(extensionOf(file.name)))
-      .map(file => ({
+      .map((file): RomSourceReference => ({
         provider: 'google-drive',
         fileId: file.id,
         fileName: file.name,
