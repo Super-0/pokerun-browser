@@ -1,6 +1,6 @@
+import type { RomMetadata } from '../core/rom/RomLoader'
+import { runRepository } from '../core/storage/RunRepository'
 import type { GameId, RunState } from '../types'
-
-const KEY = 'pokerun:runs:v1'
 
 export const starterParty = [
   { id: '1', species: 'Samurott', nickname: 'Samurott', level: 31, hp: 83, maxHp: 91, status: 'OK' as const },
@@ -9,22 +9,24 @@ export const starterParty = [
   { id: '4', species: 'Krokorok', nickname: 'Krokorok', level: 30, hp: 72, maxHp: 72, status: 'OK' as const },
 ]
 
+/** Backward-compatible facade while screens are migrated onto repository APIs. */
 export function loadRuns(): RunState[] {
-  try {
-    const raw = localStorage.getItem(KEY)
-    return raw ? JSON.parse(raw) : []
-  } catch {
-    return []
-  }
+  return runRepository.list()
 }
 
 export function saveRuns(runs: RunState[]) {
-  localStorage.setItem(KEY, JSON.stringify(runs))
+  runRepository.saveAll(runs)
 }
 
-export function createRun(gameId: GameId, runType: RunState['runType'], ruleset: RunState['ruleset'], seed: string): RunState {
+export function createRun(
+  gameId: GameId,
+  runType: RunState['runType'],
+  ruleset: RunState['ruleset'],
+  seed: string,
+  rom?: RomMetadata,
+): RunState {
   const now = new Date().toISOString()
-  const prior = loadRuns().filter(r => r.gameId === gameId)
+  const prior = runRepository.list().filter(run => run.gameId === gameId)
   return {
     id: crypto.randomUUID(),
     gameId,
@@ -34,7 +36,9 @@ export function createRun(gameId: GameId, runType: RunState['runType'], ruleset:
     runType,
     ruleset,
     seed,
-    romLoaded: false,
+    romLoaded: Boolean(rom),
+    romFileName: rom?.fileName,
+    romSize: rom?.size,
     currentMap: gameId === 'black2' ? 'Route 6' : 'Starter Town',
     encounterStatus: 'AVAILABLE',
     badges: gameId === 'black2' ? 4 : 0,
@@ -42,6 +46,6 @@ export function createRun(gameId: GameId, runType: RunState['runType'], ruleset:
     levelCap: gameId === 'black2' ? 33 : 14,
     nextBoss: gameId === 'black2' ? 'Clay' : 'First Gym',
     playTimeSeconds: gameId === 'black2' ? 13338 : 0,
-    party: gameId === 'black2' ? starterParty : [],
+    party: gameId === 'black2' ? starterParty.map(member => ({ ...member })) : [],
   }
 }

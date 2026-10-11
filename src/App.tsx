@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
+import type { LoadedRom } from './core/rom/RomLoader'
+import { romSessionStore } from './core/rom/RomSessionStore'
 import { gameById } from './data/games'
 import { ActiveRunScreen } from './screens/ActiveRunScreen'
 import { HomeScreen } from './screens/HomeScreen'
@@ -25,6 +27,14 @@ export default function App() {
     setActiveRunId(null)
   }
 
+  function startRun(runType: RunState['runType'], ruleset: RunState['ruleset'], seed: string, rom: LoadedRom) {
+    if (!selectedGame) return
+    const run = createRun(selectedGame.id, runType, ruleset, seed, rom)
+    romSessionStore.set(run.id, rom)
+    setRuns(current => [...current, run])
+    setActiveRunId(run.id)
+  }
+
   if (!selectedGame) return <HomeScreen runs={runs} onChooseGame={chooseGame} />
 
   if (activeRun) {
@@ -39,10 +49,6 @@ export default function App() {
   return <NewRunScreen
     game={selectedGame}
     onHome={goHome}
-    onStart={(runType, ruleset, seed) => {
-      const run = createRun(selectedGame.id, runType, ruleset, seed)
-      setRuns(current => [...current, run])
-      setActiveRunId(run.id)
-    }}
+    onStart={startRun}
   />
 }

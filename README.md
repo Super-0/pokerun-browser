@@ -2,9 +2,9 @@
 
 PokéRun is an early browser-first prototype for a Pokémon Nuzlocke/randomizer companion. The long-term idea is that a user supplies their own ROM locally, plays it in the browser, and PokéRun reads the emulator's game state to keep a live Nuzlocke HUD synchronized automatically.
 
-> **Important:** this repository does not contain ROMs, copyrighted game assets, BIOS files, or Nintendo code. ROM loading/emulation is intentionally not implemented in v0.0.1.
+> **Important:** this repository does not contain ROMs, copyrighted game assets, BIOS files, or Nintendo code. ROM loading/emulation is intentionally not implemented yet.
 
-## What is implemented in v0.0.1
+## What is implemented
 
 - Gen 1–5 game launcher with all 20 mainline versions represented individually.
 - Exact-game visual themes (e.g. Black 2 is distinct from White 2, Emerald from Sapphire, etc.).
@@ -12,7 +12,8 @@ PokéRun is an early browser-first prototype for a Pokémon Nuzlocke/randomizer 
 - Active Run UI with support for single-screen and dual-screen layouts.
 - Live-style Nuzlocke HUD for badges, deaths, cap, next boss, party HP, current area, and encounter status.
 - Local persistence using `localStorage` so prototype runs survive refreshes.
-- Developer game-state simulator to test the HUD before a real emulator adapter exists.
+- Core emulator / game-adapter / run-engine / storage / randomizer boundaries.
+- Developer game-state simulator routed through the same adapter + run-engine pipeline planned for real emulators.
 
 ## Run it locally
 
@@ -32,43 +33,38 @@ Then open the localhost URL Vite prints.
 5. Active Run opens with an emulator placeholder and live HUD.
 6. Open **DEV GAME STATE SIMULATOR** at the bottom to simulate route changes, encounters, damage, deaths, and badges.
 
-## Architecture direction
+## Core architecture
 
-The UI is deliberately separated from the future emulator layer. Today the screen consumes a normal `RunState`. Later, an emulator adapter can produce the same shape from RAM without changing the UI.
+The UI does not know emulator memory addresses or ROM structures. The intended pipeline is:
 
 ```text
-Emulator WASM
+User ROM
     ↓
-Game-specific memory adapter
+RandomizerService (optional)
     ↓
-Normalized GameState / events
-    ↓
-Nuzlocke rules engine
-    ↓
-React UI + persistence
+EmulatorBridge (mGBA / melonDS)
+    ↓ raw memory
+GameStateAdapter
+    ↓ GameSnapshot
+RunEngine
+    ↓ RunState + RunEvents
+React UI + RunRepository
 ```
 
-Likely game-family adapters:
+The current simulator already follows this architecture using `MockEmulatorBridge` and `MockGameStateAdapter`.
 
-- Red / Blue / Yellow
-- Gold / Silver / Crystal
-- Ruby / Sapphire / Emerald
-- FireRed / LeafGreen
-- Diamond / Pearl / Platinum
-- HeartGold / SoulSilver
-- Black / White
-- Black 2 / White 2
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the boundaries, game-family plan, and implementation roadmap.
 
 ## Recommended next milestones
 
-1. Replace `localStorage` with IndexedDB and versioned run storage.
-2. Add a real ROM-file picker that keeps file bytes local only.
-3. Integrate one GBA emulator path first (Emerald is a good test target).
-4. Integrate one DS emulator path second (Black 2 is a good test target).
-5. Define `GameStateAdapter` and wire the current DEV simulator through that interface.
-6. Prove read-only party/map/badge extraction for one game.
-7. Add encounter/death event detection.
-8. Add deterministic randomizer settings and run bundles.
+1. Embed an mGBA WASM build behind `EmulatorBridge`.
+2. Load a user-selected Emerald ROM locally and render/input the game.
+3. Prove battery-save import/export.
+4. Prove raw memory reads from the emulator.
+5. Implement the first read-only `gen3-rse` adapter for party/map/badges/battle state.
+6. Let those real snapshots drive the existing HUD automatically.
+7. Expand encounter/death tracking and move persistence to IndexedDB.
+8. Validate the same architecture with melonDS + Black 2.
 
 ## Product/design notes
 

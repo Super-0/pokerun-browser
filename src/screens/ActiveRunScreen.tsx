@@ -1,6 +1,10 @@
+import { useEffect, useMemo, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { GameBackdrop } from '../components/GameBackdrop'
 import { PixelButton } from '../components/PixelButton'
+import { MockEmulatorBridge } from '../core/emulator/MockEmulatorBridge'
+import { MockGameStateAdapter } from '../core/game/MockGameStateAdapter'
+import { RunEngine, type RunEvent } from '../core/run/RunEngine'
 import type { GameDefinition, RunState } from '../types'
 
 interface Props {
@@ -13,17 +17,26 @@ interface Props {
 export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
   const seconds = run.playTimeSeconds
   const time = [Math.floor(seconds / 3600), Math.floor((seconds % 3600) / 60), seconds % 60].map(n => String(n).padStart(2,'0')).join(':')
-  const update = (patch: Partial<RunState>) => onChange({ ...run, ...patch, updatedAt: new Date().toISOString() })
+  const [lastEvents, setLastEvents] = useState<RunEvent[]>([])
 
-  function damageFirst() {
-    const party = run.party.map((p, i) => i === 0 ? { ...p, hp: Math.max(0, p.hp - 20), status: p.hp - 20 <= 0 ? 'FAINTED' as const : p.status } : p)
-    update({ party, deaths: run.deaths + (party[0]?.hp === 0 && run.party[0]?.hp !== 0 ? 1 : 0) })
-  }
+  const runtime = useMemo(() => {
+    const emulator = new MockEmulatorBridge(game.platform)
+    const adapter = new MockGameStateAdapter(run)
+    const engine = new RunEngine(adapter, emulator, adapter.peek())
+    return { emulator, adapter, engine }
+    // A run gets one runtime. State changes should flow through the engine, not recreate it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.id, game.platform])
 
-  function faintSecond() {
-    if (!run.party[1] || run.party[1].hp === 0) return
-    const party = run.party.map((p, i) => i === 1 ? { ...p, hp: 0, status: 'FAINTED' as const } : p)
-    update({ party, deaths: run.deaths + 1 })
+  useEffect(() => {
+    return () => { void runtime.emulator.dispose() }
+  }, [runtime])
+
+  async function simulate(mutator: (adapter: MockGameStateAdapter) => void) {
+    mutator(runtime.adapter)
+    const result = await runtime.engine.sync(run)
+    setLastEvents(result.events)
+    onChange(result.run)
   }
 
   return (
@@ -75,7 +88,14 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
 
         <details className="dev-panel pixel-border">
           <summary>DEV GAME STATE SIMULATOR</summary>
-          <div><PixelButton tone="ghost" onClick={() => update({ currentMap: run.currentMap === 'Route 6' ? 'Chargestone Cave' : 'Route 6', encounterStatus: 'AVAILABLE' })}>ENTER NEW AREA</PixelButton><PixelButton tone="ghost" onClick={() => update({ encounterStatus: 'IN_PROGRESS', encounterSpecies: 'Koffing' })}>START WILD BATTLE</PixelButton><PixelButton tone="ghost" onClick={damageFirst}>DAMAGE LEAD</PixelButton><PixelButton tone="danger" onClick={faintSecond}>FAINT SLOT 2</PixelButton><PixelButton tone="ghost" onClick={() => update({ badges: Math.min(8, run.badges + 1) })}>EARN BADGE</PixelButton></div>
+          <div>
+            <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.enterMap(run.currentMap === 'Route 6' ? 'Chargestone Cave' : 'Route 6'))}>ENTER NEW AREA</PixelButton>
+            <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.setBattle({ kind: 'wild', opponentSpecies: 'Koffing' }))}>START WILD BATTLE</PixelButton>
+            <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.damagePartyMember(0, 20))}>DAMAGE LEAD</PixelButton>
+            <PixelButton tone="danger" onClick={() => void simulate(adapter => adapter.faintPartyMember(1))}>FAINT SLOT 2</PixelButton>
+            <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.earnBadge())}>EARN BADGE</PixelButton>
+          </div>
+          {lastEvents.length > 0 && <small>ENGINE: {lastEvents.map(event => event.type).join(' • ')}</small>}
         </details>
       </div>
     </main>
