@@ -1,8 +1,9 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { GameBackdrop } from '../components/GameBackdrop'
 import { PixelButton } from '../components/PixelButton'
 import { getGameRuntimeSupport } from '../core/game/gameSupport'
+import { hasDevelopmentRom, loadDevelopmentRom } from '../core/rom/DevRomLoader'
 import { formatRomSize, loadRomFile, type LoadedRom } from '../core/rom/RomLoader'
 import type { GameDefinition, RunState } from '../types'
 
@@ -25,6 +26,31 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
   const [romError, setRomError] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const runtime = getGameRuntimeSupport(game.id)
+  const devRomAvailable = hasDevelopmentRom(game)
+
+  useEffect(() => {
+    let cancelled = false
+
+    setRom(null)
+    setRomError(false)
+    setRomMessage(devRomAvailable ? 'CHECKING DEV ROM...' : 'NOT LOADED')
+
+    if (!devRomAvailable) return () => { cancelled = true }
+
+    void loadDevelopmentRom(game).then(loaded => {
+      if (cancelled) return
+
+      if (!loaded) {
+        setRomMessage('DEV ROM NOT FOUND')
+        return
+      }
+
+      setRom(loaded)
+      setRomMessage(`DEV ROM • ${loaded.fileName} • ${formatRomSize(loaded.size)}`)
+    })
+
+    return () => { cancelled = true }
+  }, [devRomAvailable, game])
 
   async function chooseRom(file: File | undefined) {
     if (!file) return
@@ -63,7 +89,13 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
 
         <div className="setup-layout">
           <section className="setup-steps pixel-border">
-            <SetupStep number="01" title="ROM" subtitle={`Choose your own ${runtime.acceptedRomExtensions.join(' / ')} file. It stays on this device.`}>
+            <SetupStep
+              number="01"
+              title="ROM"
+              subtitle={devRomAvailable
+                ? 'Development mode checks /public/dev-roms/emerald.gba automatically. You can still choose another ROM.'
+                : `Choose your own ${runtime.acceptedRomExtensions.join(' / ')} file. It stays on this device.`}
+            >
               <div className="rom-picker">
                 <input
                   ref={fileInput}
