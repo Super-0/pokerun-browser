@@ -10,20 +10,27 @@ import { formatPartyLabel, getPokemonSpriteUrl, resolvePartySpecies } from '../c
 import { countEnabledTracking } from '../core/run/runSettings'
 import { RunEngine, type RunEvent } from '../core/run/RunEngine'
 import type { GameDefinition, RunState } from '../types'
+import '../styles/navigation.css'
 import '../styles/party.css'
+
+type TrackerTab = 'party' | 'encounters' | 'graveyard' | 'log' | 'bosses'
 
 interface Props {
   game: GameDefinition
   run: RunState
   onHome: () => void
+  onMyRuns: () => void
+  onSettings: () => void
   onChange: (run: RunState) => void
 }
 
-export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
+export function ActiveRunScreen({ game, run, onHome, onMyRuns, onSettings, onChange }: Props) {
   const seconds = run.playTimeSeconds
   const time = [Math.floor(seconds / 3600), Math.floor((seconds % 3600) / 60), seconds % 60].map(n => String(n).padStart(2,'0')).join(':')
   const [lastEvents, setLastEvents] = useState<RunEvent[]>([])
   const [liveState, setLiveState] = useState<EmeraldLiveSnapshot | null>(null)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [activeTracker, setActiveTracker] = useState<TrackerTab>('party')
 
   const trackerRuntime = useMemo(() => {
     const emulator = new MockEmulatorBridge(game.platform)
@@ -36,6 +43,8 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
 
   useEffect(() => {
     setLiveState(null)
+    setActiveTracker('party')
+    setMenuOpen(false)
   }, [game.id, run.id])
 
   useEffect(() => {
@@ -64,7 +73,16 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
     } as React.CSSProperties}>
       <GameBackdrop game={game} />
       <div className="screen-shell">
-        <AppHeader onHome={onHome} right={<div className="run-header-meta"><span>{game.title.toUpperCase()} • RUN {String(run.runNumber).padStart(3,'0')}</span><strong>{time}</strong><PixelButton tone="ghost">MENU</PixelButton></div>} />
+        <AppHeader
+          onHome={onHome}
+          right={(
+            <div className="run-header-meta">
+              <span>{game.title.toUpperCase()} • RUN {String(run.runNumber).padStart(3,'0')}</span>
+              <strong>{time}</strong>
+              <PixelButton tone="ghost" onClick={() => setMenuOpen(true)}>MENU</PixelButton>
+            </div>
+          )}
+        />
 
         <div className="active-layout">
           <section className="emulator-column">
@@ -136,13 +154,15 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
           <div><span>TRACKING</span><strong>{enabledTracking}/4 MODULES</strong></div>
         </section>
 
-        <nav className="tracker-tabs pixel-border">
-          <button className="active">PARTY</button>
-          {run.settings.encounterTracking && <button>ENCOUNTERS</button>}
-          {run.settings.faintAsDeath && <button>GRAVEYARD</button>}
-          {run.settings.runLog && <button>RUN LOG</button>}
-          <button>BOSSES</button>
+        <nav className="tracker-tabs pixel-border" aria-label="Run trackers">
+          <button className={activeTracker === 'party' ? 'active' : ''} onClick={() => setActiveTracker('party')}>PARTY</button>
+          {run.settings.encounterTracking && <button className={activeTracker === 'encounters' ? 'active' : ''} onClick={() => setActiveTracker('encounters')}>ENCOUNTERS</button>}
+          {run.settings.faintAsDeath && <button className={activeTracker === 'graveyard' ? 'active' : ''} onClick={() => setActiveTracker('graveyard')}>GRAVEYARD</button>}
+          {run.settings.runLog && <button className={activeTracker === 'log' ? 'active' : ''} onClick={() => setActiveTracker('log')}>RUN LOG</button>}
+          <button className={activeTracker === 'bosses' ? 'active' : ''} onClick={() => setActiveTracker('bosses')}>BOSSES</button>
         </nav>
+
+        <TrackerContent tab={activeTracker} run={run} partyCount={displayedParty.length} />
 
         {game.id !== 'emerald' && (
           <details className="dev-panel pixel-border">
@@ -158,7 +178,48 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
           </details>
         )}
       </div>
+
+      {menuOpen && (
+        <div className="run-menu-backdrop" role="presentation" onMouseDown={() => setMenuOpen(false)}>
+          <section className="run-menu-card pixel-border" role="dialog" aria-modal="true" aria-label="Run menu" onMouseDown={event => event.stopPropagation()}>
+            <span className="eyebrow">{game.shortTitle.toUpperCase()} • RUN {String(run.runNumber).padStart(3,'0')}</span>
+            <h2>RUN MENU</h2>
+            <p>Your run stays saved when you leave this screen.</p>
+            <div className="run-menu-actions">
+              <PixelButton onClick={() => setMenuOpen(false)}>RESUME</PixelButton>
+              <PixelButton tone="ghost" onClick={onMyRuns}>MY RUNS</PixelButton>
+              <PixelButton tone="ghost" onClick={onHome}>GAME LIBRARY</PixelButton>
+              <PixelButton tone="ghost" onClick={onSettings}>APP SETTINGS</PixelButton>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
+  )
+}
+
+function TrackerContent({ tab, run, partyCount }: { tab: TrackerTab, run: RunState, partyCount: number }) {
+  if (tab === 'party') {
+    return <section className="tracker-content pixel-border"><h2>PARTY</h2><p><strong>{partyCount}/6</strong> party slots currently occupied. Live party details are shown in the HUD above.</p></section>
+  }
+
+  if (tab === 'encounters') {
+    return <section className="tracker-content pixel-border"><h2>ENCOUNTERS</h2><p>Encounter tracking is enabled. Route history will live here when the encounter system is added.</p></section>
+  }
+
+  if (tab === 'graveyard') {
+    return <section className="tracker-content pixel-border"><h2>GRAVEYARD</h2><p><strong>{run.deaths}</strong> deaths recorded. Fainted Pokémon history will live here when death tracking is added.</p></section>
+  }
+
+  if (tab === 'log') {
+    return <section className="tracker-content pixel-border"><h2>RUN LOG</h2><p>Automatic run logging is enabled. Recorded events will appear here as the event system is built.</p></section>
+  }
+
+  return (
+    <section className="tracker-content pixel-border">
+      <h2>BOSSES</h2>
+      <p>Next target: <strong>{run.nextBoss.toUpperCase()}</strong>{run.settings.levelCaps ? ` • LEVEL CAP ${run.levelCap}` : ''}.</p>
+    </section>
   )
 }
 
