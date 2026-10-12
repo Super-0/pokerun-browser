@@ -1,6 +1,7 @@
 import type { RomMetadata } from '../core/rom/RomLoader'
+import { DEFAULT_RUN_SETTINGS } from '../core/run/runSettings'
 import { runRepository } from '../core/storage/RunRepository'
-import type { GameId, RunState } from '../types'
+import type { GameId, RunSettings, RunState } from '../types'
 
 export const starterParty = [
   { id: '1', species: 'Samurott', nickname: 'Samurott', level: 31, hp: 83, maxHp: 91, status: 'OK' as const },
@@ -9,9 +10,43 @@ export const starterParty = [
   { id: '4', species: 'Krokorok', nickname: 'Krokorok', level: 30, hp: 72, maxHp: 72, status: 'OK' as const },
 ]
 
+type LegacyRunState = RunState & {
+  settings?: Partial<RunSettings>
+  ruleset?: 'Standard' | 'Hardcore' | 'Custom'
+}
+
+function normalizeSettings(run: LegacyRunState): RunSettings {
+  if (run.settings) return { ...DEFAULT_RUN_SETTINGS, ...run.settings }
+
+  if (run.ruleset === 'Hardcore') {
+    return {
+      ...DEFAULT_RUN_SETTINGS,
+      faintAsDeath: true,
+      encounterTracking: true,
+      levelCaps: true,
+      encounterMode: 'FirstPerArea',
+      runLogDetail: 'Detailed',
+    }
+  }
+
+  if (run.ruleset === 'Standard') {
+    return {
+      ...DEFAULT_RUN_SETTINGS,
+      faintAsDeath: true,
+      encounterTracking: true,
+      encounterMode: 'FirstPerArea',
+    }
+  }
+
+  return { ...DEFAULT_RUN_SETTINGS }
+}
+
 /** Backward-compatible facade while screens are migrated onto repository APIs. */
 export function loadRuns(): RunState[] {
-  return runRepository.list()
+  return runRepository.list().map(run => ({
+    ...run,
+    settings: normalizeSettings(run as LegacyRunState),
+  }))
 }
 
 export function saveRuns(runs: RunState[]) {
@@ -21,7 +56,7 @@ export function saveRuns(runs: RunState[]) {
 export function createRun(
   gameId: GameId,
   runType: RunState['runType'],
-  ruleset: RunState['ruleset'],
+  settings: RunSettings,
   seed: string,
   rom?: RomMetadata,
 ): RunState {
@@ -34,7 +69,7 @@ export function createRun(
     updatedAt: now,
     runNumber: prior.length + 1,
     runType,
-    ruleset,
+    settings: { ...settings },
     seed,
     romLoaded: Boolean(rom),
     romFileName: rom?.fileName,
