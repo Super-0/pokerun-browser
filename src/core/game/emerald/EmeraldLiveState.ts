@@ -14,7 +14,6 @@ type HeapBackedMgba = mGBAEmulator & {
   wasmMemory?: WebAssembly.Memory
 }
 
-const PAGE_SIZE = 0x1000
 const EWRAM_BASE = 0x02000000
 const EWRAM_SIZE = 0x00040000
 const IWRAM_BASE = 0x03000000
@@ -26,6 +25,9 @@ const POKEMON_STORAGE_PTR = 0x03005d94
 const PARTY_COUNT = 0x020244e9
 const PARTY_BASE = 0x020244ec
 const PARTY_MON_SIZE = 100
+
+const SAVE_BLOCK_1_PTR_OFFSET = SAVE_BLOCK_1_PTR - IWRAM_BASE
+const SCAN_WORDS_PER_PASS = 1_000_000
 
 const SUBSTRUCT_SELECTOR = [
   [0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 1, 3], [0, 3, 1, 2],
@@ -68,21 +70,30 @@ const MAP_GROUPS: Record<number, readonly string[]> = {
 /**
  * Reads Pokémon Emerald state from mGBA's shared WASM heap.
  *
- * mGBA allocates GBA EWRAM and IWRAM as one contiguous block:
- * EWRAM first, then IWRAM exactly 0x40000 bytes later. PokéRun locates IWRAM by
- * the three fixed Emerald save-block pointer globals, then derives EWRAM directly.
- * This avoids depending on mGBA's internal C struct layout.
+ * mGBA allocates GBA EWRAM and IWRAM as one contiguous block. The allocation is
+ * not guaranteed to be page-aligned, so PokéRun finds the three adjacent Emerald
+ * save-pointer globals in the heap and derives the start of IWRAM/EWRAM from them.
  */
 export class EmeraldLiveStateReader {
   private iwramHeapBase: number | null = null
   private ewramHeapBase: number | null = null
   private heapBuffer: ArrayBufferLike | null = null
+  private scanWordIndex = 0
+  private scanPass = 0
+  private diagnostic = 'SEARCHING RAM 0%'
 
   constructor(private readonly emulator: mGBAEmulator) {}
 
+  getDiagnostic() {
+    return this.diagnostic
+  }
+
   readSnapshot(): EmeraldLiveSnapshot | null {
     const heap = this.getHeap()
-    if (!heap) return null
+    if (!heap) {
+      this.diagnostic = 'WASM HEAP UNAVAILABLE'
+      return null
+    }
 
     if (this.heapBuffer !== heap.buffer) {
       this.heapBuffer = heap.buffer
@@ -113,6 +124,7 @@ export class EmeraldLiveStateReader {
       if (member) party.push(member)
     }
 
+    this.diagnostic = 'CONNECTED'
     return {
       capturedAt: Date.now(),
       currentMap: mapLayoutId === 0 ? 'Loading overworld' : getMapName(mapGroup, mapNum),
@@ -134,44 +146,62 @@ export class EmeraldLiveStateReader {
 
   private ensureLayout(heap: Uint8Array) {
     if (this.iwramHeapBase !== null && this.ewramHeapBase !== null) return true
-
-    const iwram = this.locateIwram(heap)
-    if (iwram === null) return false
-
-    // mGBA allocates EWRAM + IWRAM in one block and sets iwram = wram + 0x40000.
-    const ewram = iwram - EWRAM_SIZE
-    if (ewram < 0 || ewram % PAGE_SIZE !== 0) return false
-    if (!this.validateMemoryPair(heap, iwram, ewram)) return false
-
-    this.iwramHeapBase = iwram
-    this.ewramHeapBase = ewram
-    return true
-  }
-
-  private locateIwram(heap: Uint8Array) {
-    const save1Offset = SAVE_BLOCK_1_PTR - IWRAM_BASE
-    const save2Offset = SAVE_BLOCK_2_PTR - IWRAM_BASE
-    const storageOffset = POKEMON_STORAGE_PTR - IWRAM_BASE
-
-    for (let base = EWRAM_SIZE; base + IWRAM_SIZE <= heap.byteLength; base += PAGE_SIZE) {
-      const save1 = readHeapU32(heap, base + save1Offset)
-      const save2 = readHeapU32(heap, base + save2Offset)
-      const storage = readHeapU32(heap, base + storageOffset)
-
-      if (
-        isEwramAddress(save1)
-        && isEwramAddress(save2)
-        && isEwramAddress(storage)
-        && save1 !== save2
-        && save1 !== storage
-        && save2 !== storage
-      ) {
-        const ewram = base - EWRAM_SIZE
-        if (ewram >= 0 && this.validateMemoryPair(heap, base, ewram)) return base
-      }
+    if (heap.byteOffset % 4 !== 0) {
+      this.diagnostic = 'WASM HEAP MISALIGNED'
+      return false
     }
 
-    return null
+    const words = new Uint32Array(
+      heap.buffer,
+      heap.byteOffset,
+      Math.floor(heap.byteLength / Uint32Array.BYTES_PER_ELEMENT),
+    )
+    const minimumPointerWord = Math.ceil((EWRAM_SIZE + SAVE_BLOCK_1_PTR_OFFSET) / 4)
+    const start = Math.max(this.scanWordIndex, minimumPointerWord)
+    const end = Math.min(words.length - 2, start + SCAN_WORDS_PER_PASS)
+
+    for (let index = start; index < end; index += 1) {
+      const save1 = words[index] >>> 0
+      if (!isEwramAddress(save1)) continue
+
+      const save2 = words[index + 1] >>> 0
+      const storage = words[index + 2] >>> 0
+      if (
+        !isEwramAddress(save2)
+        || !isEwramAddress(storage)
+        || save1 === save2
+        || save1 === storage
+        || save2 === storage
+      ) {
+        continue
+      }
+
+      const pointerHeapOffset = index * 4
+      const iwram = pointerHeapOffset - SAVE_BLOCK_1_PTR_OFFSET
+      const ewram = iwram - EWRAM_SIZE
+
+      if (ewram < 0 || iwram + IWRAM_SIZE > heap.byteLength) continue
+      if (!this.validateMemoryPair(heap, iwram, ewram)) continue
+
+      this.iwramHeapBase = iwram
+      this.ewramHeapBase = ewram
+      this.diagnostic = 'CONNECTED'
+      return true
+    }
+
+    if (end >= words.length - 2) {
+      this.scanPass += 1
+      this.scanWordIndex = minimumPointerWord
+      this.diagnostic = `RAM SIGNATURE NOT FOUND • RETRY ${this.scanPass}`
+    } else {
+      this.scanWordIndex = end
+      const scannedBytes = Math.max(0, end * 4 - (EWRAM_SIZE + SAVE_BLOCK_1_PTR_OFFSET))
+      const searchableBytes = Math.max(1, heap.byteLength - (EWRAM_SIZE + SAVE_BLOCK_1_PTR_OFFSET))
+      const percent = Math.min(99, Math.floor(scannedBytes / searchableBytes * 100))
+      this.diagnostic = `SEARCHING RAM ${percent}%`
+    }
+
+    return false
   }
 
   private validateMemoryPair(heap: Uint8Array, iwramBase: number, ewramBase: number) {
@@ -266,6 +296,8 @@ export class EmeraldLiveStateReader {
   private resetLayout() {
     this.iwramHeapBase = null
     this.ewramHeapBase = null
+    this.scanWordIndex = 0
+    this.diagnostic = 'SEARCHING RAM 0%'
   }
 }
 

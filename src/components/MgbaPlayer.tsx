@@ -6,7 +6,6 @@ import { romSessionStore } from '../core/rom/RomSessionStore'
 import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
-type LiveStateStatus = 'unsupported' | 'searching' | 'connected'
 
 interface Props {
   game: GameDefinition
@@ -31,7 +30,7 @@ export function MgbaPlayer({ game, run, onLiveState }: Props) {
   const [paused, setPaused] = useState(false)
   const [muted, setMuted] = useState(false)
   const [speed, setSpeed] = useState(1)
-  const [liveStateStatus, setLiveStateStatus] = useState<LiveStateStatus>(game.id === 'emerald' ? 'searching' : 'unsupported')
+  const [liveStateStatus, setLiveStateStatus] = useState(game.id === 'emerald' ? 'SEARCHING RAM 0%' : 'UNSUPPORTED')
 
   useEffect(() => {
     function preventBrowserNavigation(event: KeyboardEvent) {
@@ -58,7 +57,7 @@ export function MgbaPlayer({ game, run, onLiveState }: Props) {
       try {
         setStatus('booting')
         setStatusText('CHECKING RUNTIME...')
-        setLiveStateStatus(game.id === 'emerald' ? 'searching' : 'unsupported')
+        setLiveStateStatus(game.id === 'emerald' ? 'SEARCHING RAM 0%' : 'UNSUPPORTED')
         onLiveState?.(null)
 
         if (!window.crossOriginIsolated) {
@@ -136,9 +135,13 @@ export function MgbaPlayer({ game, run, onLiveState }: Props) {
           const pollLiveState = () => {
             if (cancelled) return
             const snapshot = liveReader.readSnapshot()
-            if (!snapshot) return
 
-            setLiveStateStatus('connected')
+            if (!snapshot) {
+              setLiveStateStatus(liveReader.getDiagnostic())
+              return
+            }
+
+            setLiveStateStatus('CONNECTED')
             const nextKey = JSON.stringify([
               snapshot.mapGroup,
               snapshot.mapNum,
@@ -250,7 +253,7 @@ export function MgbaPlayer({ game, run, onLiveState }: Props) {
         <span>{status === 'running' ? `READY • ${statusText}` : statusText}</span>
         <span>ARROWS MOVE • X=A • Z=B • ENTER=START • BACKSPACE=SELECT • A/S=L/R</span>
         <span>BATTERY SAVE: AUTO</span>
-        {game.id === 'emerald' && <span>LIVE STATE: {liveStateStatus.toUpperCase()}</span>}
+        {game.id === 'emerald' && <span>LIVE STATE: {liveStateStatus}</span>}
       </div>
     </div>
   )
