@@ -7,34 +7,47 @@ const packageJsonPath = require.resolve('@thenick775/mgba-wasm/package.json')
 const mgbaPath = join(dirname(packageJsonPath), 'dist', 'mgba.js')
 const workerMarker = 'POKERUN_HEAP_BRIDGE'
 const mainMarker = 'POKERUN_MAIN_HEAP_BRIDGE'
+const finalMarker = 'POKERUN_FINAL_HEAP_BRIDGE'
 
 let source = await readFile(mgbaPath, 'utf8')
 
-// Remove the older bridge that was injected next to Emscripten's HEAPU8 setup.
-// In this package that code can belong to pthread worker bootstrap rather than
-// the Module object returned to PokéRun, so it did not give the app a stable
-// memory handle.
-const oldBridge = /\/\* POKERUN_HEAP_BRIDGE:[\s\S]*?\*\/\s*Object\.defineProperty\(Module,\s*['"]HEAPU8['"],\s*\{\s*configurable:\s*true,\s*get:\s*\(\)\s*=>\s*(?:HEAPU8|new Uint8Array\(wasmMemory\.buffer\))\s*\}\);?\s*(?:Object\.defineProperty\(Module,\s*['"]wasmMemory['"],\s*\{\s*configurable:\s*true,\s*get:\s*\(\)\s*=>\s*wasmMemory\s*\}\);?)?/g
-source = source.replace(oldBridge, '')
+// Remove the oldest bridge that was injected beside Emscripten HEAPU8 setup.
+// Those occurrences can belong to pthread worker bootstrap rather than the
+// main Module returned to PokéRun.
+const oldWorkerBridge = /\/\* POKERUN_HEAP_BRIDGE:[\s\S]*?\*\/\s*Object\.defineProperty\(Module,\s*['"]HEAPU8['"],\s*\{\s*configurable:\s*true,\s*get:\s*\(\)\s*=>\s*(?:HEAPU8|new Uint8Array\(wasmMemory\.buffer\))\s*\}\);?\s*(?:Object\.defineProperty\(Module,\s*['"]wasmMemory['"],\s*\{\s*configurable:\s*true,\s*get:\s*\(\)\s*=>\s*wasmMemory\s*\}\);?)?/g
+source = source.replace(oldWorkerBridge, '')
 
-// If the main-module bridge is already present, the script has done its job.
-if (source.includes(mainMarker)) {
+// Remove the previous main bridge. It was injected near Module.loadGame, which
+// executes before Emscripten finishes startup. Emscripten can subsequently
+// normalize its Module API and remove those properties before mGBA is returned.
+const oldMainMarkerIndex = source.indexOf(`/* ${mainMarker}:`)
+if (oldMainMarkerIndex >= 0) {
+  const loadGameIndex = source.indexOf('Module.loadGame=', oldMainMarkerIndex)
+  if (loadGameIndex < 0) {
+    throw new Error('[PokéRun] Found the old main heap bridge but could not locate Module.loadGame after it.')
+  }
+  source = source.slice(0, oldMainMarkerIndex) + source.slice(loadGameIndex)
+}
+
+// The final-return bridge is already in the only place that survives Emscripten
+// startup, so no additional patching is needed.
+if (source.includes(finalMarker)) {
   await writeFile(mgbaPath, source, 'utf8')
-  console.log('[PokéRun] Main mGBA memory bridge is already installed.')
+  console.log('[PokéRun] Final mGBA memory bridge is already installed.')
   process.exit(0)
 }
 
-// pre.js attaches public APIs such as Module.loadGame directly to the Module
-// returned by createMgba(). Injecting next to that API guarantees these accessors
-// live on the same object PokéRun receives instead of a pthread worker Module.
-const mainModuleAnchor = /Module\.loadGame\s*=\s*\(/
-const anchorMatch = source.match(mainModuleAnchor)
+// Install immediately before the mGBA factory returns Module. At this point
+// createWasm() and run() have completed, so these properties cannot be stripped
+// by later Emscripten initialization code.
+const finalReturn = 'return Module}export default mGBA;'
+const finalReturnIndex = source.lastIndexOf(finalReturn)
 
-if (!anchorMatch) {
-  throw new Error('[PokéRun] Could not locate the main mGBA Module API anchor.')
+if (finalReturnIndex < 0) {
+  throw new Error('[PokéRun] Could not locate the final mGBA Module return.')
 }
 
-const bridge = `/* ${mainMarker}: expose memory on the Module returned by createMgba(). */
+const bridge = `/* ${finalMarker}: expose memory on the final Module returned by createMgba(). */
 Object.defineProperty(Module, 'HEAPU8', {
   configurable: true,
   get: () => wasmMemory && wasmMemory.buffer ? new Uint8Array(wasmMemory.buffer) : undefined
@@ -45,7 +58,7 @@ Object.defineProperty(Module, 'wasmMemory', {
 });
 `
 
-source = source.replace(mainModuleAnchor, `${bridge}${anchorMatch[0]}`)
+source = source.slice(0, finalReturnIndex) + bridge + source.slice(finalReturnIndex)
 
 await writeFile(mgbaPath, source, 'utf8')
-console.log(`[PokéRun] Installed main mGBA memory bridge (${mainMarker}); removed legacy ${workerMarker} bridges.`)
+console.log(`[PokéRun] Installed final mGBA memory bridge (${finalMarker}); removed legacy ${workerMarker}/${mainMarker} bridges.`)
