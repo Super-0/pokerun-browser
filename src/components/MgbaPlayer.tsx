@@ -94,14 +94,14 @@ export function MgbaPlayer({ game, run, onLiveState }: Props) {
           throw new Error('mGBA needs cross-origin isolation. Restart the Vite server after pulling the new vite.config.ts.')
         }
 
-        let rom = romSessionStore.get(run.id)
+        let rom = romSessionStore.get(run.id) ?? await romSessionStore.restore(run.id)
         if (!rom && import.meta.env.DEV && hasDevelopmentRom(game)) {
           rom = await loadDevelopmentRom(game)
           if (rom) romSessionStore.set(run.id, rom)
         }
 
         if (!rom) {
-          throw new Error('This run does not have a ROM loaded in the current browser session.')
+          throw new Error('This run does not have a ROM saved on this device. Choose the ROM again to continue.')
         }
 
         setStatusText('LOADING mGBA WASM...')
