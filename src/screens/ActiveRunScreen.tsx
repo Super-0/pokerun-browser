@@ -6,8 +6,10 @@ import { PixelButton } from '../components/PixelButton'
 import { MockEmulatorBridge } from '../core/emulator/MockEmulatorBridge'
 import type { EmeraldLiveSnapshot } from '../core/game/emerald/EmeraldLiveState'
 import { MockGameStateAdapter } from '../core/game/MockGameStateAdapter'
+import { formatPartyLabel, getPokemonSpriteUrl, resolvePartySpecies } from '../core/game/pokemonSpecies'
 import { RunEngine, type RunEvent } from '../core/run/RunEngine'
 import type { GameDefinition, RunState } from '../types'
+import '../styles/party.css'
 
 interface Props {
   game: GameDefinition
@@ -86,9 +88,33 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
                 {Array.from({ length: 6 }, (_, i) => {
                   const p = displayedParty[i]
                   if (!p) return <div className="party-row empty" key={i}><div className="sprite-box"/><span>EMPTY</span></div>
+
                   const pct = p.maxHp > 0 ? Math.max(0, Math.min(100, p.hp / p.maxHp * 100)) : 0
-                  const label = p.nickname || p.species
-                  return <div className={`party-row ${p.hp === 0 ? 'fainted' : ''}`} key={p.id}><div className="sprite-box">{label[0] ?? '?'}</div><div className="party-copy"><div><strong>{label}</strong><span>LV{p.level}</span></div><div className="hp-track"><i style={{ width: `${pct}%` }}/></div><small>{p.hp}/{p.maxHp} HP{p.status && p.status !== 'OK' ? ` • ${p.status}` : ''}</small></div></div>
+                  const species = resolvePartySpecies(game.id, p)
+                  const label = formatPartyLabel(p.nickname, species.name)
+                  const spriteUrl = getPokemonSpriteUrl(game.id, species.nationalDexId)
+
+                  return (
+                    <div className={`party-row ${p.hp === 0 ? 'fainted' : ''}`} key={p.id}>
+                      <div className="sprite-box" title={species.name}>
+                        <span className="sprite-fallback">{species.name[0] ?? '?'}</span>
+                        {spriteUrl && (
+                          <img
+                            className="party-species-sprite"
+                            src={spriteUrl}
+                            alt={`${species.name} sprite`}
+                            crossOrigin="anonymous"
+                            onError={event => { event.currentTarget.style.display = 'none' }}
+                          />
+                        )}
+                      </div>
+                      <div className="party-copy">
+                        <div><strong>{label}</strong><span>LV{p.level}</span></div>
+                        <div className="hp-track"><i style={{ width: `${pct}%` }}/></div>
+                        <small>{p.hp}/{p.maxHp} HP{p.status && p.status !== 'OK' ? ` • ${p.status}` : ''}</small>
+                      </div>
+                    </div>
+                  )
                 })}
               </div>
             </HudPanel>
