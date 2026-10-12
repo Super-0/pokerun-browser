@@ -1,0 +1,49 @@
+.runs-list {
+  display: grid;
+  gap: 14px;
+}
+
+.run-card {
+  background: rgba(248, 252, 247, .97);
+  padding: 18px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.run-card h2 {
+  margin: 4px 0 10px;
+  font-size: 22px;
+}
+
+.run-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.run-card-meta span {
+  background: #e5f4fa;
+  border: 2px solid var(--ink);
+  padding: 5px 7px;
+  font-family: 'Silkscreen', sans-serif;
+  font-size: 8px;
+}
+
+.run-card-actions {
+  display: flex;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.runs-empty {
+  background: rgba(248, 252, 247, .97);
+  padding: 30px;
+  text-align: center;
+}
+
+.runs-empty p {
+  font-size: 11px;
+  margin-bottom: 20px;
+}
