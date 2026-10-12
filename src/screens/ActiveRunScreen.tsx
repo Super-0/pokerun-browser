@@ -7,6 +7,7 @@ import { MockEmulatorBridge } from '../core/emulator/MockEmulatorBridge'
 import type { EmeraldLiveSnapshot } from '../core/game/emerald/EmeraldLiveState'
 import { MockGameStateAdapter } from '../core/game/MockGameStateAdapter'
 import { formatPartyLabel, getPokemonSpriteUrl, resolvePartySpecies } from '../core/game/pokemonSpecies'
+import { countEnabledTracking } from '../core/run/runSettings'
 import { RunEngine, type RunEvent } from '../core/run/RunEngine'
 import type { GameDefinition, RunState } from '../types'
 import '../styles/party.css'
@@ -50,6 +51,7 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
 
   const displayedParty = game.id === 'emerald' && liveState ? liveState.party : run.party
   const displayedMap = game.id === 'emerald' && liveState ? liveState.currentMap : run.currentMap
+  const enabledTracking = countEnabledTracking(run.settings)
 
   return (
     <main className="screen themed-screen active-run" style={{
@@ -80,7 +82,12 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
           <aside className="hud-column">
             <HudPanel title="RUN INFO">
               <div className="badge-row">{Array.from({ length: 8 }, (_, i) => <i key={i} className={i < run.badges ? 'earned' : ''} />)}</div>
-              <div className="hud-stats"><span>BADGES <b>{run.badges}/8</b></span><span>DEATHS <b>{run.deaths}</b></span><span>LEVEL CAP <b>{run.levelCap}</b></span><span>NEXT BOSS <b>{run.nextBoss}</b></span></div>
+              <div className="hud-stats">
+                <span>BADGES <b>{run.badges}/8</b></span>
+                {run.settings.faintAsDeath && <span>DEATHS <b>{run.deaths}</b></span>}
+                {run.settings.levelCaps && <span>LEVEL CAP <b>{run.levelCap}</b></span>}
+                <span>NEXT BOSS <b>{run.nextBoss}</b></span>
+              </div>
             </HudPanel>
 
             <HudPanel title={liveState ? 'PARTY • LIVE' : 'PARTY'}>
@@ -123,9 +130,19 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
           </aside>
         </div>
 
-        <section className="route-strip pixel-border"><div><span>CURRENT AREA</span><strong>{displayedMap.toUpperCase()}</strong></div><div><span>ENCOUNTER</span><strong className="available">{run.encounterStatus.replace('_',' ')}</strong></div><div><span>RULES</span><strong>{run.ruleset.toUpperCase()}</strong></div></section>
+        <section className="route-strip pixel-border">
+          <div><span>CURRENT AREA</span><strong>{displayedMap.toUpperCase()}</strong></div>
+          <div><span>ENCOUNTER</span><strong className="available">{run.settings.encounterTracking ? run.encounterStatus.replace('_',' ') : 'TRACKING OFF'}</strong></div>
+          <div><span>TRACKING</span><strong>{enabledTracking}/4 MODULES</strong></div>
+        </section>
 
-        <nav className="tracker-tabs pixel-border"><button className="active">PARTY</button><button>ENCOUNTERS</button><button>GRAVEYARD</button><button>RUN LOG</button><button>BOSSES</button></nav>
+        <nav className="tracker-tabs pixel-border">
+          <button className="active">PARTY</button>
+          {run.settings.encounterTracking && <button>ENCOUNTERS</button>}
+          {run.settings.faintAsDeath && <button>GRAVEYARD</button>}
+          {run.settings.runLog && <button>RUN LOG</button>}
+          <button>BOSSES</button>
+        </nav>
 
         {game.id !== 'emerald' && (
           <details className="dev-panel pixel-border">
