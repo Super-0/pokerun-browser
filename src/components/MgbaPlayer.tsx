@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import type { mGBAEmulator } from '@thenick775/mgba-wasm'
+import { EmeraldLiveStateReader, type EmeraldLiveSnapshot } from '../core/game/emerald/EmeraldLiveState'
 import { hasDevelopmentRom, loadDevelopmentRom } from '../core/rom/DevRomLoader'
 import { romSessionStore } from '../core/rom/RomSessionStore'
 import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
+type LiveStateStatus = 'unsupported' | 'searching' | 'connected'
 
 interface Props {
   game: GameDefinition
   run: RunState
+  onLiveState?: (snapshot: EmeraldLiveSnapshot | null) => void
 }
 
 const blockedKeys = new Set([
@@ -19,7 +22,7 @@ const blockedKeys = new Set([
   'Backspace',
 ])
 
-export function MgbaPlayer({ game, run }: Props) {
+export function MgbaPlayer({ game, run, onLiveState }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
   const emulatorRef = useRef<mGBAEmulator | null>(null)
@@ -28,6 +31,7 @@ export function MgbaPlayer({ game, run }: Props) {
   const [paused, setPaused] = useState(false)
   const [muted, setMuted] = useState(false)
   const [speed, setSpeed] = useState(1)
+  const [liveStateStatus, setLiveStateStatus] = useState<LiveStateStatus>(game.id === 'emerald' ? 'searching' : 'unsupported')
 
   useEffect(() => {
     function preventBrowserNavigation(event: KeyboardEvent) {
@@ -47,11 +51,15 @@ export function MgbaPlayer({ game, run }: Props) {
     let cancelled = false
     let emulator: mGBAEmulator | null = null
     let saveSyncTimer: number | undefined
+    let liveStateTimer: number | undefined
+    let lastLiveStateKey = ''
 
     async function boot() {
       try {
         setStatus('booting')
         setStatusText('CHECKING RUNTIME...')
+        setLiveStateStatus(game.id === 'emerald' ? 'searching' : 'unsupported')
+        onLiveState?.(null)
 
         if (!window.crossOriginIsolated) {
           throw new Error('mGBA needs cross-origin isolation. Restart the Vite server after pulling the new vite.config.ts.')
@@ -122,6 +130,30 @@ export function MgbaPlayer({ game, run }: Props) {
         emulator.setVolume(1)
         setStatus('running')
         setStatusText(`${emulator.version.projectName} ${emulator.version.projectVersion}`)
+
+        if (game.id === 'emerald') {
+          const liveReader = new EmeraldLiveStateReader(emulator)
+          const pollLiveState = () => {
+            if (cancelled) return
+            const snapshot = liveReader.readSnapshot()
+            if (!snapshot) return
+
+            setLiveStateStatus('connected')
+            const nextKey = JSON.stringify([
+              snapshot.mapGroup,
+              snapshot.mapNum,
+              snapshot.party.map(member => [member.id, member.level, member.hp, member.maxHp, member.status]),
+            ])
+
+            if (nextKey !== lastLiveStateKey) {
+              lastLiveStateKey = nextKey
+              onLiveState?.(snapshot)
+            }
+          }
+
+          pollLiveState()
+          liveStateTimer = window.setInterval(pollLiveState, 200)
+        }
       } catch (error) {
         if (cancelled) return
         console.error(error)
@@ -135,7 +167,9 @@ export function MgbaPlayer({ game, run }: Props) {
     return () => {
       cancelled = true
       window.clearTimeout(saveSyncTimer)
+      window.clearInterval(liveStateTimer)
       emulatorRef.current = null
+      onLiveState?.(null)
 
       if (!emulator) return
 
@@ -152,7 +186,7 @@ export function MgbaPlayer({ game, run }: Props) {
           try { emulator?.quitMgba() } catch { /* already stopped */ }
         })
     }
-  }, [game, run.id])
+  }, [game, onLiveState, run.id])
 
   function togglePause() {
     const emulator = emulatorRef.current
@@ -216,6 +250,7 @@ export function MgbaPlayer({ game, run }: Props) {
         <span>{status === 'running' ? `READY • ${statusText}` : statusText}</span>
         <span>ARROWS MOVE • X=A • Z=B • ENTER=START • BACKSPACE=SELECT • A/S=L/R</span>
         <span>BATTERY SAVE: AUTO</span>
+        {game.id === 'emerald' && <span>LIVE STATE: {liveStateStatus.toUpperCase()}</span>}
       </div>
     </div>
   )

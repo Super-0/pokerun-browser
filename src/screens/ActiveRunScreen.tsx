@@ -4,6 +4,7 @@ import { GameBackdrop } from '../components/GameBackdrop'
 import { MgbaPlayer } from '../components/MgbaPlayer'
 import { PixelButton } from '../components/PixelButton'
 import { MockEmulatorBridge } from '../core/emulator/MockEmulatorBridge'
+import type { EmeraldLiveSnapshot } from '../core/game/emerald/EmeraldLiveState'
 import { MockGameStateAdapter } from '../core/game/MockGameStateAdapter'
 import { RunEngine, type RunEvent } from '../core/run/RunEngine'
 import type { GameDefinition, RunState } from '../types'
@@ -19,6 +20,7 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
   const seconds = run.playTimeSeconds
   const time = [Math.floor(seconds / 3600), Math.floor((seconds % 3600) / 60), seconds % 60].map(n => String(n).padStart(2,'0')).join(':')
   const [lastEvents, setLastEvents] = useState<RunEvent[]>([])
+  const [liveState, setLiveState] = useState<EmeraldLiveSnapshot | null>(null)
 
   const trackerRuntime = useMemo(() => {
     const emulator = new MockEmulatorBridge(game.platform)
@@ -30,6 +32,10 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
   }, [run.id, game.platform])
 
   useEffect(() => {
+    setLiveState(null)
+  }, [game.id, run.id])
+
+  useEffect(() => {
     return () => { void trackerRuntime.emulator.dispose() }
   }, [trackerRuntime])
 
@@ -39,6 +45,9 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
     setLastEvents(result.events)
     onChange(result.run)
   }
+
+  const displayedParty = game.id === 'emerald' && liveState ? liveState.party : run.party
+  const displayedMap = game.id === 'emerald' && liveState ? liveState.currentMap : run.currentMap
 
   return (
     <main className="screen themed-screen active-run" style={{
@@ -63,7 +72,7 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
                   <div className="emu-screen bottom pixel-border"><span>TOUCH SCREEN</span><small>MELONDS PLACEHOLDER</small></div>
                 </div>
               </>
-            ) : <MgbaPlayer game={game} run={run} />}
+            ) : <MgbaPlayer game={game} run={run} onLiveState={setLiveState} />}
           </section>
 
           <aside className="hud-column">
@@ -72,13 +81,14 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
               <div className="hud-stats"><span>BADGES <b>{run.badges}/8</b></span><span>DEATHS <b>{run.deaths}</b></span><span>LEVEL CAP <b>{run.levelCap}</b></span><span>NEXT BOSS <b>{run.nextBoss}</b></span></div>
             </HudPanel>
 
-            <HudPanel title="PARTY">
+            <HudPanel title={liveState ? 'PARTY • LIVE' : 'PARTY'}>
               <div className="party-list">
                 {Array.from({ length: 6 }, (_, i) => {
-                  const p = run.party[i]
+                  const p = displayedParty[i]
                   if (!p) return <div className="party-row empty" key={i}><div className="sprite-box"/><span>EMPTY</span></div>
-                  const pct = Math.max(0, Math.min(100, p.hp / p.maxHp * 100))
-                  return <div className={`party-row ${p.hp === 0 ? 'fainted' : ''}`} key={p.id}><div className="sprite-box">{p.species[0]}</div><div className="party-copy"><div><strong>{p.nickname}</strong><span>LV{p.level}</span></div><div className="hp-track"><i style={{ width: `${pct}%` }}/></div><small>{p.hp}/{p.maxHp} HP</small></div></div>
+                  const pct = p.maxHp > 0 ? Math.max(0, Math.min(100, p.hp / p.maxHp * 100)) : 0
+                  const label = p.nickname || p.species
+                  return <div className={`party-row ${p.hp === 0 ? 'fainted' : ''}`} key={p.id}><div className="sprite-box">{label[0] ?? '?'}</div><div className="party-copy"><div><strong>{label}</strong><span>LV{p.level}</span></div><div className="hp-track"><i style={{ width: `${pct}%` }}/></div><small>{p.hp}/{p.maxHp} HP{p.status && p.status !== 'OK' ? ` • ${p.status}` : ''}</small></div></div>
                 })}
               </div>
             </HudPanel>
@@ -87,21 +97,23 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
           </aside>
         </div>
 
-        <section className="route-strip pixel-border"><div><span>CURRENT AREA</span><strong>{run.currentMap.toUpperCase()}</strong></div><div><span>ENCOUNTER</span><strong className="available">{run.encounterStatus.replace('_',' ')}</strong></div><div><span>RULES</span><strong>{run.ruleset.toUpperCase()}</strong></div></section>
+        <section className="route-strip pixel-border"><div><span>CURRENT AREA</span><strong>{displayedMap.toUpperCase()}</strong></div><div><span>ENCOUNTER</span><strong className="available">{run.encounterStatus.replace('_',' ')}</strong></div><div><span>RULES</span><strong>{run.ruleset.toUpperCase()}</strong></div></section>
 
         <nav className="tracker-tabs pixel-border"><button className="active">PARTY</button><button>ENCOUNTERS</button><button>GRAVEYARD</button><button>RUN LOG</button><button>BOSSES</button></nav>
 
-        <details className="dev-panel pixel-border">
-          <summary>DEV GAME STATE SIMULATOR</summary>
-          <div>
-            <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.enterMap(run.currentMap === 'Route 6' ? 'Chargestone Cave' : 'Route 6'))}>ENTER NEW AREA</PixelButton>
-            <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.setBattle({ kind: 'wild', opponentSpecies: 'Koffing' }))}>START WILD BATTLE</PixelButton>
-            <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.damagePartyMember(0, 20))}>DAMAGE LEAD</PixelButton>
-            <PixelButton tone="danger" onClick={() => void simulate(adapter => adapter.faintPartyMember(1))}>FAINT SLOT 2</PixelButton>
-            <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.earnBadge())}>EARN BADGE</PixelButton>
-          </div>
-          {lastEvents.length > 0 && <small>ENGINE: {lastEvents.map(event => event.type).join(' • ')}</small>}
-        </details>
+        {game.id !== 'emerald' && (
+          <details className="dev-panel pixel-border">
+            <summary>DEV GAME STATE SIMULATOR</summary>
+            <div>
+              <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.enterMap(run.currentMap === 'Route 6' ? 'Chargestone Cave' : 'Route 6'))}>ENTER NEW AREA</PixelButton>
+              <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.setBattle({ kind: 'wild', opponentSpecies: 'Koffing' }))}>START WILD BATTLE</PixelButton>
+              <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.damagePartyMember(0, 20))}>DAMAGE LEAD</PixelButton>
+              <PixelButton tone="danger" onClick={() => void simulate(adapter => adapter.faintPartyMember(1))}>FAINT SLOT 2</PixelButton>
+              <PixelButton tone="ghost" onClick={() => void simulate(adapter => adapter.earnBadge())}>EARN BADGE</PixelButton>
+            </div>
+            {lastEvents.length > 0 && <small>ENGINE: {lastEvents.map(event => event.type).join(' • ')}</small>}
+          </details>
+        )}
       </div>
     </main>
   )

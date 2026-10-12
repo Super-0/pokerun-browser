@@ -29,6 +29,7 @@ export interface GameDefinition {
 export interface PartyMember {
   id: string
   species: string
+  speciesId?: number
   nickname: string
   level: number
   hp: number
