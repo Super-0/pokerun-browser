@@ -6,7 +6,7 @@ import { ActiveRunScreen } from './screens/ActiveRunScreen'
 import { HomeScreen } from './screens/HomeScreen'
 import { NewRunScreen } from './screens/NewRunScreen'
 import { createRun, loadRuns, saveRuns } from './store/runStore'
-import type { GameDefinition, RunState } from './types'
+import type { GameDefinition, RunSettings, RunState } from './types'
 
 export default function App() {
   const [runs, setRuns] = useState<RunState[]>(loadRuns)
@@ -27,9 +27,9 @@ export default function App() {
     setActiveRunId(null)
   }
 
-  function startRun(runType: RunState['runType'], ruleset: RunState['ruleset'], seed: string, rom: LoadedRom) {
+  function startRun(runType: RunState['runType'], settings: RunSettings, seed: string, rom: LoadedRom) {
     if (!selectedGame) return
-    const run = createRun(selectedGame.id, runType, ruleset, seed, rom)
+    const run = createRun(selectedGame.id, runType, settings, seed, rom)
     romSessionStore.set(run.id, rom)
     setRuns(current => [...current, run])
     setActiveRunId(run.id)
