@@ -9,46 +9,29 @@ const marker = 'POKERUN_HEAP_BRIDGE'
 
 let source = await readFile(mgbaPath, 'utf8')
 
-// The generated Emscripten bundle contains separate memory-view setup code for
-// the pthread worker and the main module. Patching only the first HEAPU8
-// assignment can therefore expose memory in a worker while leaving the Module
-// returned to PokéRun unchanged. Patch every unbridged HEAPU8 initializer.
+// Remove older PokéRun bridge blocks first. Older versions exposed HEAPU8 only,
+// which can become detached when Emscripten replaces the WebAssembly.Memory
+// buffer while the threaded runtime is starting.
+const oldBridge = /\/\* POKERUN_HEAP_BRIDGE:[\s\S]*?\*\/\s*Object\.defineProperty\(Module,\s*['"]HEAPU8['"],\s*\{\s*configurable:\s*true,\s*get:\s*\(\)\s*=>\s*(?:HEAPU8|new Uint8Array\(wasmMemory\.buffer\))\s*\}\);?/g
+source = source.replace(oldBridge, '')
+
+// Emscripten emits updateMemoryViews() in both the main runtime and pthread
+// workers. Bridge every HEAPU8 refresh so the Module returned to PokéRun keeps
+// access to both the current typed-array view and the underlying memory object.
+// Exposing wasmMemory is important because its .buffer can be refreshed after
+// startup even when an older HEAPU8 view has been detached.
 const heapAssignment = /\bHEAPU8\s*=\s*new\s+Uint8Array\s*\([^)]*\)/g
 const heapMatches = [...source.matchAll(heapAssignment)]
+
+if (heapMatches.length === 0) {
+  throw new Error('[PokéRun] Could not locate any mGBA HEAPU8 initializers.')
+}
+
 let patchedCount = 0
-
-if (heapMatches.length > 0) {
-  source = source.replace(heapAssignment, (match, offset) => {
-    const followingSource = source.slice(offset + match.length, offset + match.length + 240)
-    if (followingSource.includes(marker)) return match
-
-    patchedCount += 1
-    return `${match};\n/* ${marker}: expose the live Emscripten heap without copying it. */\nObject.defineProperty(Module, 'HEAPU8', { configurable: true, get: () => HEAPU8 })`
-  })
-} else {
-  const wasmMemoryAssignment = /\bwasmMemory\s*=\s*new\s+WebAssembly\.Memory\s*\([^;]*\)/g
-  const memoryMatches = [...source.matchAll(wasmMemoryAssignment)]
-
-  if (memoryMatches.length === 0) {
-    const heapMention = source.includes('HEAPU8')
-      ? 'HEAPU8 exists, but its initializer was not recognized.'
-      : 'HEAPU8 does not appear in the generated bundle.'
-    throw new Error('[PokéRun] Could not locate an mGBA memory initializer. ' + heapMention)
-  }
-
-  source = source.replace(wasmMemoryAssignment, (match, offset) => {
-    const followingSource = source.slice(offset + match.length, offset + match.length + 260)
-    if (followingSource.includes(marker)) return match
-
-    patchedCount += 1
-    return `${match};\n/* ${marker}: expose the live Emscripten heap through wasmMemory. */\nObject.defineProperty(Module, 'HEAPU8', { configurable: true, get: () => new Uint8Array(wasmMemory.buffer) })`
-  })
-}
-
-if (patchedCount === 0) {
-  console.log('[PokéRun] All mGBA heap initializers are already bridged.')
-  process.exit(0)
-}
+source = source.replace(heapAssignment, match => {
+  patchedCount += 1
+  return `${match};\n/* ${marker}: expose the live Emscripten heap and memory object. */\nObject.defineProperty(Module, 'HEAPU8', { configurable: true, get: () => HEAPU8 });\nObject.defineProperty(Module, 'wasmMemory', { configurable: true, get: () => wasmMemory })`
+})
 
 await writeFile(mgbaPath, source, 'utf8')
-console.log(`[PokéRun] Exposed mGBA HEAPU8 in ${patchedCount} additional runtime context(s).`)
+console.log(`[PokéRun] Exposed mGBA HEAPU8 + wasmMemory in ${patchedCount} runtime context(s).`)
