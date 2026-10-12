@@ -416,9 +416,7 @@ function decryptSpeciesIdFromAddress(
   if (offset === null || offset < 0 || offset + PARTY_MON_SIZE > heap.byteLength) return 0
 
   const key = (personality ^ otId) >>> 0
-  const order = SUBSTRUCT_SELECTOR[personality % 24]
-  const growthPhysicalIndex = order.indexOf(0)
-  if (growthPhysicalIndex < 0) return 0
+  const growthPhysicalIndex = SUBSTRUCT_SELECTOR[personality % 24][0]
 
   const encryptedGrowthWord = readHeapU32(heap, offset + 0x20 + growthPhysicalIndex * 12)
   return ((encryptedGrowthWord ^ key) >>> 0) & 0xffff
