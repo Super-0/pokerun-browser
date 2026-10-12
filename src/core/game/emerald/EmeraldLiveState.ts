@@ -113,7 +113,7 @@ export class EmeraldLiveStateReader {
     const mapLayoutId = this.readU16(heap, saveBlock1 + 0x32)
     const partyCount = this.readU8(heap, PARTY_COUNT)
 
-    if (partyCount > 6 || mapGroup > 33) {
+    if (partyCount > 6 || mapGroup > 33 || mapLayoutId === 0) {
       this.resetLayout()
       return null
     }
@@ -124,10 +124,15 @@ export class EmeraldLiveStateReader {
       if (member) party.push(member)
     }
 
+    if (party.length !== partyCount) {
+      this.resetLayout()
+      return null
+    }
+
     this.diagnostic = 'CONNECTED'
     return {
       capturedAt: Date.now(),
-      currentMap: mapLayoutId === 0 ? 'Loading overworld' : getMapName(mapGroup, mapNum),
+      currentMap: getMapName(mapGroup, mapNum),
       mapGroup,
       mapNum,
       party,
@@ -212,19 +217,53 @@ export class EmeraldLiveStateReader {
     const save2 = readHeapU32(heap, iwramBase + (SAVE_BLOCK_2_PTR - IWRAM_BASE))
     const storage = readHeapU32(heap, iwramBase + (POKEMON_STORAGE_PTR - IWRAM_BASE))
     if (!isEwramAddress(save1) || !isEwramAddress(save2) || !isEwramAddress(storage)) return false
+    if ((save1 & 3) !== 0 || (save2 & 3) !== 0 || (storage & 3) !== 0) return false
 
     const save1Heap = ewramBase + (save1 - EWRAM_BASE)
+    const save2Heap = ewramBase + (save2 - EWRAM_BASE)
     const storageHeap = ewramBase + (storage - EWRAM_BASE)
     const partyCountHeap = ewramBase + (PARTY_COUNT - EWRAM_BASE)
+    const partyHeap = ewramBase + (PARTY_BASE - EWRAM_BASE)
 
-    if (save1Heap + 0x34 >= iwramBase || storageHeap >= iwramBase || partyCountHeap >= iwramBase) return false
+    if (
+      save1Heap + 0x34 >= iwramBase
+      || save2Heap + 0x10 >= iwramBase
+      || storageHeap >= iwramBase
+      || partyCountHeap >= iwramBase
+      || partyHeap + PARTY_MON_SIZE > iwramBase
+    ) {
+      return false
+    }
 
     const mapGroup = heap[save1Heap + 4]
     const mapNum = heap[save1Heap + 5]
+    const mapLayoutId = readHeapU16(heap, save1Heap + 0x32)
     const currentBox = heap[storageHeap]
     const partyCount = heap[partyCountHeap]
 
-    return mapGroup <= 33 && mapNum <= 127 && currentBox <= 13 && partyCount <= 6
+    if (mapLayoutId === 0 || mapGroup > 33 || mapNum > 127 || currentBox > 13 || partyCount > 6) {
+      return false
+    }
+
+    if (partyCount > 0) {
+      const personality = readHeapU32(heap, partyHeap)
+      const level = heap[partyHeap + 0x54]
+      const hp = readHeapU16(heap, partyHeap + 0x56)
+      const maxHp = readHeapU16(heap, partyHeap + 0x58)
+
+      if (
+        personality === 0
+        || level === 0
+        || level > 100
+        || maxHp === 0
+        || maxHp > 999
+        || hp > maxHp
+      ) {
+        return false
+      }
+    }
+
+    return true
   }
 
   private readPartyMember(heap: Uint8Array, address: number, index: number): PartyMember | null {
@@ -299,6 +338,11 @@ export class EmeraldLiveStateReader {
     this.scanWordIndex = 0
     this.diagnostic = 'SEARCHING RAM 0%'
   }
+}
+
+function readHeapU16(heap: Uint8Array, offset: number) {
+  if (offset < 0 || offset + 2 > heap.byteLength) return 0
+  return heap[offset] + heap[offset + 1] * 0x100
 }
 
 function readHeapU32(heap: Uint8Array, offset: number) {
