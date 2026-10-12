@@ -14,6 +14,12 @@ type HeapBackedMgba = mGBAEmulator & {
   wasmMemory?: WebAssembly.Memory
 }
 
+type MemoryCandidate = {
+  iwram: number
+  ewram: number
+  score: number
+}
+
 const EWRAM_BASE = 0x02000000
 const EWRAM_SIZE = 0x00040000
 const IWRAM_BASE = 0x03000000
@@ -27,7 +33,8 @@ const PARTY_BASE = 0x020244ec
 const PARTY_MON_SIZE = 100
 
 const SAVE_BLOCK_1_PTR_OFFSET = SAVE_BLOCK_1_PTR - IWRAM_BASE
-const SCAN_WORDS_PER_PASS = 1_000_000
+const SCAN_WORDS_PER_PASS = 2_000_000
+const MAX_EMERALD_SPECIES_ID = 411
 
 const SUBSTRUCT_SELECTOR = [
   [0, 1, 2, 3], [0, 1, 3, 2], [0, 2, 1, 3], [0, 3, 1, 2],
@@ -70,9 +77,10 @@ const MAP_GROUPS: Record<number, readonly string[]> = {
 /**
  * Reads Pokémon Emerald state from mGBA's shared WASM heap.
  *
- * mGBA allocates GBA EWRAM and IWRAM as one contiguous block. The allocation is
- * not guaranteed to be page-aligned, so PokéRun finds the three adjacent Emerald
- * save-pointer globals in the heap and derives the start of IWRAM/EWRAM from them.
+ * mGBA allocates GBA EWRAM and IWRAM as one contiguous block. PokéRun locates
+ * that block by finding Emerald's adjacent save-pointer globals. Multiple copies
+ * of RAM-like data can exist in the WASM heap, so the reader scans a full pass
+ * and chooses the strongest candidate instead of accepting the first match.
  */
 export class EmeraldLiveStateReader {
   private iwramHeapBase: number | null = null
@@ -80,6 +88,7 @@ export class EmeraldLiveStateReader {
   private heapBuffer: ArrayBufferLike | null = null
   private scanWordIndex = 0
   private scanPass = 0
+  private bestCandidate: MemoryCandidate | null = null
   private diagnostic = 'SEARCHING RAM 0%'
 
   constructor(private readonly emulator: mGBAEmulator) {}
@@ -184,40 +193,50 @@ export class EmeraldLiveStateReader {
       const pointerHeapOffset = index * 4
       const iwram = pointerHeapOffset - SAVE_BLOCK_1_PTR_OFFSET
       const ewram = iwram - EWRAM_SIZE
-
       if (ewram < 0 || iwram + IWRAM_SIZE > heap.byteLength) continue
-      if (!this.validateMemoryPair(heap, iwram, ewram)) continue
 
-      this.iwramHeapBase = iwram
-      this.ewramHeapBase = ewram
-      this.diagnostic = 'CONNECTED'
-      return true
+      const score = this.scoreMemoryPair(heap, iwram, ewram)
+      if (score === null) continue
+
+      if (!this.bestCandidate || score > this.bestCandidate.score) {
+        this.bestCandidate = { iwram, ewram, score }
+      }
     }
 
     if (end >= words.length - 2) {
+      if (this.bestCandidate) {
+        this.iwramHeapBase = this.bestCandidate.iwram
+        this.ewramHeapBase = this.bestCandidate.ewram
+        this.diagnostic = `RAM CANDIDATE ${this.bestCandidate.score}`
+        this.bestCandidate = null
+        this.scanWordIndex = minimumPointerWord
+        return true
+      }
+
       this.scanPass += 1
       this.scanWordIndex = minimumPointerWord
       this.diagnostic = `RAM SIGNATURE NOT FOUND • RETRY ${this.scanPass}`
-    } else {
-      this.scanWordIndex = end
-      const scannedBytes = Math.max(0, end * 4 - (EWRAM_SIZE + SAVE_BLOCK_1_PTR_OFFSET))
-      const searchableBytes = Math.max(1, heap.byteLength - (EWRAM_SIZE + SAVE_BLOCK_1_PTR_OFFSET))
-      const percent = Math.min(99, Math.floor(scannedBytes / searchableBytes * 100))
-      this.diagnostic = `SEARCHING RAM ${percent}%`
+      return false
     }
 
+    this.scanWordIndex = end
+    const scannedBytes = Math.max(0, end * 4 - (EWRAM_SIZE + SAVE_BLOCK_1_PTR_OFFSET))
+    const searchableBytes = Math.max(1, heap.byteLength - (EWRAM_SIZE + SAVE_BLOCK_1_PTR_OFFSET))
+    const percent = Math.min(99, Math.floor(scannedBytes / searchableBytes * 100))
+    const best = this.bestCandidate ? ` • BEST ${this.bestCandidate.score}` : ''
+    this.diagnostic = `SEARCHING RAM ${percent}%${best}`
     return false
   }
 
-  private validateMemoryPair(heap: Uint8Array, iwramBase: number, ewramBase: number) {
-    if (ewramBase + EWRAM_SIZE !== iwramBase) return false
-    if (iwramBase + IWRAM_SIZE > heap.byteLength) return false
+  private scoreMemoryPair(heap: Uint8Array, iwramBase: number, ewramBase: number) {
+    if (ewramBase + EWRAM_SIZE !== iwramBase) return null
+    if (iwramBase + IWRAM_SIZE > heap.byteLength) return null
 
     const save1 = readHeapU32(heap, iwramBase + (SAVE_BLOCK_1_PTR - IWRAM_BASE))
     const save2 = readHeapU32(heap, iwramBase + (SAVE_BLOCK_2_PTR - IWRAM_BASE))
     const storage = readHeapU32(heap, iwramBase + (POKEMON_STORAGE_PTR - IWRAM_BASE))
-    if (!isEwramAddress(save1) || !isEwramAddress(save2) || !isEwramAddress(storage)) return false
-    if ((save1 & 3) !== 0 || (save2 & 3) !== 0 || (storage & 3) !== 0) return false
+    if (!isEwramAddress(save1) || !isEwramAddress(save2) || !isEwramAddress(storage)) return null
+    if ((save1 & 3) !== 0 || (save2 & 3) !== 0 || (storage & 3) !== 0) return null
 
     const save1Heap = ewramBase + (save1 - EWRAM_BASE)
     const save2Heap = ewramBase + (save2 - EWRAM_BASE)
@@ -226,13 +245,13 @@ export class EmeraldLiveStateReader {
     const partyHeap = ewramBase + (PARTY_BASE - EWRAM_BASE)
 
     if (
-      save1Heap + 0x34 >= iwramBase
-      || save2Heap + 0x10 >= iwramBase
+      save1Heap + 0x239 >= iwramBase
+      || save2Heap + 0x0b >= iwramBase
       || storageHeap >= iwramBase
       || partyCountHeap >= iwramBase
-      || partyHeap + PARTY_MON_SIZE > iwramBase
+      || partyHeap + PARTY_MON_SIZE * 6 > iwramBase
     ) {
-      return false
+      return null
     }
 
     const mapGroup = heap[save1Heap + 4]
@@ -240,30 +259,42 @@ export class EmeraldLiveStateReader {
     const mapLayoutId = readHeapU16(heap, save1Heap + 0x32)
     const currentBox = heap[storageHeap]
     const partyCount = heap[partyCountHeap]
+    const playerGender = heap[save2Heap + 8]
+    const playerName = decodeGen3Text(heap.slice(save2Heap, save2Heap + 8))
 
-    if (mapLayoutId === 0 || mapGroup > 33 || mapNum > 127 || currentBox > 13 || partyCount > 6) {
-      return false
+    if (
+      mapLayoutId === 0
+      || mapGroup > 33
+      || mapNum > 127
+      || currentBox > 13
+      || partyCount > 6
+      || playerGender > 1
+      || !playerName
+    ) {
+      return null
     }
 
-    if (partyCount > 0) {
-      const personality = readHeapU32(heap, partyHeap)
-      const level = heap[partyHeap + 0x54]
-      const hp = readHeapU16(heap, partyHeap + 0x56)
-      const maxHp = readHeapU16(heap, partyHeap + 0x58)
+    let score = 40
+    if (MAP_GROUPS[mapGroup]?.[mapNum]) score += 25
+    score += 20 // valid trainer name + gender from SaveBlock2
 
-      if (
-        personality === 0
-        || level === 0
-        || level > 100
-        || maxHp === 0
-        || maxHp > 999
-        || hp > maxHp
-      ) {
-        return false
-      }
+    const savedPartyCount = heap[save1Heap + 0x234]
+    if (savedPartyCount <= 6 && savedPartyCount === partyCount) score += 20
+
+    if (partyCount === 0) {
+      const firstPersonality = readHeapU32(heap, partyHeap)
+      if (firstPersonality === 0) score += 5
+      return score
     }
 
-    return true
+    score += 100 + partyCount * 20
+    for (let index = 0; index < partyCount; index += 1) {
+      const memberScore = scoreRawPartyMember(heap, partyHeap + index * PARTY_MON_SIZE)
+      if (memberScore === null) return null
+      score += memberScore
+    }
+
+    return score
   }
 
   private readPartyMember(heap: Uint8Array, address: number, index: number): PartyMember | null {
@@ -276,17 +307,23 @@ export class EmeraldLiveStateReader {
     const hp = this.readU16(heap, address + 0x56)
     const maxHp = this.readU16(heap, address + 0x58)
     const rawStatus = this.readU32(heap, address + 0x50)
+    const speciesId = decryptSpeciesIdFromAddress(heap, this.toHeapOffset(address, PARTY_MON_SIZE), personality, otId)
 
-    const key = (personality ^ otId) >>> 0
-    const growthPhysicalIndex = SUBSTRUCT_SELECTOR[personality % 24][0]
-    const encryptedGrowthWord = this.readU32(heap, address + 0x20 + growthPhysicalIndex * 12)
-    const speciesId = ((encryptedGrowthWord ^ key) >>> 0) & 0xffff
-
-    if (level > 100 || hp > maxHp || maxHp > 999) return null
+    if (
+      level === 0
+      || level > 100
+      || hp > maxHp
+      || maxHp === 0
+      || maxHp > 999
+      || speciesId === 0
+      || speciesId > MAX_EMERALD_SPECIES_ID
+    ) {
+      return null
+    }
 
     return {
       id: `emerald-${index}-${personality.toString(16).padStart(8, '0')}`,
-      species: speciesId ? `#${speciesId}` : 'UNKNOWN',
+      species: `#${speciesId}`,
       nickname,
       level,
       hp,
@@ -336,8 +373,55 @@ export class EmeraldLiveStateReader {
     this.iwramHeapBase = null
     this.ewramHeapBase = null
     this.scanWordIndex = 0
+    this.bestCandidate = null
     this.diagnostic = 'SEARCHING RAM 0%'
   }
+}
+
+function scoreRawPartyMember(heap: Uint8Array, offset: number) {
+  if (offset < 0 || offset + PARTY_MON_SIZE > heap.byteLength) return null
+
+  const personality = readHeapU32(heap, offset)
+  const otId = readHeapU32(heap, offset + 4)
+  const level = heap[offset + 0x54]
+  const hp = readHeapU16(heap, offset + 0x56)
+  const maxHp = readHeapU16(heap, offset + 0x58)
+  const speciesId = decryptSpeciesIdFromAddress(heap, offset, personality, otId)
+
+  if (
+    personality === 0
+    || level === 0
+    || level > 100
+    || maxHp === 0
+    || maxHp > 999
+    || hp > maxHp
+    || speciesId === 0
+    || speciesId > MAX_EMERALD_SPECIES_ID
+  ) {
+    return null
+  }
+
+  let score = 40
+  const nickname = decodeGen3Text(heap.slice(offset + 8, offset + 18))
+  if (nickname) score += 15
+  return score
+}
+
+function decryptSpeciesIdFromAddress(
+  heap: Uint8Array,
+  offset: number | null,
+  personality: number,
+  otId: number,
+) {
+  if (offset === null || offset < 0 || offset + PARTY_MON_SIZE > heap.byteLength) return 0
+
+  const key = (personality ^ otId) >>> 0
+  const order = SUBSTRUCT_SELECTOR[personality % 24]
+  const growthPhysicalIndex = order.indexOf(0)
+  if (growthPhysicalIndex < 0) return 0
+
+  const encryptedGrowthWord = readHeapU32(heap, offset + 0x20 + growthPhysicalIndex * 12)
+  return ((encryptedGrowthWord ^ key) >>> 0) & 0xffff
 }
 
 function readHeapU16(heap: Uint8Array, offset: number) {
