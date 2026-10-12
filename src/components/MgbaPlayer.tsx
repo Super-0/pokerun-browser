@@ -7,6 +7,11 @@ import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
 
+type DebuggableMgba = mGBAEmulator & {
+  HEAPU8?: Uint8Array
+  wasmMemory?: WebAssembly.Memory
+}
+
 interface Props {
   game: GameDefinition
   run: RunState
@@ -20,6 +25,31 @@ const blockedKeys = new Set([
   'ArrowRight',
   'Backspace',
 ])
+
+function getMemoryDiagnostic(emulator: mGBAEmulator) {
+  const module = emulator as DebuggableMgba
+
+  let heapText = 'missing'
+  try {
+    const heap = module.HEAPU8
+    heapText = heap ? `${heap.byteLength}B` : 'missing'
+  } catch (error) {
+    heapText = `error:${error instanceof Error ? error.name : 'unknown'}`
+  }
+
+  let memoryText = 'missing'
+  try {
+    const memory = module.wasmMemory
+    memoryText = memory?.buffer ? `${memory.buffer.byteLength}B` : 'missing'
+  } catch (error) {
+    memoryText = `error:${error instanceof Error ? error.name : 'unknown'}`
+  }
+
+  const heapOwn = Object.prototype.hasOwnProperty.call(module, 'HEAPU8') ? 'own' : 'no-own'
+  const memoryOwn = Object.prototype.hasOwnProperty.call(module, 'wasmMemory') ? 'own' : 'no-own'
+
+  return `U8=${heapText}/${heapOwn} • MEM=${memoryText}/${memoryOwn}`
+}
 
 export function MgbaPlayer({ game, run, onLiveState }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -133,11 +163,16 @@ export function MgbaPlayer({ game, run, onLiveState }: Props) {
         if (game.id === 'emerald') {
           const liveReader = new EmeraldLiveStateReader(emulator)
           const pollLiveState = () => {
-            if (cancelled) return
+            if (cancelled || !emulator) return
             const snapshot = liveReader.readSnapshot()
 
             if (!snapshot) {
-              setLiveStateStatus(liveReader.getDiagnostic())
+              const diagnostic = liveReader.getDiagnostic()
+              setLiveStateStatus(
+                diagnostic === 'WASM HEAP UNAVAILABLE'
+                  ? `${diagnostic} • ${getMemoryDiagnostic(emulator)}`
+                  : diagnostic,
+              )
               return
             }
 
