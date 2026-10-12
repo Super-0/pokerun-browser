@@ -6,3 +6,7 @@ dist
 .env.*
 !.env.example
 .vs/
+
+# Local development ROMs — never commit
+public/dev-roms/*
+!public/dev-roms/.gitkeep
