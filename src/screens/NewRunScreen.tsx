@@ -3,14 +3,16 @@ import { AppHeader } from '../components/AppHeader'
 import { GameBackdrop } from '../components/GameBackdrop'
 import { PixelButton } from '../components/PixelButton'
 import { getGameRuntimeSupport } from '../core/game/gameSupport'
+import { DEFAULT_RUN_SETTINGS } from '../core/run/runSettings'
 import { hasDevelopmentRom, loadDevelopmentRom } from '../core/rom/DevRomLoader'
 import { formatRomSize, loadRomFile, type LoadedRom } from '../core/rom/RomLoader'
-import type { GameDefinition, RunState } from '../types'
+import type { GameDefinition, RunSettings, RunState } from '../types'
+import '../styles/run-settings.css'
 
 interface Props {
   game: GameDefinition
   onHome: () => void
-  onStart: (runType: RunState['runType'], ruleset: RunState['ruleset'], seed: string, rom: LoadedRom) => void
+  onStart: (runType: RunState['runType'], settings: RunSettings, seed: string, rom: LoadedRom) => void
 }
 
 function makeSeed() {
@@ -19,7 +21,8 @@ function makeSeed() {
 
 export function NewRunScreen({ game, onHome, onStart }: Props) {
   const [runType, setRunType] = useState<RunState['runType']>('Randomized')
-  const [ruleset, setRuleset] = useState<RunState['ruleset']>('Hardcore')
+  const [settings, setSettings] = useState<RunSettings>({ ...DEFAULT_RUN_SETTINGS })
+  const [showAdvanced, setShowAdvanced] = useState(false)
   const [seed, setSeed] = useState(makeSeed)
   const [rom, setRom] = useState<LoadedRom | null>(null)
   const [romMessage, setRomMessage] = useState('NOT LOADED')
@@ -64,6 +67,10 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
       setRomMessage(error instanceof Error ? error.message : 'ROM could not be loaded.')
       setRomError(true)
     }
+  }
+
+  function updateSetting<K extends keyof RunSettings>(key: K, value: RunSettings[K]) {
+    setSettings(current => ({ ...current, [key]: value }))
   }
 
   return (
@@ -111,7 +118,7 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
               </div>
             </SetupStep>
 
-            <SetupStep number="02" title="RUN TYPE" subtitle="Choose how PokéRun should prepare the cartridge.">
+            <SetupStep number="02" title="RUN TYPE" subtitle="Choose whether the cartridge stays vanilla or is randomized.">
               <ChoiceRow value={runType} values={['Vanilla', 'Randomized']} onChange={v => setRunType(v as RunState['runType'])} />
             </SetupStep>
 
@@ -119,8 +126,110 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
               <div className="seed-row"><code>{seed}</code><PixelButton tone="ghost" onClick={() => setSeed(makeSeed())}>REROLL</PixelButton></div>
             </SetupStep>
 
-            <SetupStep number="04" title="RULESET" subtitle="Tracking rules can be changed later.">
-              <ChoiceRow value={ruleset} values={['Standard', 'Hardcore', 'Custom']} onChange={v => setRuleset(v as RunState['ruleset'])} />
+            <SetupStep number="04" title="RUN SETTINGS" subtitle="Turn on only the tracking rules you want for this run.">
+              <div className="run-settings-panel">
+                <SettingToggle
+                  title="FAINT = DEATH"
+                  description="Track a fainted Pokémon as a death and enable the Graveyard."
+                  checked={settings.faintAsDeath}
+                  onChange={value => updateSetting('faintAsDeath', value)}
+                />
+                <SettingToggle
+                  title="ENCOUNTER TRACKING"
+                  description="Track catches and encounters by area."
+                  checked={settings.encounterTracking}
+                  onChange={value => updateSetting('encounterTracking', value)}
+                />
+                <SettingToggle
+                  title="LEVEL CAPS"
+                  description="Show and track the current level cap."
+                  checked={settings.levelCaps}
+                  onChange={value => updateSetting('levelCaps', value)}
+                />
+                <SettingToggle
+                  title="RUN LOG"
+                  description="Automatically record important events during the run."
+                  checked={settings.runLog}
+                  onChange={value => updateSetting('runLog', value)}
+                />
+
+                <button
+                  type="button"
+                  className="advanced-settings-toggle"
+                  aria-expanded={showAdvanced}
+                  onClick={() => setShowAdvanced(value => !value)}
+                >
+                  ADVANCED SETTINGS <span>{showAdvanced ? '−' : '+'}</span>
+                </button>
+
+                {showAdvanced && (
+                  <div className="advanced-settings-panel">
+                    <AdvancedSetting
+                      title="DEATH HANDLING"
+                      description="Choose whether a faint is recorded immediately or asks for confirmation."
+                      disabled={!settings.faintAsDeath}
+                    >
+                      <OptionRow
+                        value={settings.deathHandling}
+                        options={[
+                          { value: 'Automatic', label: 'AUTO' },
+                          { value: 'Confirm', label: 'CONFIRM' },
+                        ]}
+                        disabled={!settings.faintAsDeath}
+                        onChange={value => updateSetting('deathHandling', value as RunSettings['deathHandling'])}
+                      />
+                    </AdvancedSetting>
+
+                    <AdvancedSetting
+                      title="ENCOUNTER MODE"
+                      description="Track every catch or treat the first encounter in each area as the tracked encounter."
+                      disabled={!settings.encounterTracking}
+                    >
+                      <OptionRow
+                        value={settings.encounterMode}
+                        options={[
+                          { value: 'AllCatches', label: 'ALL CATCHES' },
+                          { value: 'FirstPerArea', label: 'FIRST / AREA' },
+                        ]}
+                        disabled={!settings.encounterTracking}
+                        onChange={value => updateSetting('encounterMode', value as RunSettings['encounterMode'])}
+                      />
+                    </AdvancedSetting>
+
+                    <AdvancedSetting
+                      title="LEVEL CAP TARGETS"
+                      description="Use gym leaders only, or include other major bosses when supported."
+                      disabled={!settings.levelCaps}
+                    >
+                      <OptionRow
+                        value={settings.levelCapMode}
+                        options={[
+                          { value: 'Gyms', label: 'GYMS' },
+                          { value: 'MajorBosses', label: 'MAJOR BOSSES' },
+                        ]}
+                        disabled={!settings.levelCaps}
+                        onChange={value => updateSetting('levelCapMode', value as RunSettings['levelCapMode'])}
+                      />
+                    </AdvancedSetting>
+
+                    <AdvancedSetting
+                      title="RUN LOG DETAIL"
+                      description="Keep only major milestones or log smaller team and route events too."
+                      disabled={!settings.runLog}
+                    >
+                      <OptionRow
+                        value={settings.runLogDetail}
+                        options={[
+                          { value: 'Major', label: 'MAJOR' },
+                          { value: 'Detailed', label: 'DETAILED' },
+                        ]}
+                        disabled={!settings.runLog}
+                        onChange={value => updateSetting('runLogDetail', value as RunSettings['runLogDetail'])}
+                      />
+                    </AdvancedSetting>
+                  </div>
+                )}
+              </div>
             </SetupStep>
           </section>
 
@@ -129,12 +238,20 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
             <h2>{game.shortTitle}</h2>
             <dl>
               <div><dt>TYPE</dt><dd>{runType.toUpperCase()}</dd></div>
-              <div><dt>RULES</dt><dd>{ruleset.toUpperCase()}</dd></div>
               <div><dt>SEED</dt><dd>{seed}</dd></div>
               <div><dt>PLATFORM</dt><dd>{game.platform}</dd></div>
               <div><dt>CORE</dt><dd>{runtime.emulator.toUpperCase()}</dd></div>
               <div><dt>ROM</dt><dd>{rom ? 'READY' : 'REQUIRED'}</dd></div>
             </dl>
+
+            <div className="settings-summary">
+              <strong>RUN SETTINGS</strong>
+              <SummarySetting label="FAINT = DEATH" enabled={settings.faintAsDeath} />
+              <SummarySetting label="ENCOUNTERS" enabled={settings.encounterTracking} />
+              <SummarySetting label="LEVEL CAPS" enabled={settings.levelCaps} />
+              <SummarySetting label="RUN LOG" enabled={settings.runLog} />
+            </div>
+
             {runType === 'Randomized' && (
               <div className="randomizer-summary">
                 <strong>RANDOMIZER</strong>
@@ -144,7 +261,7 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
                 <PixelButton tone="ghost">EDIT DETAILS</PixelButton>
               </div>
             )}
-            <PixelButton className="start-run" disabled={!rom} onClick={() => rom && onStart(runType, ruleset, seed, rom)}>START RUN</PixelButton>
+            <PixelButton className="start-run" disabled={!rom} onClick={() => rom && onStart(runType, settings, seed, rom)}>START RUN</PixelButton>
             <small>{rom ? 'ROM bytes are held locally for this browser session.' : 'Select a ROM before starting the run.'}</small>
           </aside>
         </div>
@@ -159,4 +276,44 @@ function SetupStep({ number, title, subtitle, children }: React.PropsWithChildre
 
 function ChoiceRow({ value, values, onChange }: { value: string, values: string[], onChange: (value: string) => void }) {
   return <div className="choice-row">{values.map(item => <button key={item} className={item === value ? 'selected' : ''} onClick={() => onChange(item)}>{item.toUpperCase()}</button>)}</div>
+}
+
+function SettingToggle({ title, description, checked, onChange }: { title: string, description: string, checked: boolean, onChange: (checked: boolean) => void }) {
+  return (
+    <button type="button" className={`setting-toggle ${checked ? 'enabled' : ''}`} aria-pressed={checked} onClick={() => onChange(!checked)}>
+      <span className="setting-toggle-copy"><strong>{title}</strong><small>{description}</small></span>
+      <span className="setting-switch" aria-hidden="true"><i /></span>
+    </button>
+  )
+}
+
+function AdvancedSetting({ title, description, disabled, children }: React.PropsWithChildren<{ title: string, description: string, disabled?: boolean }>) {
+  return (
+    <div className={`advanced-setting ${disabled ? 'disabled' : ''}`}>
+      <div><strong>{title}</strong><small>{description}</small></div>
+      {children}
+    </div>
+  )
+}
+
+function OptionRow({ value, options, disabled, onChange }: { value: string, options: { value: string, label: string }[], disabled?: boolean, onChange: (value: string) => void }) {
+  return (
+    <div className="setting-option-row">
+      {options.map(option => (
+        <button
+          key={option.value}
+          type="button"
+          disabled={disabled}
+          className={option.value === value ? 'selected' : ''}
+          onClick={() => onChange(option.value)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function SummarySetting({ label, enabled }: { label: string, enabled: boolean }) {
+  return <span><b>{label}</b><em className={enabled ? 'on' : 'off'}>{enabled ? 'ON' : 'OFF'}</em></span>
 }
