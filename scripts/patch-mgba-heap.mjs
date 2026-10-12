@@ -10,9 +10,9 @@ const marker = 'POKERUN_HEAP_BRIDGE'
 let source = await readFile(mgbaPath, 'utf8')
 
 // Remove older PokéRun bridge blocks first. Older versions exposed HEAPU8 only,
-// which can become detached when Emscripten replaces the WebAssembly.Memory
-// buffer while the threaded runtime is starting.
-const oldBridge = /\/\* POKERUN_HEAP_BRIDGE:[\s\S]*?\*\/\s*Object\.defineProperty\(Module,\s*['"]HEAPU8['"],\s*\{\s*configurable:\s*true,\s*get:\s*\(\)\s*=>\s*(?:HEAPU8|new Uint8Array\(wasmMemory\.buffer\))\s*\}\);?/g
+// and newer runs may already include wasmMemory too. Removing the whole bridge
+// keeps this script idempotent instead of stacking duplicate accessors.
+const oldBridge = /\/\* POKERUN_HEAP_BRIDGE:[\s\S]*?\*\/\s*Object\.defineProperty\(Module,\s*['"]HEAPU8['"],\s*\{\s*configurable:\s*true,\s*get:\s*\(\)\s*=>\s*(?:HEAPU8|new Uint8Array\(wasmMemory\.buffer\))\s*\}\);?\s*(?:Object\.defineProperty\(Module,\s*['"]wasmMemory['"],\s*\{\s*configurable:\s*true,\s*get:\s*\(\)\s*=>\s*wasmMemory\s*\}\);?)?/g
 source = source.replace(oldBridge, '')
 
 // Emscripten emits updateMemoryViews() in both the main runtime and pthread
