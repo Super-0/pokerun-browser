@@ -101,6 +101,7 @@ export default function App() {
   return <NewRunScreen
     game={selectedGame}
     onHome={goHome}
+    onSettings={openSettings}
     onStart={startRun}
   />
 }
