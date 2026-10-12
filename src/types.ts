@@ -37,6 +37,17 @@ export interface PartyMember {
   status?: 'OK' | 'PSN' | 'PAR' | 'BRN' | 'SLP' | 'FRZ' | 'FAINTED'
 }
 
+export interface RunSettings {
+  faintAsDeath: boolean
+  encounterTracking: boolean
+  levelCaps: boolean
+  runLog: boolean
+  deathHandling: 'Automatic' | 'Confirm'
+  encounterMode: 'AllCatches' | 'FirstPerArea'
+  levelCapMode: 'Gyms' | 'MajorBosses'
+  runLogDetail: 'Major' | 'Detailed'
+}
+
 export interface RunState {
   id: string
   gameId: GameId
@@ -44,7 +55,7 @@ export interface RunState {
   updatedAt: string
   runNumber: number
   runType: 'Vanilla' | 'Randomized'
-  ruleset: 'Standard' | 'Hardcore' | 'Custom'
+  settings: RunSettings
   seed: string
   romLoaded: boolean
   romFileName?: string
