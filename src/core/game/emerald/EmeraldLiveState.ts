@@ -11,6 +11,7 @@ export interface EmeraldLiveSnapshot {
 
 type HeapBackedMgba = mGBAEmulator & {
   HEAPU8?: Uint8Array
+  wasmMemory?: WebAssembly.Memory
 }
 
 const PAGE_SIZE = 0x1000
@@ -19,8 +20,6 @@ const EWRAM_SIZE = 0x00040000
 const IWRAM_BASE = 0x03000000
 const IWRAM_SIZE = 0x00008000
 
-// Pokémon Emerald (BPEE/BPEJ) globals. The save-block pointers move inside EWRAM,
-// but the pointer variables and live party globals stay at fixed GBA addresses.
 const SAVE_BLOCK_1_PTR = 0x03005d8c
 const SAVE_BLOCK_2_PTR = 0x03005d90
 const POKEMON_STORAGE_PTR = 0x03005d94
@@ -37,8 +36,6 @@ const SUBSTRUCT_SELECTOR = [
   [2, 1, 3, 0], [3, 1, 2, 0], [2, 3, 1, 0], [3, 2, 1, 0],
 ] as const
 
-// The first groups are enough to give useful names immediately while the rest of
-// Emerald's map table can be added without touching the memory reader.
 const MAP_GROUPS: Record<number, readonly string[]> = {
   0: [
     'PetalburgCity', 'SlateportCity', 'MauvilleCity', 'RustboroCity', 'FortreeCity',
@@ -69,12 +66,12 @@ const MAP_GROUPS: Record<number, readonly string[]> = {
 }
 
 /**
- * Temporary bridge for mGBA WASM 2.5.x.
+ * Reads Pokémon Emerald state from mGBA's shared WASM heap.
  *
- * The current npm wrapper does not expose the core's bus-read API. mGBA stores
- * GBA EWRAM/IWRAM in page-aligned blocks inside the shared WASM heap, so PokéRun
- * locates those blocks once and then reads the same addresses a debugger would.
- * Keep this isolated here so it can be replaced by a direct mGBA readMemory API later.
+ * mGBA allocates GBA EWRAM and IWRAM as one contiguous block:
+ * EWRAM first, then IWRAM exactly 0x40000 bytes later. PokéRun locates IWRAM by
+ * the three fixed Emerald save-block pointer globals, then derives EWRAM directly.
+ * This avoids depending on mGBA's internal C struct layout.
  */
 export class EmeraldLiveStateReader {
   private iwramHeapBase: number | null = null
@@ -126,9 +123,13 @@ export class EmeraldLiveStateReader {
   }
 
   private getHeap() {
-    const heap = (this.emulator as HeapBackedMgba).HEAPU8
-    if (!heap || heap.byteOffset !== 0) return null
-    return heap
+    const module = this.emulator as HeapBackedMgba
+    if (module.HEAPU8 && module.HEAPU8.byteLength > 0) return module.HEAPU8
+
+    const buffer = module.wasmMemory?.buffer
+    if (buffer) return new Uint8Array(buffer)
+
+    return null
   }
 
   private ensureLayout(heap: Uint8Array) {
@@ -137,8 +138,10 @@ export class EmeraldLiveStateReader {
     const iwram = this.locateIwram(heap)
     if (iwram === null) return false
 
-    const ewram = this.locateEwramFromCoreStruct(heap, iwram)
-    if (ewram === null) return false
+    // mGBA allocates EWRAM + IWRAM in one block and sets iwram = wram + 0x40000.
+    const ewram = iwram - EWRAM_SIZE
+    if (ewram < 0 || ewram % PAGE_SIZE !== 0) return false
+    if (!this.validateMemoryPair(heap, iwram, ewram)) return false
 
     this.iwramHeapBase = iwram
     this.ewramHeapBase = ewram
@@ -150,7 +153,7 @@ export class EmeraldLiveStateReader {
     const save2Offset = SAVE_BLOCK_2_PTR - IWRAM_BASE
     const storageOffset = POKEMON_STORAGE_PTR - IWRAM_BASE
 
-    for (let base = PAGE_SIZE; base + IWRAM_SIZE <= heap.byteLength; base += PAGE_SIZE) {
+    for (let base = EWRAM_SIZE; base + IWRAM_SIZE <= heap.byteLength; base += PAGE_SIZE) {
       const save1 = readHeapU32(heap, base + save1Offset)
       const save2 = readHeapU32(heap, base + save2Offset)
       const storage = readHeapU32(heap, base + storageOffset)
@@ -163,50 +166,28 @@ export class EmeraldLiveStateReader {
         && save1 !== storage
         && save2 !== storage
       ) {
-        return base
+        const ewram = base - EWRAM_SIZE
+        if (ewram >= 0 && this.validateMemoryPair(heap, base, ewram)) return base
       }
     }
 
     return null
   }
 
-  private locateEwramFromCoreStruct(heap: Uint8Array, iwramBase: number) {
-    const words = new Uint32Array(heap.buffer, 0, Math.floor(heap.byteLength / 4))
-    let index = words.indexOf(iwramBase >>> 0)
+  private validateMemoryPair(heap: Uint8Array, iwramBase: number, ewramBase: number) {
+    if (ewramBase + EWRAM_SIZE !== iwramBase) return false
+    if (iwramBase + IWRAM_SIZE > heap.byteLength) return false
 
-    while (index >= 0) {
-      if (index >= 2 && index + 1 < words.length) {
-        // struct GBAMemory begins with: bios, wram, iwram, rom
-        const wram = words[index - 1] >>> 0
-        const rom = words[index + 1] >>> 0
-
-        if (
-          wram % PAGE_SIZE === 0
-          && wram + EWRAM_SIZE <= heap.byteLength
-          && rom > 0
-          && rom < heap.byteLength
-          && this.validateEwramCandidate(heap, iwramBase, wram)
-        ) {
-          return wram
-        }
-      }
-
-      index = words.indexOf(iwramBase >>> 0, index + 1)
-    }
-
-    return null
-  }
-
-  private validateEwramCandidate(heap: Uint8Array, iwramBase: number, ewramBase: number) {
     const save1 = readHeapU32(heap, iwramBase + (SAVE_BLOCK_1_PTR - IWRAM_BASE))
+    const save2 = readHeapU32(heap, iwramBase + (SAVE_BLOCK_2_PTR - IWRAM_BASE))
     const storage = readHeapU32(heap, iwramBase + (POKEMON_STORAGE_PTR - IWRAM_BASE))
-    if (!isEwramAddress(save1) || !isEwramAddress(storage)) return false
+    if (!isEwramAddress(save1) || !isEwramAddress(save2) || !isEwramAddress(storage)) return false
 
     const save1Heap = ewramBase + (save1 - EWRAM_BASE)
     const storageHeap = ewramBase + (storage - EWRAM_BASE)
     const partyCountHeap = ewramBase + (PARTY_COUNT - EWRAM_BASE)
 
-    if (save1Heap + 0x238 >= heap.byteLength || storageHeap >= heap.byteLength) return false
+    if (save1Heap + 0x34 >= iwramBase || storageHeap >= iwramBase || partyCountHeap >= iwramBase) return false
 
     const mapGroup = heap[save1Heap + 4]
     const mapNum = heap[save1Heap + 5]
@@ -221,8 +202,7 @@ export class EmeraldLiveStateReader {
     if (personality === 0) return null
 
     const otId = this.readU32(heap, address + 4)
-    const nicknameBytes = this.readBytes(heap, address + 8, 10)
-    const nickname = decodeGen3Text(nicknameBytes) || `SLOT ${index + 1}`
+    const nickname = decodeGen3Text(this.readBytes(heap, address + 8, 10)) || `SLOT ${index + 1}`
     const level = this.readU8(heap, address + 0x54)
     const hp = this.readU16(heap, address + 0x56)
     const maxHp = this.readU16(heap, address + 0x58)
@@ -238,7 +218,6 @@ export class EmeraldLiveStateReader {
     return {
       id: `emerald-${index}-${personality.toString(16).padStart(8, '0')}`,
       species: speciesId ? `#${speciesId}` : 'UNKNOWN',
-      speciesId,
       nickname,
       level,
       hp,
@@ -309,29 +288,17 @@ function decodeGen3Text(bytes: Uint8Array) {
 
   for (const byte of bytes) {
     if (byte === 0xff) break
-    if (byte === 0x00) {
-      value += ' '
-    } else if (byte >= 0xa1 && byte <= 0xaa) {
-      value += String(byte - 0xa1)
-    } else if (byte >= 0xbb && byte <= 0xd4) {
-      value += String.fromCharCode(65 + byte - 0xbb)
-    } else if (byte >= 0xd5 && byte <= 0xee) {
-      value += String.fromCharCode(97 + byte - 0xd5)
-    } else if (byte === 0xab) {
-      value += '!'
-    } else if (byte === 0xac) {
-      value += '?'
-    } else if (byte === 0xad) {
-      value += '.'
-    } else if (byte === 0xae) {
-      value += '-'
-    } else if (byte === 0xb4) {
-      value += "'"
-    } else if (byte === 0xb5) {
-      value += '♂'
-    } else if (byte === 0xb6) {
-      value += '♀'
-    }
+    if (byte === 0x00) value += ' '
+    else if (byte >= 0xa1 && byte <= 0xaa) value += String(byte - 0xa1)
+    else if (byte >= 0xbb && byte <= 0xd4) value += String.fromCharCode(65 + byte - 0xbb)
+    else if (byte >= 0xd5 && byte <= 0xee) value += String.fromCharCode(97 + byte - 0xd5)
+    else if (byte === 0xab) value += '!'
+    else if (byte === 0xac) value += '?'
+    else if (byte === 0xad) value += '.'
+    else if (byte === 0xae) value += '-'
+    else if (byte === 0xb4) value += "'"
+    else if (byte === 0xb5) value += '♂'
+    else if (byte === 0xb6) value += '♀'
   }
 
   return value.trim()
