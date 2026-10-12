@@ -9,16 +9,17 @@ interface Props {
   onHome: () => void
   onOpenRun: (run: RunState) => void
   onNewRun: (game: GameDefinition) => void
+  onSettings: () => void
 }
 
-export function MyRunsScreen({ runs, onHome, onOpenRun, onNewRun }: Props) {
+export function MyRunsScreen({ runs, onHome, onOpenRun, onNewRun, onSettings }: Props) {
   const ordered = [...runs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 
   return (
     <main className="screen home-screen">
       <div className="home-sky" aria-hidden="true"><div className="home-water"/><div className="home-grass"/></div>
       <div className="screen-shell">
-        <AppHeader onHome={onHome} />
+        <AppHeader onHome={onHome} onSettings={onSettings} />
 
         <section className="page-title-row">
           <div>
