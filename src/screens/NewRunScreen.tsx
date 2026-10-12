@@ -12,6 +12,7 @@ import '../styles/run-settings.css'
 interface Props {
   game: GameDefinition
   onHome: () => void
+  onSettings: () => void
   onStart: (runType: RunState['runType'], settings: RunSettings, seed: string, rom: LoadedRom) => void
 }
 
@@ -19,7 +20,7 @@ function makeSeed() {
   return Math.random().toString(16).slice(2, 9).toUpperCase()
 }
 
-export function NewRunScreen({ game, onHome, onStart }: Props) {
+export function NewRunScreen({ game, onHome, onSettings, onStart }: Props) {
   const [runType, setRunType] = useState<RunState['runType']>('Randomized')
   const [settings, setSettings] = useState<RunSettings>({ ...DEFAULT_RUN_SETTINGS })
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -84,7 +85,7 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
     } as React.CSSProperties}>
       <GameBackdrop game={game} />
       <div className="screen-shell">
-        <AppHeader onHome={onHome} />
+        <AppHeader onHome={onHome} onSettings={onSettings} />
         <section className="setup-header">
           <div>
             <span className="eyebrow">NEW RUN</span>
@@ -258,7 +259,7 @@ export function NewRunScreen({ game, onHome, onStart }: Props) {
                 <span>Wild encounters: Random</span>
                 <span>Trainer Pokémon: Random</span>
                 <span>Starters: Random</span>
-                <PixelButton tone="ghost">EDIT DETAILS</PixelButton>
+                <PixelButton tone="ghost" disabled>EDIT DETAILS • SOON</PixelButton>
               </div>
             )}
             <PixelButton className="start-run" disabled={!rom} onClick={() => rom && onStart(runType, settings, seed, rom)}>START RUN</PixelButton>
