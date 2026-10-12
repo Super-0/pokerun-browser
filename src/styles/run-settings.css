@@ -1,0 +1,189 @@
+.run-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.setting-toggle {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 3px solid var(--ink);
+  background: #e5f4fa;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.setting-toggle.enabled {
+  background: #dff1df;
+}
+
+.setting-toggle-copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.setting-toggle-copy strong,
+.advanced-settings-toggle,
+.advanced-setting strong,
+.settings-summary > strong,
+.settings-summary b,
+.setting-option-row button {
+  font-family: 'Silkscreen', sans-serif;
+}
+
+.setting-toggle-copy strong {
+  font-size: 10px;
+}
+
+.setting-toggle-copy small,
+.advanced-setting small {
+  font-size: 8px;
+  line-height: 1.4;
+  color: #4e6b86;
+}
+
+.setting-switch {
+  width: 42px;
+  height: 22px;
+  padding: 3px;
+  border: 3px solid var(--ink);
+  background: #cad7dc;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.setting-switch i {
+  width: 10px;
+  height: 10px;
+  background: var(--ink);
+}
+
+.setting-toggle.enabled .setting-switch {
+  justify-content: flex-end;
+  background: var(--theme-accent);
+}
+
+.advanced-settings-toggle {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 2px;
+  padding: 9px 11px;
+  border: 3px solid var(--ink);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.advanced-settings-toggle span {
+  font-size: 16px;
+  line-height: 1;
+}
+
+.advanced-settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.advanced-setting {
+  padding: 10px;
+  border: 2px dashed #91a8b9;
+  background: rgba(229,244,250,.6);
+}
+
+.advanced-setting.disabled {
+  opacity: .45;
+}
+
+.advanced-setting > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+}
+
+.advanced-setting strong {
+  font-size: 9px;
+}
+
+.setting-option-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.setting-option-row button {
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 3px solid var(--ink);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: 8px;
+  cursor: pointer;
+}
+
+.setting-option-row button.selected {
+  background: var(--theme-accent);
+  color: white;
+}
+
+.setting-option-row button:disabled {
+  cursor: default;
+}
+
+.settings-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 16px 0 0;
+  padding: 12px;
+  border: 3px solid var(--ink);
+  background: #e5f4fa;
+}
+
+.settings-summary > strong {
+  margin-bottom: 2px;
+  font-size: 10px;
+}
+
+.settings-summary span {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings-summary b {
+  font-size: 8px;
+  font-weight: 400;
+}
+
+.settings-summary em {
+  min-width: 34px;
+  padding: 2px 4px;
+  border: 2px solid var(--ink);
+  font-family: 'Silkscreen', sans-serif;
+  font-size: 7px;
+  font-style: normal;
+  text-align: center;
+}
+
+.settings-summary em.on {
+  background: #dff1df;
+}
+
+.settings-summary em.off {
+  background: #d6e4e7;
+  color: #7890a3;
+}
