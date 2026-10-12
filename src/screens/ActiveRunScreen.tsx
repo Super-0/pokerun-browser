@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { GameBackdrop } from '../components/GameBackdrop'
+import { MgbaPlayer } from '../components/MgbaPlayer'
 import { PixelButton } from '../components/PixelButton'
 import { MockEmulatorBridge } from '../core/emulator/MockEmulatorBridge'
 import { MockGameStateAdapter } from '../core/game/MockGameStateAdapter'
@@ -19,22 +20,22 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
   const time = [Math.floor(seconds / 3600), Math.floor((seconds % 3600) / 60), seconds % 60].map(n => String(n).padStart(2,'0')).join(':')
   const [lastEvents, setLastEvents] = useState<RunEvent[]>([])
 
-  const runtime = useMemo(() => {
+  const trackerRuntime = useMemo(() => {
     const emulator = new MockEmulatorBridge(game.platform)
     const adapter = new MockGameStateAdapter(run)
     const engine = new RunEngine(adapter, emulator, adapter.peek())
     return { emulator, adapter, engine }
-    // A run gets one runtime. State changes should flow through the engine, not recreate it.
+    // A run gets one tracking runtime. State changes should flow through the engine, not recreate it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run.id, game.platform])
 
   useEffect(() => {
-    return () => { void runtime.emulator.dispose() }
-  }, [runtime])
+    return () => { void trackerRuntime.emulator.dispose() }
+  }, [trackerRuntime])
 
   async function simulate(mutator: (adapter: MockGameStateAdapter) => void) {
-    mutator(runtime.adapter)
-    const result = await runtime.engine.sync(run)
+    mutator(trackerRuntime.adapter)
+    const result = await trackerRuntime.engine.sync(run)
     setLastEvents(result.events)
     onChange(result.run)
   }
@@ -54,11 +55,15 @@ export function ActiveRunScreen({ game, run, onHome, onChange }: Props) {
 
         <div className="active-layout">
           <section className="emulator-column">
-            <div className="emulator-toolbar pixel-border"><strong>GAME</strong><span>1×</span><button>PAUSE</button><button>AUDIO</button><button>FULLSCREEN</button></div>
-            <div className={`emulator-stack ${game.platform === 'NDS' ? 'dual' : 'single'}`}>
-              <div className="emu-screen pixel-border"><span>{game.shortTitle}</span><small>EMULATOR TOP SCREEN</small></div>
-              {game.platform === 'NDS' && <div className="emu-screen bottom pixel-border"><span>TOUCH SCREEN</span><small>EMULATOR BOTTOM SCREEN</small></div>}
-            </div>
+            {game.platform === 'NDS' ? (
+              <>
+                <div className="emulator-toolbar pixel-border"><strong>melonDS</strong><span>NOT CONNECTED</span></div>
+                <div className="emulator-stack dual">
+                  <div className="emu-screen pixel-border"><span>{game.shortTitle}</span><small>NINTENDO DS CORE COMES NEXT</small></div>
+                  <div className="emu-screen bottom pixel-border"><span>TOUCH SCREEN</span><small>MELONDS PLACEHOLDER</small></div>
+                </div>
+              </>
+            ) : <MgbaPlayer game={game} run={run} />}
           </section>
 
           <aside className="hud-column">

@@ -1,0 +1,222 @@
+import { useEffect, useRef, useState } from 'react'
+import type { mGBAEmulator } from '@thenick775/mgba-wasm'
+import { hasDevelopmentRom, loadDevelopmentRom } from '../core/rom/DevRomLoader'
+import { romSessionStore } from '../core/rom/RomSessionStore'
+import type { GameDefinition, RunState } from '../types'
+
+type PlayerStatus = 'booting' | 'running' | 'error'
+
+interface Props {
+  game: GameDefinition
+  run: RunState
+}
+
+const blockedKeys = new Set([
+  'ArrowUp',
+  'ArrowDown',
+  'ArrowLeft',
+  'ArrowRight',
+  'Backspace',
+])
+
+export function MgbaPlayer({ game, run }: Props) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const frameRef = useRef<HTMLDivElement>(null)
+  const emulatorRef = useRef<mGBAEmulator | null>(null)
+  const [status, setStatus] = useState<PlayerStatus>('booting')
+  const [statusText, setStatusText] = useState('INITIALIZING mGBA...')
+  const [paused, setPaused] = useState(false)
+  const [muted, setMuted] = useState(false)
+  const [speed, setSpeed] = useState(1)
+
+  useEffect(() => {
+    function preventBrowserNavigation(event: KeyboardEvent) {
+      const target = event.target as HTMLElement | null
+      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+      if (blockedKeys.has(event.key)) event.preventDefault()
+    }
+
+    window.addEventListener('keydown', preventBrowserNavigation, { passive: false })
+    return () => window.removeEventListener('keydown', preventBrowserNavigation)
+  }, [])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    let cancelled = false
+    let emulator: mGBAEmulator | null = null
+    let saveSyncTimer: number | undefined
+
+    async function boot() {
+      try {
+        setStatus('booting')
+        setStatusText('CHECKING RUNTIME...')
+
+        if (!window.crossOriginIsolated) {
+          throw new Error('mGBA needs cross-origin isolation. Restart the Vite server after pulling the new vite.config.ts.')
+        }
+
+        let rom = romSessionStore.get(run.id)
+        if (!rom && import.meta.env.DEV && hasDevelopmentRom(game)) {
+          rom = await loadDevelopmentRom(game)
+          if (rom) romSessionStore.set(run.id, rom)
+        }
+
+        if (!rom) {
+          throw new Error('This run does not have a ROM loaded in the current browser session.')
+        }
+
+        setStatusText('LOADING mGBA WASM...')
+        const { default: createMgba } = await import('@thenick775/mgba-wasm')
+        if (cancelled) return
+
+        emulator = await createMgba({ canvas })
+        if (cancelled) {
+          emulator.quitMgba()
+          return
+        }
+
+        emulatorRef.current = emulator
+        await emulator.FSInit()
+        if (cancelled) return
+
+        emulator.setCoreSettings({
+          autoSaveStateEnable: false,
+          restoreAutoSaveStateOnLoad: false,
+          showFpsCounter: false,
+        })
+
+        emulator.setLogger(entry => {
+          if (entry.level === 'FATAL' || entry.level === 'ERROR') {
+            console.error(`[mGBA ${entry.category}] ${entry.message}`)
+          }
+        })
+
+        emulator.addCoreCallbacks({
+          saveDataUpdatedCallback: () => {
+            window.clearTimeout(saveSyncTimer)
+            saveSyncTimer = window.setTimeout(() => {
+              void emulator?.FSSync().catch(error => console.error('Could not persist mGBA save data.', error))
+            }, 750)
+          },
+        })
+
+        setStatusText('LOADING ROM...')
+        const copy = new Uint8Array(rom.bytes.byteLength)
+        copy.set(rom.bytes)
+        const runtimeFileName = `pokerun-${run.id}${rom.extension}`
+        const romFile = new File([copy.buffer], runtimeFileName, { type: 'application/octet-stream' })
+
+        await new Promise<void>(resolve => emulator?.uploadRom(romFile, resolve))
+        if (cancelled || !emulator) return
+
+        const paths = emulator.filePaths()
+        const romPath = `${paths.gamePath}/${runtimeFileName}`
+        const savePath = `${paths.savePath}/${run.id}.sav`
+
+        if (!emulator.loadGame(romPath, savePath)) {
+          throw new Error('mGBA could not boot this ROM.')
+        }
+
+        emulator.setVolume(1)
+        setStatus('running')
+        setStatusText(`${emulator.version.projectName} ${emulator.version.projectVersion}`)
+      } catch (error) {
+        if (cancelled) return
+        console.error(error)
+        setStatus('error')
+        setStatusText(error instanceof Error ? error.message : 'mGBA failed to start.')
+      }
+    }
+
+    void boot()
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(saveSyncTimer)
+      emulatorRef.current = null
+
+      if (!emulator) return
+
+      try {
+        emulator.pauseGame()
+      } catch {
+        // The core may already be stopped during a failed initialization.
+      }
+
+      void emulator.FSSync()
+        .catch(error => console.error('Could not flush mGBA save data.', error))
+        .finally(() => {
+          try { emulator?.quitGame() } catch { /* already stopped */ }
+          try { emulator?.quitMgba() } catch { /* already stopped */ }
+        })
+    }
+  }, [game, run.id])
+
+  function togglePause() {
+    const emulator = emulatorRef.current
+    if (!emulator || status !== 'running') return
+
+    if (paused) {
+      emulator.resumeGame()
+      if (muted) emulator.pauseAudio()
+    } else {
+      emulator.pauseGame()
+      void emulator.FSSync().catch(error => console.error('Could not persist mGBA save data.', error))
+    }
+    setPaused(value => !value)
+  }
+
+  function toggleAudio() {
+    const emulator = emulatorRef.current
+    if (!emulator || status !== 'running') return
+
+    if (muted) emulator.resumeAudio()
+    else emulator.pauseAudio()
+    setMuted(value => !value)
+  }
+
+  function cycleSpeed() {
+    const emulator = emulatorRef.current
+    if (!emulator || status !== 'running') return
+
+    const next = speed === 1 ? 2 : speed === 2 ? 4 : 1
+    emulator.setFastForwardMultiplier(next)
+    setSpeed(next)
+  }
+
+  function enterFullscreen() {
+    void frameRef.current?.requestFullscreen().catch(() => undefined)
+  }
+
+  const ready = status === 'running'
+
+  return (
+    <div className="mgba-player">
+      <div className="emulator-toolbar pixel-border">
+        <strong>mGBA</strong>
+        <button disabled={!ready} onClick={cycleSpeed}>{speed}×</button>
+        <button disabled={!ready} onClick={togglePause}>{paused ? 'RESUME' : 'PAUSE'}</button>
+        <button disabled={!ready} onClick={toggleAudio}>{muted ? 'UNMUTE' : 'AUDIO'}</button>
+        <button onClick={enterFullscreen}>FULLSCREEN</button>
+      </div>
+
+      <div ref={frameRef} className="mgba-frame pixel-border">
+        <canvas ref={canvasRef} className="mgba-canvas" width={240} height={160} />
+        {status !== 'running' && (
+          <div className={`mgba-status ${status === 'error' ? 'error' : ''}`}>
+            <strong>{status === 'error' ? 'EMULATOR ERROR' : 'BOOTING'}</strong>
+            <span>{statusText}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="mgba-meta pixel-border">
+        <span>{status === 'running' ? `READY • ${statusText}` : statusText}</span>
+        <span>ARROWS MOVE • X=A • Z=B • ENTER=START • BACKSPACE=SELECT • A/S=L/R</span>
+        <span>BATTERY SAVE: AUTO</span>
+      </div>
+    </div>
+  )
+}
