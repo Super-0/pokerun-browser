@@ -35,6 +35,7 @@
 
 .party-copy {
   min-width: 0;
+  font-family: 'Silkscreen', sans-serif;
 }
 
 .party-copy > div:first-child {
@@ -46,8 +47,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-weight: 700;
 }
 
 .party-copy > div:first-child > span {
   flex: 0 0 auto;
+}
+
+.party-copy small {
+  font-family: 'Silkscreen', sans-serif;
+}
+
+.party-row.empty {
+  font-family: 'Silkscreen', sans-serif;
 }
