@@ -6,14 +6,23 @@ interface Props {
   runs: RunState[]
   onChooseGame: (game: GameDefinition) => void
   onMyRuns: () => void
+  onSettings: () => void
 }
 
-export function HomeScreen({ runs, onChooseGame, onMyRuns }: Props) {
+export function HomeScreen({ runs, onChooseGame, onMyRuns, onSettings }: Props) {
   return (
     <main className="screen home-screen">
       <div className="home-sky" aria-hidden="true"><div className="home-water"/><div className="home-grass"/></div>
       <div className="screen-shell">
-        <AppHeader onHome={() => {}} right={<><button className="text-action" onClick={onMyRuns}>MY RUNS</button><button className="text-action">SETTINGS</button></>} />
+        <AppHeader
+          onHome={() => {}}
+          right={(
+            <>
+              <button className="text-action" onClick={onMyRuns}>MY RUNS</button>
+              <button className="text-action" onClick={onSettings}>SETTINGS</button>
+            </>
+          )}
+        />
         <section className="page-title-row">
           <div>
             <h1>CHOOSE YOUR GAME</h1>
