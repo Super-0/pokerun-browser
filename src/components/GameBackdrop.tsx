@@ -28,9 +28,24 @@ export function GameBackdrop({ game }: { game: GameDefinition }) {
   const mascot = COVER_MASCOTS[game.id]
   const mascotName = mascot.label ?? getPokemonSpeciesName(mascot.dexId).toUpperCase()
   const mascotSprite = getPokemonSpriteUrl(game.id, mascot.dexId)
+  const isEmerald = game.id === 'emerald'
 
   return (
     <div className={`game-backdrop motif-${game.theme.motif} game-${game.id}`} aria-hidden="true">
+      {isEmerald && (
+        <div className="emerald-scene">
+          <div className="emerald-storm-glow" />
+          <div className="emerald-cloud-band emerald-cloud-band-a" />
+          <div className="emerald-cloud-band emerald-cloud-band-b" />
+          <div className="emerald-cloud-band emerald-cloud-band-c" />
+          <div className="emerald-energy-ring emerald-energy-ring-a" />
+          <div className="emerald-energy-ring emerald-energy-ring-b" />
+          <div className="emerald-energy-ring emerald-energy-ring-c" />
+          <div className="emerald-sky-pillar" />
+          <div className="emerald-horizon-haze" />
+        </div>
+      )}
+
       <div className="cover-mascot">
         <div className="cover-mascot-aura" />
         {mascotSprite && (
