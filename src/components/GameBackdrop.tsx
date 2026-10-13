@@ -30,31 +30,7 @@ export function GameBackdrop({ game }: { game: GameDefinition }) {
   const mascotSprite = getPokemonSpriteUrl(game.id, mascot.dexId)
 
   if (game.id === 'emerald') {
-    return (
-      <div className="game-backdrop game-emerald emerald-poster" aria-hidden="true">
-        <div className="emerald-poster-cloud emerald-poster-cloud-a" />
-        <div className="emerald-poster-cloud emerald-poster-cloud-b" />
-
-        <div className="emerald-poster-mascot">
-          {mascotSprite && (
-            <img
-              className="emerald-poster-rayquaza"
-              src={mascotSprite}
-              alt=""
-              crossOrigin="anonymous"
-            />
-          )}
-
-          <div className="emerald-poster-ring emerald-poster-ring-a" />
-          <div className="emerald-poster-ring emerald-poster-ring-b" />
-          <div className="emerald-poster-ring emerald-poster-ring-c" />
-          <div className="emerald-poster-ring emerald-poster-ring-d" />
-        </div>
-
-        <div className="emerald-poster-horizon" />
-        <div className="emerald-poster-grain" />
-      </div>
-    )
+    return <div className="game-backdrop game-emerald emerald-map-backdrop" aria-hidden="true" />
   }
 
   return (
