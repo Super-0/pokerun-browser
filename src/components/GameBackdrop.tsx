@@ -24,14 +24,10 @@ const COVER_MASCOTS: Record<GameId, { dexId: number, label?: string }> = {
   white2: { dexId: 646, label: 'WHITE KYUREM' },
 }
 
-const EMERALD_RAYQUAZA_ARTWORK = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/384.png'
-
 export function GameBackdrop({ game }: { game: GameDefinition }) {
   const mascot = COVER_MASCOTS[game.id]
   const mascotName = mascot.label ?? getPokemonSpeciesName(mascot.dexId).toUpperCase()
-  const mascotSprite = game.id === 'emerald'
-    ? EMERALD_RAYQUAZA_ARTWORK
-    : getPokemonSpriteUrl(game.id, mascot.dexId)
+  const mascotSprite = getPokemonSpriteUrl(game.id, mascot.dexId)
   const isEmerald = game.id === 'emerald'
 
   return (
