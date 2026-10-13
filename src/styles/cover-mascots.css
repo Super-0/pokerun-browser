@@ -1,0 +1,153 @@
+.cover-mascot {
+  position: absolute;
+  right: 4%;
+  top: 18%;
+  width: min(34vw, 470px);
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: .34;
+  z-index: 0;
+}
+
+.cover-mascot-aura {
+  position: absolute;
+  inset: 12%;
+  border: 10px solid color-mix(in srgb, var(--theme-accent) 64%, white);
+  background:
+    linear-gradient(45deg, transparent 46%, color-mix(in srgb, var(--theme-accent) 22%, white) 46% 54%, transparent 54%),
+    linear-gradient(-45deg, transparent 46%, color-mix(in srgb, var(--theme-accent-dark) 16%, white) 46% 54%, transparent 54%);
+  box-shadow:
+    18px 18px 0 color-mix(in srgb, var(--theme-accent-dark) 20%, transparent),
+    inset 0 0 0 8px color-mix(in srgb, white 18%, transparent);
+  transform: rotate(45deg);
+}
+
+.cover-mascot-sprite {
+  position: relative;
+  z-index: 1;
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  filter:
+    drop-shadow(10px 10px 0 color-mix(in srgb, var(--theme-accent-dark) 24%, transparent))
+    saturate(1.08)
+    contrast(1.06);
+}
+
+.cover-mascot-copy {
+  position: absolute;
+  right: 2%;
+  bottom: 2%;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  font-family: 'Silkscreen', sans-serif;
+  color: color-mix(in srgb, var(--theme-accent-dark) 82%, #172536);
+  text-shadow: 3px 3px 0 color-mix(in srgb, white 55%, transparent);
+}
+
+.cover-mascot-copy span {
+  font-size: clamp(16px, 2vw, 28px);
+  letter-spacing: .04em;
+}
+
+.cover-mascot-copy small {
+  margin-top: 5px;
+  font-size: clamp(7px, .7vw, 10px);
+  letter-spacing: .12em;
+}
+
+/* Let the cover mascot feel integrated rather than pasted on. */
+.game-backdrop.game-yellow .cover-mascot-sprite { width: 58%; height: 58%; }
+.game-backdrop.game-crystal .cover-mascot-sprite { width: 66%; height: 66%; }
+.game-backdrop.game-emerald .cover-mascot-sprite,
+.game-backdrop.game-rayquaza .cover-mascot-sprite { width: 82%; height: 82%; }
+.game-backdrop.game-platinum .cover-mascot-sprite { width: 80%; height: 80%; }
+.game-backdrop.game-black .cover-mascot,
+.game-backdrop.game-white .cover-mascot,
+.game-backdrop.game-black2 .cover-mascot,
+.game-backdrop.game-white2 .cover-mascot { opacity: .42; }
+
+.game-backdrop.game-black .cover-mascot-aura,
+.game-backdrop.game-black2 .cover-mascot-aura {
+  background:
+    radial-gradient(circle at center, color-mix(in srgb, var(--theme-accent) 24%, transparent), transparent 58%),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--theme-accent-dark) 22%, transparent) 0 8px, transparent 8px 18px);
+  transform: rotate(0deg);
+  border-radius: 50%;
+}
+
+.game-backdrop.game-white .cover-mascot-aura,
+.game-backdrop.game-white2 .cover-mascot-aura {
+  background:
+    radial-gradient(circle at center, rgba(255,255,255,.32), transparent 60%),
+    repeating-linear-gradient(0deg, rgba(255,255,255,.14) 0 7px, transparent 7px 17px);
+  transform: rotate(0deg);
+  border-radius: 50%;
+}
+
+.game-backdrop.game-ruby .cover-mascot-aura,
+.game-backdrop.game-firered .cover-mascot-aura,
+.game-backdrop.game-red .cover-mascot-aura {
+  clip-path: polygon(50% 0, 64% 29%, 100% 18%, 75% 50%, 100% 82%, 64% 71%, 50% 100%, 36% 71%, 0 82%, 25% 50%, 0 18%, 36% 29%);
+}
+
+.game-backdrop.game-sapphire .cover-mascot-aura,
+.game-backdrop.game-blue .cover-mascot-aura,
+.game-backdrop.game-diamond .cover-mascot-aura {
+  clip-path: polygon(50% 0, 78% 18%, 100% 50%, 78% 82%, 50% 100%, 22% 82%, 0 50%, 22% 18%);
+}
+
+.game-backdrop.game-gold .cover-mascot,
+.game-backdrop.game-heartgold .cover-mascot {
+  top: 14%;
+}
+
+.game-backdrop.game-gold .cover-mascot-aura,
+.game-backdrop.game-heartgold .cover-mascot-aura {
+  background:
+    radial-gradient(circle, color-mix(in srgb, #ffe28a 68%, var(--theme-accent)) 0 28%, transparent 29%),
+    conic-gradient(from 0deg, transparent 0 8%, color-mix(in srgb, #ffd86e 52%, var(--theme-accent)) 8% 12%, transparent 12% 20%, color-mix(in srgb, #ffd86e 52%, var(--theme-accent)) 20% 24%, transparent 24% 100%);
+}
+
+.game-backdrop.game-silver .cover-mascot-aura,
+.game-backdrop.game-soulsilver .cover-mascot-aura {
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at 38% 35%, rgba(255,255,255,.34) 0 14%, transparent 15%),
+    radial-gradient(circle, color-mix(in srgb, var(--theme-accent) 34%, white), transparent 62%);
+}
+
+.game-backdrop.game-emerald .cover-mascot-aura {
+  inset: 7%;
+  border-radius: 50%;
+  border-width: 7px;
+  background:
+    repeating-radial-gradient(circle, color-mix(in srgb, var(--theme-accent) 22%, transparent) 0 10px, transparent 10px 22px);
+  transform: none;
+}
+
+.game-backdrop.game-platinum .cover-mascot-aura {
+  inset: 5%;
+  transform: rotate(18deg);
+  background:
+    repeating-conic-gradient(from 20deg, color-mix(in srgb, var(--theme-accent-dark) 18%, transparent) 0 8deg, transparent 8deg 20deg);
+}
+
+@media (max-width: 1200px) {
+  .cover-mascot {
+    right: 2%;
+    width: 360px;
+    opacity: .27;
+  }
+
+  .cover-mascot-copy span {
+    font-size: 18px;
+  }
+}
