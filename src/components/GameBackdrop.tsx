@@ -28,42 +28,37 @@ export function GameBackdrop({ game }: { game: GameDefinition }) {
   const mascot = COVER_MASCOTS[game.id]
   const mascotName = mascot.label ?? getPokemonSpeciesName(mascot.dexId).toUpperCase()
   const mascotSprite = getPokemonSpriteUrl(game.id, mascot.dexId)
-  const isEmerald = game.id === 'emerald'
+
+  if (game.id === 'emerald') {
+    return (
+      <div className="game-backdrop game-emerald emerald-poster" aria-hidden="true">
+        <div className="emerald-poster-cloud emerald-poster-cloud-a" />
+        <div className="emerald-poster-cloud emerald-poster-cloud-b" />
+
+        <div className="emerald-poster-mascot">
+          {mascotSprite && (
+            <img
+              className="emerald-poster-rayquaza"
+              src={mascotSprite}
+              alt=""
+              crossOrigin="anonymous"
+            />
+          )}
+
+          <div className="emerald-poster-ring emerald-poster-ring-a" />
+          <div className="emerald-poster-ring emerald-poster-ring-b" />
+          <div className="emerald-poster-ring emerald-poster-ring-c" />
+          <div className="emerald-poster-ring emerald-poster-ring-d" />
+        </div>
+
+        <div className="emerald-poster-horizon" />
+        <div className="emerald-poster-grain" />
+      </div>
+    )
+  }
 
   return (
     <div className={`game-backdrop motif-${game.theme.motif} game-${game.id}`} aria-hidden="true">
-      {isEmerald && (
-        <div className="emerald-scene">
-          <div className="emerald-vignette" />
-          <div className="emerald-storm-glow" />
-          <div className="emerald-storm-shelf" />
-          <div className="emerald-rain" />
-
-          <div className="emerald-cloud-mass emerald-cloud-mass-a" />
-          <div className="emerald-cloud-mass emerald-cloud-mass-b" />
-          <div className="emerald-cloud-mass emerald-cloud-mass-c" />
-          <div className="emerald-cloud-mass emerald-cloud-mass-d" />
-
-          <div className="emerald-wind-arc emerald-wind-arc-a" />
-          <div className="emerald-wind-arc emerald-wind-arc-b" />
-          <div className="emerald-wind-arc emerald-wind-arc-c" />
-
-          <div className="emerald-energy-ring emerald-energy-ring-a" />
-          <div className="emerald-energy-ring emerald-energy-ring-b" />
-          <div className="emerald-energy-ring emerald-energy-ring-c" />
-
-          <div className="emerald-lightning emerald-lightning-a" />
-          <div className="emerald-lightning emerald-lightning-b" />
-
-          <div className="emerald-sky-pillar" />
-          <div className="emerald-island emerald-island-left" />
-          <div className="emerald-island emerald-island-right" />
-          <div className="emerald-horizon-haze" />
-          <div className="emerald-sea-reflection" />
-          <div className="emerald-foreground-haze" />
-        </div>
-      )}
-
       <div className="cover-mascot">
         <div className="cover-mascot-aura" />
         {mascotSprite && (
