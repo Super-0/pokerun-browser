@@ -1,34 +1,31 @@
 .game-backdrop.game-emerald {
   background:
     linear-gradient(180deg,
-      #073f3b 0%,
-      #0d5d52 18%,
-      #177663 34%,
-      #258d74 48%,
-      #5db3a3 59%,
-      #79c6bd 64%,
-      #64aec1 65%,
-      #4e94ae 83%,
-      #356f67 100%);
+      #052f2d 0%,
+      #084b45 12%,
+      #0d6255 26%,
+      #167965 40%,
+      #258f76 51%,
+      #4fa595 59%,
+      #78c2b8 64%,
+      #5ba7bc 65%,
+      #4b8ea9 81%,
+      #346d67 100%);
 }
 
 .game-backdrop.game-emerald::before {
-  opacity: .1;
-  background-image:
-    linear-gradient(118deg, transparent 0 46%, rgba(255,255,255,.13) 46% 47%, transparent 47% 100%),
-    linear-gradient(118deg, transparent 0 56%, rgba(176,243,225,.08) 56% 57%, transparent 57% 100%);
-  background-size: 118px 118px, 168px 168px;
-  mask-image: linear-gradient(to bottom, rgba(0,0,0,.8), rgba(0,0,0,.34) 58%, transparent 80%);
+  opacity: 0;
+  background: none;
 }
 
 .game-backdrop.game-emerald::after {
   bottom: 35.7%;
   height: 2px;
-  opacity: .5;
-  background: rgba(224,255,246,.72);
+  opacity: .58;
+  background: rgba(231,255,248,.74);
   box-shadow:
-    0 5px 0 rgba(177,234,219,.15),
-    0 -5px 0 rgba(177,234,219,.08);
+    0 4px 0 rgba(173,230,216,.11),
+    0 -5px 0 rgba(173,230,216,.06);
 }
 
 .game-emerald .theme-orb,
@@ -49,71 +46,108 @@
 .emerald-vignette {
   position: absolute;
   inset: 0;
+  z-index: 20;
   background:
-    radial-gradient(ellipse at 50% 42%, transparent 0 48%, rgba(4,45,41,.08) 70%, rgba(3,35,33,.2) 100%),
-    linear-gradient(180deg, rgba(1,38,35,.14), transparent 28%, transparent 76%, rgba(6,45,37,.12));
+    radial-gradient(ellipse at 49% 42%, transparent 0 45%, rgba(3,36,34,.045) 66%, rgba(2,27,27,.18) 100%),
+    linear-gradient(180deg, rgba(1,26,25,.15), transparent 28%, transparent 76%, rgba(5,40,34,.15));
 }
 
 .emerald-storm-glow {
   position: absolute;
   inset: 0;
+  z-index: 1;
   background:
-    radial-gradient(ellipse at 84% 18%, rgba(208,255,211,.22) 0 7%, transparent 30%),
-    radial-gradient(ellipse at 68% 34%, rgba(177,255,224,.12) 0 8%, transparent 28%),
-    radial-gradient(ellipse at 20% 30%, rgba(140,239,216,.08) 0 10%, transparent 32%),
-    linear-gradient(150deg, rgba(255,255,255,.025), transparent 36%, rgba(163,237,217,.035) 56%, transparent 78%);
+    radial-gradient(ellipse at 83% 18%, rgba(214,255,215,.28) 0 6%, rgba(162,244,202,.09) 18%, transparent 34%),
+    radial-gradient(ellipse at 67% 35%, rgba(177,255,224,.1) 0 8%, transparent 29%),
+    radial-gradient(ellipse at 17% 26%, rgba(123,221,199,.06) 0 10%, transparent 30%);
 }
 
-/* Organic pixel cloud masses instead of flat horizontal stripes. */
+/* Heavy upper cloud shelf gives the sky a storm-front silhouette instead of a flat gradient. */
+.emerald-storm-shelf {
+  position: absolute;
+  z-index: 2;
+  left: -5%;
+  right: -5%;
+  top: -2%;
+  height: 27%;
+  opacity: .48;
+  background:
+    radial-gradient(ellipse at 8% 72%, rgba(2,47,44,.58) 0 18%, transparent 19%),
+    radial-gradient(ellipse at 25% 49%, rgba(4,55,51,.66) 0 23%, transparent 24%),
+    radial-gradient(ellipse at 46% 62%, rgba(4,58,52,.53) 0 24%, transparent 25%),
+    radial-gradient(ellipse at 69% 43%, rgba(3,50,47,.65) 0 25%, transparent 26%),
+    radial-gradient(ellipse at 91% 67%, rgba(3,46,43,.58) 0 21%, transparent 22%),
+    linear-gradient(180deg, rgba(2,34,33,.7), rgba(6,70,60,.15) 72%, transparent);
+  filter: blur(.3px);
+}
+
+/* Fine diagonal rain texture; intentionally faint so the emulator remains the focal point. */
+.emerald-rain {
+  position: absolute;
+  z-index: 3;
+  inset: 4% -8% 33% -8%;
+  opacity: .075;
+  background: repeating-linear-gradient(
+    116deg,
+    transparent 0 20px,
+    rgba(220,255,246,.9) 20px 21px,
+    transparent 21px 47px
+  );
+  mask-image: linear-gradient(180deg, #000, rgba(0,0,0,.62) 70%, transparent);
+}
+
+/* Organic pixel cloud masses. */
 .emerald-cloud-mass {
   position: absolute;
+  z-index: 4;
   width: 190px;
   height: 18px;
-  background: rgba(231,255,249,.34);
+  background: rgba(231,255,249,.32);
   box-shadow:
-    28px -13px 0 rgba(231,255,249,.31),
-    64px -6px 0 rgba(231,255,249,.29),
-    96px -18px 0 rgba(231,255,249,.24),
-    126px -8px 0 rgba(231,255,249,.27),
-    158px 2px 0 rgba(231,255,249,.18),
-    52px 9px 0 rgba(196,240,230,.18),
-    112px 8px 0 rgba(196,240,230,.13);
+    28px -13px 0 rgba(231,255,249,.29),
+    64px -6px 0 rgba(231,255,249,.27),
+    96px -18px 0 rgba(231,255,249,.22),
+    126px -8px 0 rgba(231,255,249,.25),
+    158px 2px 0 rgba(231,255,249,.17),
+    52px 9px 0 rgba(196,240,230,.16),
+    112px 8px 0 rgba(196,240,230,.12);
   filter: blur(.2px);
 }
 
 .emerald-cloud-mass-a {
   left: -2%;
-  top: 14%;
-  transform: scale(1.18) skewX(-13deg);
-  opacity: .78;
+  top: 15%;
+  transform: scale(1.26) skewX(-13deg);
+  opacity: .62;
 }
 
 .emerald-cloud-mass-b {
-  right: 7%;
-  top: 19%;
-  transform: scale(.88) skewX(-13deg);
-  opacity: .52;
+  right: 6%;
+  top: 21%;
+  transform: scale(.94) skewX(-13deg);
+  opacity: .46;
 }
 
 .emerald-cloud-mass-c {
-  left: 27%;
-  top: 31%;
+  left: 25%;
+  top: 33%;
   transform: scale(.72) skewX(-13deg);
-  opacity: .27;
+  opacity: .23;
 }
 
 .emerald-cloud-mass-d {
   right: 29%;
-  top: 41%;
+  top: 42%;
   transform: scale(.56) skewX(-13deg);
-  opacity: .18;
+  opacity: .15;
 }
 
-/* Wind curves hint at Rayquaza's motion without turning into diagram lines. */
+/* Wind curves hint at Rayquaza circling through the storm. */
 .emerald-wind-arc {
   position: absolute;
+  z-index: 5;
   border-radius: 50%;
-  border: 2px solid rgba(210,252,226,.13);
+  border: 2px solid rgba(210,252,226,.12);
   border-left-color: transparent;
   border-bottom-color: transparent;
   transform-origin: center;
@@ -124,8 +158,8 @@
   height: 24vw;
   min-width: 760px;
   min-height: 310px;
-  right: -17%;
-  top: 4%;
+  right: -15%;
+  top: 6%;
   transform: rotate(-14deg);
 }
 
@@ -134,9 +168,9 @@
   height: 18vw;
   min-width: 560px;
   min-height: 235px;
-  right: 1%;
-  top: 22%;
-  opacity: .7;
+  right: 2%;
+  top: 24%;
+  opacity: .62;
   transform: rotate(-20deg);
 }
 
@@ -146,54 +180,84 @@
   min-width: 400px;
   min-height: 175px;
   right: 16%;
-  top: 39%;
-  opacity: .38;
+  top: 40%;
+  opacity: .3;
   transform: rotate(-26deg);
 }
 
 .emerald-energy-ring {
   position: absolute;
-  border: 3px solid rgba(218,239,129,.19);
+  z-index: 6;
+  border: 3px solid rgba(221,240,127,.2);
   border-radius: 50%;
   box-shadow:
-    0 0 0 7px rgba(218,239,129,.025),
-    inset 0 0 18px rgba(235,255,171,.025);
+    0 0 0 8px rgba(218,239,129,.018),
+    inset 0 0 22px rgba(235,255,171,.025),
+    0 0 28px rgba(208,233,108,.035);
 }
 
 .emerald-energy-ring-a {
-  width: 126px;
-  height: 126px;
-  right: 19%;
-  top: 28%;
+  width: 136px;
+  height: 136px;
+  right: 20%;
+  top: 27%;
   transform: rotate(-14deg);
 }
 
 .emerald-energy-ring-b {
-  width: 72px;
-  height: 72px;
+  width: 74px;
+  height: 74px;
   right: 10%;
-  top: 48%;
-  opacity: .62;
+  top: 49%;
+  opacity: .58;
 }
 
 .emerald-energy-ring-c {
-  width: 92px;
-  height: 92px;
-  right: 29%;
-  top: 56%;
-  opacity: .42;
+  width: 94px;
+  height: 94px;
+  right: 30%;
+  top: 57%;
+  opacity: .36;
 }
 
-/* Distant Sky Pillar: more architectural, still intentionally ghosted. */
+/* Tiny restrained lightning accents sell the legendary storm without becoming a comic-book effect. */
+.emerald-lightning {
+  position: absolute;
+  z-index: 7;
+  width: 2px;
+  height: 82px;
+  background: rgba(220,255,235,.16);
+  transform: skewX(-23deg) rotate(11deg);
+  box-shadow:
+    9px 20px 0 rgba(220,255,235,.09),
+    -7px 46px 0 rgba(220,255,235,.07);
+  clip-path: polygon(35% 0, 100% 0, 64% 42%, 100% 42%, 0 100%, 32% 55%, 0 55%);
+}
+
+.emerald-lightning-a {
+  left: 58%;
+  top: 18%;
+}
+
+.emerald-lightning-b {
+  left: 34%;
+  top: 26%;
+  height: 58px;
+  opacity: .58;
+  transform: scale(.72) skewX(-23deg) rotate(8deg);
+}
+
+/* Distant Sky Pillar. */
 .emerald-sky-pillar {
   position: absolute;
+  z-index: 8;
   left: 7%;
   bottom: 31.5%;
-  width: 132px;
-  height: 274px;
-  opacity: .15;
+  width: 138px;
+  height: 286px;
+  opacity: .17;
   background:
-    repeating-linear-gradient(180deg, rgba(18,73,68,.62) 0 18px, rgba(80,141,126,.34) 18px 22px),
+    repeating-linear-gradient(180deg, rgba(18,73,68,.64) 0 18px, rgba(80,141,126,.34) 18px 22px),
     linear-gradient(180deg, rgba(16,67,63,.12), rgba(8,53,51,.82));
   clip-path: polygon(
     45% 0, 58% 0, 61% 7%, 68% 10%, 66% 19%,
@@ -201,7 +265,7 @@
     28% 100%, 24% 45%, 30% 37%, 27% 27%,
     34% 19%, 32% 10%, 40% 7%
   );
-  filter: blur(.2px);
+  filter: blur(.15px);
 }
 
 .emerald-sky-pillar::before {
@@ -219,27 +283,29 @@
 
 .emerald-island {
   position: absolute;
+  z-index: 8;
   bottom: 34.7%;
-  height: 34px;
-  background: rgba(21,78,68,.2);
+  height: 38px;
+  background: rgba(20,72,64,.24);
   filter: blur(.15px);
 }
 
 .emerald-island-left {
   left: 0;
-  width: 26%;
-  clip-path: polygon(0 100%, 0 76%, 16% 64%, 29% 36%, 43% 62%, 56% 30%, 71% 70%, 100% 78%, 100% 100%);
+  width: 29%;
+  clip-path: polygon(0 100%, 0 76%, 12% 67%, 25% 36%, 40% 64%, 55% 28%, 72% 71%, 100% 78%, 100% 100%);
 }
 
 .emerald-island-right {
   right: 0;
-  width: 24%;
+  width: 27%;
   opacity: .7;
   clip-path: polygon(0 100%, 0 76%, 18% 70%, 31% 44%, 44% 68%, 61% 30%, 77% 72%, 100% 58%, 100% 100%);
 }
 
 .emerald-horizon-haze {
   position: absolute;
+  z-index: 9;
   left: 0;
   right: 0;
   top: 55%;
@@ -247,17 +313,31 @@
   background:
     linear-gradient(180deg,
       transparent,
-      rgba(214,246,238,.19) 32%,
-      rgba(225,251,245,.31) 48%,
-      rgba(214,246,238,.08) 70%,
+      rgba(214,246,238,.16) 30%,
+      rgba(229,252,246,.31) 49%,
+      rgba(214,246,238,.07) 70%,
       transparent);
 }
 
-/* Ocean gets smaller bands and a stronger horizon so it reads as water, not a blue footer. */
+/* Reflection under the storm glow gives the sky and sea one continuous composition. */
+.emerald-sea-reflection {
+  position: absolute;
+  z-index: 10;
+  left: 55%;
+  top: 64%;
+  width: 34%;
+  height: 23%;
+  transform: translateX(-50%);
+  opacity: .2;
+  background:
+    radial-gradient(ellipse at top, rgba(215,255,237,.72), rgba(138,224,207,.24) 30%, transparent 68%);
+  filter: blur(4px);
+}
+
 .game-emerald .water-band {
   bottom: 12%;
   height: 24%;
-  opacity: .96;
+  opacity: .97;
   border-top: 4px solid rgba(228,255,249,.34);
   background:
     repeating-linear-gradient(180deg,
@@ -266,10 +346,18 @@
       rgba(65,135,161,.11) 8px 11px,
       transparent 11px 18px),
     repeating-linear-gradient(90deg,
-      rgba(255,255,255,.035) 0 34px,
-      rgba(255,255,255,.11) 34px 42px,
+      rgba(255,255,255,.025) 0 34px,
+      rgba(255,255,255,.09) 34px 42px,
       transparent 42px 76px),
-    linear-gradient(180deg, #69b3c6 0%, #559bb4 43%, #417f9b 100%);
+    linear-gradient(180deg, #67afc3 0%, #559ab4 43%, #3e7997 100%);
+}
+
+.game-emerald .water-band::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: .17;
+  background: repeating-linear-gradient(174deg, transparent 0 23px, rgba(225,250,252,.45) 23px 25px, transparent 25px 47px);
 }
 
 .game-emerald .water-band::after {
@@ -286,12 +374,12 @@
     940px 30px 0 rgba(215,248,249,.08);
 }
 
-/* Foreground is now layered shoreline instead of one flat green slab. */
+/* Foreground shoreline. */
 .game-emerald .ground-band {
   height: 12%;
   background:
-    repeating-linear-gradient(90deg, rgba(35,91,49,.12) 0 8px, transparent 8px 30px),
-    linear-gradient(180deg, #619f5d 0 18%, #4d8d52 18% 48%, #397747 48% 100%);
+    repeating-linear-gradient(90deg, rgba(35,91,49,.11) 0 8px, transparent 8px 30px),
+    linear-gradient(180deg, #619f5d 0 18%, #4d8d52 18% 48%, #347143 48% 100%);
 }
 
 .game-emerald .ground-band::before {
@@ -303,26 +391,26 @@
   height: 12px;
   background:
     repeating-linear-gradient(90deg,
-      rgba(197,227,125,.44) 0 10px,
-      rgba(96,156,77,.2) 10px 16px,
+      rgba(197,227,125,.42) 0 10px,
+      rgba(96,156,77,.18) 10px 16px,
       transparent 16px 28px);
 }
 
 .game-emerald .grass-edge {
   bottom: 11.5%;
   height: 12px;
-  opacity: .52;
+  opacity: .5;
   background: repeating-linear-gradient(90deg,
-    rgba(218,238,142,.36) 0 8px,
+    rgba(218,238,142,.34) 0 8px,
     transparent 8px 17px,
-    rgba(117,174,93,.24) 17px 22px,
+    rgba(117,174,93,.22) 17px 22px,
     transparent 22px 31px);
 }
 
 .game-emerald .foreground-detail {
   height: 11%;
-  opacity: .27;
-  background: repeating-linear-gradient(90deg, #1d6042 0 4px, transparent 4px 19px);
+  opacity: .31;
+  background: repeating-linear-gradient(90deg, #18593c 0 4px, transparent 4px 19px);
   clip-path: polygon(
     0 100%,0 82%,2% 82%,2% 54%,4% 54%,4% 88%,
     7% 88%,7% 66%,9% 66%,9% 93%,12% 93%,12% 58%,
@@ -331,15 +419,36 @@
   );
 }
 
-/* Rayquaza is now high-resolution cover art and fades into the storm instead of reading like a sticker. */
+.emerald-foreground-haze {
+  position: absolute;
+  z-index: 18;
+  left: 0;
+  right: 0;
+  bottom: 6%;
+  height: 11%;
+  opacity: .13;
+  background: linear-gradient(180deg, transparent, rgba(214,245,224,.35), transparent 78%);
+}
+
+/* Rayquaza: visible enough to establish identity, still atmospheric enough not to become wallpaper art. */
 .game-emerald .cover-mascot {
-  right: -10%;
+  right: -7%;
   top: 2%;
-  width: min(57vw, 860px);
-  opacity: .15;
-  transform: rotate(-8deg);
+  width: min(54vw, 820px);
+  opacity: .19;
+  transform: rotate(-7deg);
   mix-blend-mode: multiply;
-  mask-image: radial-gradient(ellipse at 56% 44%, #000 0 48%, rgba(0,0,0,.92) 58%, rgba(0,0,0,.48) 72%, transparent 90%);
+  mask-image: radial-gradient(ellipse at 56% 44%, #000 0 50%, rgba(0,0,0,.94) 60%, rgba(0,0,0,.5) 75%, transparent 92%);
+}
+
+.game-emerald .cover-mascot::after {
+  content: '';
+  position: absolute;
+  inset: 23%;
+  z-index: -1;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(191,244,159,.17), rgba(112,203,159,.05) 45%, transparent 68%);
+  filter: blur(18px);
 }
 
 .game-emerald .cover-mascot-aura,
@@ -352,24 +461,24 @@
   height: 96%;
   image-rendering: auto;
   filter:
-    saturate(.72)
+    saturate(.78)
     hue-rotate(-4deg)
-    brightness(.72)
+    brightness(.75)
     contrast(1.18)
-    drop-shadow(16px 18px 0 rgba(8,54,46,.06));
+    drop-shadow(16px 18px 0 rgba(8,54,46,.055));
 }
 
 @media (max-width: 1200px) {
   .game-emerald .cover-mascot {
-    right: -16%;
+    right: -13%;
     top: 7%;
     width: 610px;
-    opacity: .12;
+    opacity: .15;
   }
 
   .emerald-sky-pillar {
     left: 2%;
-    opacity: .1;
+    opacity: .11;
   }
 
   .emerald-energy-ring-a {
@@ -378,5 +487,9 @@
 
   .emerald-cloud-mass-b {
     right: -2%;
+  }
+
+  .emerald-lightning-b {
+    display: none;
   }
 }
