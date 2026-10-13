@@ -41,8 +41,19 @@ export function HomeScreen({ runs, onChooseGame, onMyRuns, onSettings }: Props) 
               <div className="game-grid" style={{ '--count': group.games.length } as React.CSSProperties}>
                 {group.games.map(game => {
                   const gameRuns = runs.filter(run => run.gameId === game.id)
+                  const tileStyle = {
+                    '--tile-accent': game.theme.accent,
+                    '--tile-accent-dark': game.theme.accentDark,
+                    '--tile-soft': game.theme.skySoft,
+                  } as React.CSSProperties
+
                   return (
-                    <button className="game-tile pixel-border" key={game.id} onClick={() => onChooseGame(game)}>
+                    <button
+                      className="game-tile themed-game-tile pixel-border"
+                      style={tileStyle}
+                      key={game.id}
+                      onClick={() => onChooseGame(game)}
+                    >
                       <span className="game-generation">GEN {game.generation} • {game.platform}</span>
                       <strong>{game.shortTitle}</strong>
                       <span className={`run-status ${gameRuns.length ? 'has-run' : ''}`}>
