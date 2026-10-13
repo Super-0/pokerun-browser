@@ -24,24 +24,39 @@ const COVER_MASCOTS: Record<GameId, { dexId: number, label?: string }> = {
   white2: { dexId: 646, label: 'WHITE KYUREM' },
 }
 
+const EMERALD_RAYQUAZA_ARTWORK = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork/384.png'
+
 export function GameBackdrop({ game }: { game: GameDefinition }) {
   const mascot = COVER_MASCOTS[game.id]
   const mascotName = mascot.label ?? getPokemonSpeciesName(mascot.dexId).toUpperCase()
-  const mascotSprite = getPokemonSpriteUrl(game.id, mascot.dexId)
+  const mascotSprite = game.id === 'emerald'
+    ? EMERALD_RAYQUAZA_ARTWORK
+    : getPokemonSpriteUrl(game.id, mascot.dexId)
   const isEmerald = game.id === 'emerald'
 
   return (
     <div className={`game-backdrop motif-${game.theme.motif} game-${game.id}`} aria-hidden="true">
       {isEmerald && (
         <div className="emerald-scene">
+          <div className="emerald-vignette" />
           <div className="emerald-storm-glow" />
-          <div className="emerald-cloud-band emerald-cloud-band-a" />
-          <div className="emerald-cloud-band emerald-cloud-band-b" />
-          <div className="emerald-cloud-band emerald-cloud-band-c" />
+
+          <div className="emerald-cloud-mass emerald-cloud-mass-a" />
+          <div className="emerald-cloud-mass emerald-cloud-mass-b" />
+          <div className="emerald-cloud-mass emerald-cloud-mass-c" />
+          <div className="emerald-cloud-mass emerald-cloud-mass-d" />
+
+          <div className="emerald-wind-arc emerald-wind-arc-a" />
+          <div className="emerald-wind-arc emerald-wind-arc-b" />
+          <div className="emerald-wind-arc emerald-wind-arc-c" />
+
           <div className="emerald-energy-ring emerald-energy-ring-a" />
           <div className="emerald-energy-ring emerald-energy-ring-b" />
           <div className="emerald-energy-ring emerald-energy-ring-c" />
+
           <div className="emerald-sky-pillar" />
+          <div className="emerald-island emerald-island-left" />
+          <div className="emerald-island emerald-island-right" />
           <div className="emerald-horizon-haze" />
         </div>
       )}
