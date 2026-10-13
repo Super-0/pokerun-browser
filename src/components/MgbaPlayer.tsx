@@ -108,7 +108,7 @@ export function MgbaPlayer({ game, run, onLiveState }: Props) {
         const { default: createMgba } = await import('@thenick775/mgba-wasm')
         if (cancelled) return
 
-        emulator = await createMgba({ canvas })
+        emulator = await createMgba({ canvas: canvas! })
         if (cancelled) {
           emulator.quitMgba()
           return
