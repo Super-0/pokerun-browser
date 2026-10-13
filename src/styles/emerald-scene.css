@@ -1,299 +1,210 @@
-.game-backdrop.game-emerald {
-  background: #0a4a44;
-}
-
-.game-backdrop.game-emerald::before,
-.game-backdrop.game-emerald::after {
-  display: none;
-}
-
-.game-emerald .theme-orb,
-.game-emerald .pixel-spark,
-.game-emerald .pixel-cloud,
-.game-emerald .distant-shape {
-  display: none;
-}
-
-.emerald-scene {
+.game-backdrop.emerald-poster {
   position: absolute;
   inset: 0;
   overflow: hidden;
   pointer-events: none;
   background:
     linear-gradient(180deg,
-      #063e3a 0 14%,
-      #07554b 14% 28%,
-      #0b6858 28% 43%,
-      #117866 43% 56%,
-      #4fa99a 56% 64%,
-      #75c0b6 64% 65%,
-      transparent 65% 100%);
+      #0c4a96 0 12%,
+      #0b5e92 12% 24%,
+      #087887 24% 38%,
+      #07867d 38% 50%,
+      #08966e 50% 63%,
+      #0d9d64 63% 76%,
+      #148f59 76% 88%,
+      #197e4e 88% 100%);
 }
 
-/* Everything in the Emerald scene is intentionally snapped to chunky, hard-edged shapes. */
-.emerald-vignette {
-  position: absolute;
-  inset: 0;
-  z-index: 18;
-  box-shadow:
-    inset 0 0 0 8px rgba(3, 34, 32, .13),
-    inset 0 0 0 16px rgba(3, 34, 32, .05);
-}
-
-.emerald-storm-glow {
-  position: absolute;
-  z-index: 1;
-  right: 8%;
-  top: 8%;
-  width: 312px;
-  height: 224px;
-  background:
-    linear-gradient(90deg, transparent 0 40px, rgba(139, 221, 185, .12) 40px 272px, transparent 272px),
-    linear-gradient(180deg, transparent 0 40px, rgba(139, 221, 185, .08) 40px 184px, transparent 184px);
-}
-
-.emerald-storm-shelf {
-  position: absolute;
-  z-index: 2;
-  left: 0;
-  right: 0;
-  top: 0;
-  height: 23%;
-  background:
-    linear-gradient(180deg, #052f2d 0 54%, #063c38 54% 72%, transparent 72%),
-    repeating-linear-gradient(90deg,
-      transparent 0 56px,
-      rgba(18, 82, 71, .55) 56px 120px,
-      transparent 120px 176px);
-  clip-path: polygon(
-    0 0,100% 0,100% 66%,94% 66%,94% 76%,84% 76%,84% 62%,72% 62%,72% 82%,60% 82%,60% 70%,48% 70%,48% 88%,34% 88%,34% 72%,22% 72%,22% 84%,10% 84%,10% 70%,0 70%
-  );
-}
-
-.emerald-rain {
-  position: absolute;
-  z-index: 3;
-  inset: 8% 0 35% 0;
-  opacity: .09;
-  background:
-    repeating-linear-gradient(120deg,
-      transparent 0 28px,
-      rgba(190, 244, 226, .72) 28px 31px,
-      transparent 31px 56px);
-  background-size: 56px 56px;
-}
-
-.emerald-cloud-mass {
-  position: absolute;
-  z-index: 4;
-  width: 112px;
-  height: 16px;
-  background: rgba(201, 244, 230, .24);
-  box-shadow:
-    16px -8px 0 rgba(201, 244, 230, .24),
-    32px -16px 0 rgba(201, 244, 230, .2),
-    56px -8px 0 rgba(201, 244, 230, .22),
-    80px 0 0 rgba(201, 244, 230, .18),
-    24px 8px 0 rgba(128, 199, 179, .15),
-    64px 8px 0 rgba(128, 199, 179, .13);
-}
-
-.emerald-cloud-mass-a { left: 3%; top: 16%; transform: scale(1.45); }
-.emerald-cloud-mass-b { right: 10%; top: 19%; transform: scale(1.05); opacity: .72; }
-.emerald-cloud-mass-c { left: 32%; top: 30%; transform: scale(.8); opacity: .48; }
-.emerald-cloud-mass-d { right: 33%; top: 39%; transform: scale(.62); opacity: .34; }
-
-/* Curved vector effects looked too slick next to the GBA UI, so keep these off in the pixel pass. */
-.emerald-wind-arc,
-.emerald-energy-ring,
-.emerald-lightning,
-.emerald-horizon-haze,
-.emerald-sea-reflection,
-.emerald-foreground-haze {
+.game-backdrop.emerald-poster::before,
+.game-backdrop.emerald-poster::after {
   display: none;
 }
 
-/* Sky Pillar is assembled from stacked rectangular tiers instead of a smooth silhouette. */
-.emerald-sky-pillar {
+/* One clean poster composition: flat bands, one mascot, almost no scenery. */
+.emerald-poster-mascot {
   position: absolute;
-  z-index: 7;
-  left: 7%;
-  bottom: 35%;
-  width: 56px;
-  height: 152px;
-  background:
-    repeating-linear-gradient(180deg, #155e55 0 16px, #1d7163 16px 20px),
-    #155e55;
-  opacity: .42;
-  box-shadow:
-    -8px 8px 0 rgba(8, 62, 57, .6),
-    8px 8px 0 rgba(8, 62, 57, .6),
-    -16px 64px 0 rgba(8, 62, 57, .4),
-    16px 64px 0 rgba(8, 62, 57, .4);
-}
-
-.emerald-sky-pillar::before {
-  content: '';
-  position: absolute;
-  left: 8px;
-  top: -32px;
-  width: 40px;
-  height: 32px;
-  background: #155e55;
-  box-shadow:
-    8px -8px 0 #155e55,
-    -8px 8px 0 #155e55,
-    8px 8px 0 #155e55;
-}
-
-.emerald-sky-pillar::after {
-  content: '';
-  position: absolute;
-  left: -16px;
-  bottom: -16px;
-  width: 88px;
-  height: 16px;
-  background: rgba(8, 62, 57, .62);
-}
-
-.emerald-island {
-  position: absolute;
-  z-index: 6;
-  bottom: 34.5%;
-  height: 32px;
-  background: rgba(12, 75, 64, .52);
-}
-
-.emerald-island-left {
-  left: 0;
-  width: 27%;
-  clip-path: polygon(0 100%,0 75%,8% 75%,8% 56%,16% 56%,16% 38%,24% 38%,24% 62%,34% 62%,34% 44%,44% 44%,44% 70%,58% 70%,58% 54%,70% 54%,70% 76%,100% 76%,100% 100%);
-}
-
-.emerald-island-right {
-  right: 0;
-  width: 24%;
-  opacity: .7;
-  clip-path: polygon(0 100%,0 76%,14% 76%,14% 58%,26% 58%,26% 42%,36% 42%,36% 66%,50% 66%,50% 50%,62% 50%,62% 70%,76% 70%,76% 56%,88% 56%,88% 74%,100% 74%,100% 100%);
-}
-
-.game-emerald .water-band {
-  bottom: 12%;
-  height: 24%;
-  border-top: 4px solid #93d6d0;
-  background:
-    repeating-linear-gradient(180deg,
-      #5aa6bb 0 4px,
-      #4d99b0 4px 8px,
-      #559fb6 8px 12px,
-      #438ca5 12px 16px),
-    #4d99b0;
-  opacity: 1;
-}
-
-.game-emerald .water-band::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background:
-    repeating-linear-gradient(90deg,
-      transparent 0 40px,
-      rgba(213, 245, 241, .16) 40px 56px,
-      transparent 56px 104px);
-  background-size: 104px 16px;
-}
-
-.game-emerald .water-band::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 40%;
-  height: 4px;
-  background: rgba(205, 241, 238, .16);
-  box-shadow:
-    128px 32px 0 rgba(205, 241, 238, .11),
-    448px -16px 0 rgba(205, 241, 238, .13),
-    832px 24px 0 rgba(205, 241, 238, .09);
-}
-
-.game-emerald .ground-band {
-  height: 12%;
-  background:
-    linear-gradient(180deg,
-      #5d9b58 0 16%,
-      #4e8a50 16% 42%,
-      #3f7a49 42% 70%,
-      #32683f 70% 100%);
-}
-
-.game-emerald .grass-edge {
-  bottom: 11.5%;
-  height: 12px;
-  background:
-    repeating-linear-gradient(90deg,
-      #9abb62 0 8px,
-      transparent 8px 16px,
-      #6f9c55 16px 24px,
-      transparent 24px 32px);
-  opacity: .8;
-}
-
-.game-emerald .foreground-detail {
-  height: 10%;
-  opacity: .42;
-  background:
-    repeating-linear-gradient(90deg,
-      #225c3d 0 4px,
-      transparent 4px 16px,
-      #2c6845 16px 20px,
-      transparent 20px 32px);
-  clip-path: polygon(0 100%,0 78%,3% 78%,3% 52%,6% 52%,6% 86%,10% 86%,10% 62%,14% 62%,14% 90%,18% 90%,18% 70%,22% 70%,22% 100%,100% 100%);
-}
-
-/* Emerald mascot: use the actual Emerald sprite and scale it with nearest-neighbor pixels. */
-.game-emerald .cover-mascot {
-  right: 4%;
-  top: 12%;
-  width: 384px;
-  height: 384px;
-  opacity: .2;
-  transform: none;
-  mix-blend-mode: normal;
+  right: 2%;
+  top: 8%;
+  width: min(58vw, 860px);
+  height: min(58vw, 860px);
+  min-width: 620px;
+  min-height: 620px;
   display: grid;
   place-items: center;
+  opacity: .34;
 }
 
-.game-emerald .cover-mascot-aura,
-.game-emerald .cover-mascot-copy {
-  display: none;
-}
-
-.game-emerald .cover-mascot-sprite {
-  width: 320px;
-  height: 320px;
+.emerald-poster-rayquaza {
+  position: relative;
+  z-index: 2;
+  width: 86%;
+  height: 86%;
   object-fit: contain;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
-  filter: none;
+  transform: scale(1.32) rotate(-5deg);
+  transform-origin: center;
+  filter: brightness(.74) saturate(1.12) contrast(1.08);
+}
+
+/* Yellow ring marks echo the Emerald title-screen image without adding modern effects. */
+.emerald-poster-ring {
+  position: absolute;
+  z-index: 3;
+  border: 10px solid #e8eb67;
+  border-radius: 50%;
+  opacity: .72;
+  image-rendering: pixelated;
+}
+
+.emerald-poster-ring::before,
+.emerald-poster-ring::after {
+  content: '';
+  position: absolute;
+  background: #e8eb67;
+}
+
+.emerald-poster-ring-a {
+  width: 92px;
+  height: 92px;
+  left: 15%;
+  top: 22%;
+}
+.emerald-poster-ring-a::before {
+  width: 34px;
+  height: 10px;
+  right: -24px;
+  top: 8px;
+}
+.emerald-poster-ring-a::after {
+  width: 10px;
+  height: 30px;
+  left: 8px;
+  bottom: -22px;
+}
+
+.emerald-poster-ring-b {
+  width: 72px;
+  height: 72px;
+  left: 7%;
+  top: 36%;
+}
+.emerald-poster-ring-b::before {
+  width: 28px;
+  height: 10px;
+  right: -20px;
+  top: 4px;
+}
+.emerald-poster-ring-b::after {
+  width: 10px;
+  height: 26px;
+  right: 3px;
+  bottom: -18px;
+}
+
+.emerald-poster-ring-c {
+  width: 82px;
+  height: 82px;
+  right: 18%;
+  bottom: 19%;
+}
+.emerald-poster-ring-c::before {
+  width: 30px;
+  height: 10px;
+  left: -22px;
+  top: 8px;
+}
+.emerald-poster-ring-c::after {
+  width: 10px;
+  height: 28px;
+  right: 8px;
+  top: -20px;
+}
+
+.emerald-poster-ring-d {
+  width: 64px;
+  height: 64px;
+  right: 4%;
+  bottom: 34%;
+  opacity: .58;
+}
+.emerald-poster-ring-d::before {
+  width: 26px;
+  height: 10px;
+  left: -18px;
+  bottom: 6px;
+}
+.emerald-poster-ring-d::after {
+  width: 10px;
+  height: 24px;
+  right: 5px;
+  top: -17px;
+}
+
+/* Very small block-cloud accents, like a GBA title screen rather than a scenic wallpaper. */
+.emerald-poster-cloud {
+  position: absolute;
+  height: 16px;
+  background: rgba(184, 224, 218, .28);
+  box-shadow:
+    24px -8px 0 rgba(184, 224, 218, .28),
+    48px 0 0 rgba(184, 224, 218, .28),
+    72px 8px 0 rgba(184, 224, 218, .18);
+}
+
+.emerald-poster-cloud-a {
+  width: 126px;
+  left: 3%;
+  top: 12%;
+}
+
+.emerald-poster-cloud-b {
+  width: 104px;
+  right: 5%;
+  top: 17%;
+  opacity: .7;
+  transform: scale(.82);
+}
+
+/* Thin hard horizon band. No gradient ocean, no illustrated terrain. */
+.emerald-poster-horizon {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 66%;
+  height: 8px;
+  background: #72c5b5;
+  box-shadow:
+    0 8px 0 #49a795,
+    0 16px 0 rgba(26, 121, 105, .72);
   opacity: .72;
 }
 
+/* Tiny dither texture keeps the large flat fields from feeling like PowerPoint shapes. */
+.emerald-poster-grain {
+  position: absolute;
+  inset: 0;
+  opacity: .09;
+  background-image:
+    linear-gradient(45deg, rgba(255,255,255,.5) 25%, transparent 25% 75%, rgba(255,255,255,.5) 75%),
+    linear-gradient(45deg, rgba(255,255,255,.5) 25%, transparent 25% 75%, rgba(255,255,255,.5) 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 4px 4px;
+  mix-blend-mode: soft-light;
+}
+
 @media (max-width: 1200px) {
-  .game-emerald .cover-mascot {
-    right: 1%;
-    top: 15%;
-    width: 300px;
-    height: 300px;
+  .emerald-poster-mascot {
+    right: -8%;
+    top: 12%;
+    min-width: 520px;
+    min-height: 520px;
+    width: 620px;
+    height: 620px;
+    opacity: .3;
   }
 
-  .game-emerald .cover-mascot-sprite {
-    width: 256px;
-    height: 256px;
-  }
-
-  .emerald-sky-pillar {
-    left: 3%;
-    opacity: .32;
+  .emerald-poster-ring {
+    transform: scale(.82);
   }
 }
