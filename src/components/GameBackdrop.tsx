@@ -40,6 +40,8 @@ export function GameBackdrop({ game }: { game: GameDefinition }) {
         <div className="emerald-scene">
           <div className="emerald-vignette" />
           <div className="emerald-storm-glow" />
+          <div className="emerald-storm-shelf" />
+          <div className="emerald-rain" />
 
           <div className="emerald-cloud-mass emerald-cloud-mass-a" />
           <div className="emerald-cloud-mass emerald-cloud-mass-b" />
@@ -54,10 +56,15 @@ export function GameBackdrop({ game }: { game: GameDefinition }) {
           <div className="emerald-energy-ring emerald-energy-ring-b" />
           <div className="emerald-energy-ring emerald-energy-ring-c" />
 
+          <div className="emerald-lightning emerald-lightning-a" />
+          <div className="emerald-lightning emerald-lightning-b" />
+
           <div className="emerald-sky-pillar" />
           <div className="emerald-island emerald-island-left" />
           <div className="emerald-island emerald-island-right" />
           <div className="emerald-horizon-haze" />
+          <div className="emerald-sea-reflection" />
+          <div className="emerald-foreground-haze" />
         </div>
       )}
 
