@@ -1,24 +1,18 @@
-.game-backdrop.emerald-map-backdrop {
+.game-backdrop.universal-pixel-backdrop {
   position: absolute;
   inset: 0;
   overflow: hidden;
   pointer-events: none;
-  background-color: #d8d4c2;
-  background-image: url('/backgrounds/sootopolis-bg.svg');
+  background-color: #75bee8;
+  background-image: url('/backgrounds/universal-pixel-bg.svg');
   background-repeat: no-repeat;
-  background-position: center top;
+  background-position: center center;
   background-size: cover;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
 }
 
-.game-backdrop.emerald-map-backdrop::before,
-.game-backdrop.emerald-map-backdrop::after {
+.game-backdrop.universal-pixel-backdrop::before,
+.game-backdrop.universal-pixel-backdrop::after {
   display: none;
-}
-
-@media (max-width: 1200px) {
-  .game-backdrop.emerald-map-backdrop {
-    background-position: center top;
-  }
 }
