@@ -1,0 +1,349 @@
+.themed-screen {
+  --ink: color-mix(in srgb, var(--theme-accent-dark) 78%, #172536);
+  --panel: color-mix(in srgb, white 84%, var(--theme-sky-soft));
+  --panel-blue: color-mix(in srgb, white 66%, var(--theme-sky-soft));
+  --accent: var(--theme-accent);
+  --accent-dark: var(--theme-accent-dark);
+  --theme-line: color-mix(in srgb, var(--theme-accent-dark) 38%, transparent);
+  --theme-muted: color-mix(in srgb, var(--theme-accent-dark) 64%, #6f8291);
+  --theme-panel-strong: color-mix(in srgb, white 74%, var(--theme-sky-soft));
+  --theme-panel-soft: color-mix(in srgb, white 82%, var(--theme-sky));
+  --theme-shadow: color-mix(in srgb, var(--theme-accent-dark) 34%, transparent);
+  --theme-glow: color-mix(in srgb, var(--theme-accent) 32%, white);
+  color: var(--ink);
+}
+
+.themed-screen .pixel-border {
+  box-shadow: 6px 6px 0 var(--theme-shadow);
+}
+
+.themed-screen .pixel-button {
+  background: var(--theme-accent);
+  box-shadow: 3px 3px 0 var(--theme-shadow);
+}
+
+.themed-screen .pixel-button:hover {
+  box-shadow: 5px 5px 0 var(--theme-shadow);
+}
+
+.themed-screen .pixel-button.ghost {
+  background: var(--theme-panel-strong);
+}
+
+.themed-screen .app-header,
+.themed-screen .setup-steps,
+.themed-screen .setup-summary,
+.themed-screen .emulator-toolbar,
+.themed-screen .hud-panel,
+.themed-screen .route-strip,
+.themed-screen .tracker-tabs,
+.themed-screen .dev-panel,
+.themed-screen .run-menu-card,
+.themed-screen .tracker-placeholder {
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  backdrop-filter: blur(3px);
+}
+
+.themed-screen .app-header {
+  border-top-color: color-mix(in srgb, var(--theme-accent) 68%, var(--ink));
+}
+
+.themed-screen .brand strong,
+.themed-screen .eyebrow,
+.themed-screen .step-heading > span,
+.themed-screen .hud-panel h2 {
+  color: var(--theme-accent-dark);
+}
+
+.themed-screen .game-chip,
+.themed-screen .choice-row button,
+.themed-screen .seed-row code,
+.themed-screen .randomizer-summary,
+.themed-screen .hud-stats span,
+.themed-screen .party-row,
+.themed-screen .run-data code,
+.themed-screen .settings-summary,
+.themed-screen .setting-toggle {
+  background: var(--theme-panel-strong);
+}
+
+.themed-screen .choice-row button.selected,
+.themed-screen .setting-option-row button.selected,
+.themed-screen .tracker-tabs button.active {
+  background: var(--theme-accent);
+  color: white;
+}
+
+.themed-screen .choice-row button:hover:not(.selected),
+.themed-screen .setting-option-row button:hover:not(.selected),
+.themed-screen .tracker-tabs button:hover:not(.active),
+.themed-screen .game-chip:hover {
+  background: var(--theme-glow);
+}
+
+.themed-screen .setup-step,
+.themed-screen .setup-summary dl,
+.themed-screen .setup-summary dl div,
+.themed-screen .route-strip > div {
+  border-color: var(--theme-line);
+}
+
+.themed-screen .step-heading p,
+.themed-screen dt,
+.themed-screen .setup-summary small,
+.themed-screen .route-strip span,
+.themed-screen .party-row.empty,
+.themed-screen .setting-toggle-copy small,
+.themed-screen .advanced-setting small {
+  color: var(--theme-muted);
+}
+
+.themed-screen .badge-row i {
+  background: color-mix(in srgb, var(--theme-panel-strong) 70%, var(--theme-accent-dark));
+}
+
+.themed-screen .badge-row i.earned {
+  background: color-mix(in srgb, var(--yellow) 72%, var(--theme-accent));
+}
+
+.themed-screen .party-row {
+  border-color: color-mix(in srgb, var(--ink) 88%, var(--theme-accent));
+}
+
+.themed-screen .sprite-box {
+  background: color-mix(in srgb, white 88%, var(--theme-sky-soft));
+}
+
+.themed-screen .hp-track {
+  background: color-mix(in srgb, var(--theme-panel-strong) 62%, var(--theme-accent-dark));
+}
+
+.themed-screen .hp-track i {
+  background: color-mix(in srgb, #62a663 70%, var(--theme-accent));
+}
+
+.themed-screen .advanced-setting {
+  border-color: var(--theme-line);
+  background: color-mix(in srgb, var(--theme-panel-strong) 82%, transparent);
+}
+
+.themed-screen .setting-toggle.enabled,
+.themed-screen .settings-summary em.on {
+  background: color-mix(in srgb, #dff1df 66%, var(--theme-sky-soft));
+}
+
+.themed-screen .setting-switch {
+  background: color-mix(in srgb, var(--theme-panel-strong) 62%, var(--theme-accent-dark));
+}
+
+.themed-screen .setting-toggle.enabled .setting-switch {
+  background: var(--theme-accent);
+}
+
+/* Richer game backdrops */
+.game-backdrop {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--theme-sky) 96%, white) 0%, var(--theme-sky-soft) 54%, color-mix(in srgb, var(--theme-sky-soft) 74%, var(--theme-ground)) 100%);
+}
+
+.game-backdrop::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: .16;
+  pointer-events: none;
+  background-image:
+    linear-gradient(90deg, rgba(255,255,255,.28) 1px, transparent 1px),
+    linear-gradient(rgba(255,255,255,.2) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: linear-gradient(to bottom, rgba(0,0,0,.65), transparent 72%);
+}
+
+.game-backdrop::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 29%;
+  height: 4px;
+  background: color-mix(in srgb, white 38%, var(--theme-accent));
+  opacity: .48;
+  box-shadow: 0 8px 0 color-mix(in srgb, var(--theme-accent) 22%, transparent);
+}
+
+.game-backdrop .pixel-cloud {
+  opacity: .78;
+  filter: drop-shadow(6px 6px 0 color-mix(in srgb, var(--theme-accent-dark) 16%, transparent));
+}
+
+.theme-orb {
+  position: absolute;
+  width: 108px;
+  height: 108px;
+  right: 9%;
+  top: 10%;
+  border: 8px solid color-mix(in srgb, white 54%, var(--theme-accent));
+  background: color-mix(in srgb, var(--theme-accent) 52%, white);
+  box-shadow: 12px 12px 0 color-mix(in srgb, var(--theme-accent-dark) 20%, transparent);
+  opacity: .5;
+}
+
+.pixel-spark {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  background: color-mix(in srgb, white 76%, var(--theme-accent));
+  box-shadow: 12px 0 0 currentColor, 0 12px 0 currentColor, 12px 12px 0 currentColor;
+  color: color-mix(in srgb, white 76%, var(--theme-accent));
+  opacity: .46;
+}
+
+.spark-a { left: 18%; top: 18%; }
+.spark-b { right: 28%; top: 28%; transform: scale(.7); }
+
+.foreground-detail {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 11%;
+  opacity: .24;
+  background: repeating-linear-gradient(90deg, var(--theme-accent-dark) 0 8px, transparent 8px 28px);
+  clip-path: polygon(0 100%,0 68%,3% 68%,3% 42%,6% 42%,6% 75%,10% 75%,10% 52%,14% 52%,14% 82%,18% 82%,18% 58%,22% 58%,22% 100%);
+}
+
+/* Motif personality */
+.motif-ocean .theme-orb { border-radius: 0; transform: rotate(45deg); opacity: .28; }
+.motif-ocean .water-band {
+  background:
+    repeating-linear-gradient(0deg, color-mix(in srgb, var(--theme-water) 88%, white) 0 9px, var(--theme-water) 9px 18px);
+}
+.motif-ocean .distant-shape.one {
+  left: 8%; width: 240px; height: 96px; border-radius: 50% 50% 0 0;
+}
+.motif-ocean .distant-shape.two {
+  right: 12%; width: 170px; height: 66px; border-radius: 50% 50% 0 0;
+}
+
+.motif-mountain .theme-orb { width: 78px; height: 78px; opacity: .26; }
+.motif-mountain .distant-shape { opacity: .24; }
+.motif-mountain .foreground-detail {
+  height: 16%;
+  clip-path: polygon(0 100%,0 82%,8% 68%,14% 84%,24% 52%,36% 88%,44% 72%,54% 90%,66% 55%,76% 86%,86% 64%,100% 82%,100% 100%);
+}
+
+.motif-city .theme-orb { width: 66px; height: 66px; opacity: .22; }
+.motif-city .foreground-detail {
+  height: 25%;
+  opacity: .17;
+  background: repeating-linear-gradient(90deg, var(--theme-accent-dark) 0 38px, transparent 38px 52px);
+  clip-path: polygon(0 100%,0 35%,7% 35%,7% 58%,12% 58%,12% 22%,20% 22%,20% 55%,28% 55%,28% 8%,35% 8%,35% 45%,43% 45%,43% 28%,51% 28%,51% 66%,60% 66%,60% 18%,68% 18%,68% 48%,78% 48%,78% 30%,88% 30%,88% 62%,100% 62%,100% 100%);
+}
+
+.motif-forest .theme-orb { opacity: .18; }
+.motif-forest .distant-shape.one { opacity: .26; }
+.motif-forest .foreground-detail {
+  height: 22%;
+  opacity: .24;
+  clip-path: polygon(0 100%,0 74%,4% 74%,4% 30%,8% 30%,8% 72%,12% 72%,12% 20%,17% 20%,17% 68%,24% 68%,24% 36%,30% 36%,30% 80%,37% 80%,37% 26%,43% 26%,43% 68%,51% 68%,51% 18%,57% 18%,57% 74%,65% 74%,65% 34%,72% 34%,72% 82%,80% 82%,80% 22%,86% 22%,86% 70%,93% 70%,93% 38%,100% 38%,100% 100%);
+}
+
+.motif-field .theme-orb { opacity: .38; }
+.motif-field .foreground-detail { opacity: .18; }
+
+.motif-sunset .game-backdrop,
+.game-backdrop.motif-sunset {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--theme-sky) 84%, #ffdf9a) 0%, var(--theme-sky-soft) 52%, color-mix(in srgb, var(--theme-ground) 58%, #6f5670) 100%);
+}
+.motif-sunset .theme-orb {
+  width: 132px;
+  height: 132px;
+  top: 13%;
+  background: color-mix(in srgb, #ffe38b 64%, var(--theme-accent));
+  border-color: color-mix(in srgb, #fff1bd 76%, var(--theme-accent));
+  opacity: .48;
+}
+
+/* A little extra identity for specific cartridges */
+.game-backdrop.game-emerald::before {
+  opacity: .2;
+  background-image:
+    linear-gradient(45deg, transparent 45%, rgba(255,255,255,.2) 45% 55%, transparent 55%),
+    linear-gradient(-45deg, transparent 45%, rgba(255,255,255,.12) 45% 55%, transparent 55%);
+  background-size: 32px 32px;
+}
+
+.game-backdrop.game-ruby .theme-orb,
+.game-backdrop.game-firered .theme-orb,
+.game-backdrop.game-red .theme-orb {
+  transform: rotate(45deg);
+}
+
+.game-backdrop.game-sapphire .theme-orb,
+.game-backdrop.game-blue .theme-orb,
+.game-backdrop.game-diamond .theme-orb {
+  border-width: 10px;
+  background: transparent;
+}
+
+.game-backdrop.game-crystal .theme-orb {
+  transform: rotate(45deg) scale(.86);
+  background: color-mix(in srgb, white 72%, var(--theme-accent));
+}
+
+.game-backdrop.game-platinum {
+  filter: saturate(.82) contrast(1.03);
+}
+
+.game-backdrop.game-black,
+.game-backdrop.game-black2 {
+  filter: saturate(.9) contrast(1.08);
+}
+
+/* Game library previews */
+.game-tile.themed-game-tile {
+  position: relative;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, white 80%, var(--tile-soft)) 0 70%, color-mix(in srgb, var(--tile-accent) 28%, white) 70% 100%);
+  border-color: color-mix(in srgb, var(--tile-accent-dark) 76%, #20364f);
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--tile-accent-dark) 22%, transparent);
+}
+
+.game-tile.themed-game-tile::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  background: var(--tile-accent);
+}
+
+.game-tile.themed-game-tile::after {
+  content: '';
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  right: -14px;
+  top: -14px;
+  border: 7px solid color-mix(in srgb, var(--tile-accent) 72%, white);
+  opacity: .34;
+  transform: rotate(45deg);
+}
+
+.game-tile.themed-game-tile:hover {
+  background:
+    linear-gradient(135deg, color-mix(in srgb, white 70%, var(--tile-soft)) 0 62%, color-mix(in srgb, var(--tile-accent) 42%, white) 62% 100%);
+  transform: translate(-1px, -3px);
+  box-shadow: 7px 7px 0 color-mix(in srgb, var(--tile-accent-dark) 24%, transparent);
+}
+
+.game-tile.themed-game-tile strong {
+  color: var(--tile-accent-dark);
+}
+
+.game-tile.themed-game-tile .run-status.has-run {
+  color: var(--tile-accent-dark);
+}
