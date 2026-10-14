@@ -16,6 +16,9 @@ type WasmEmulator = {
   readArm9U8(address: number): number
   readArm9U16(address: number): number
   readArm9U32(address: number): number
+  writeArm9U8(address: number, value: number): void
+  writeArm9U16(address: number, value: number): void
+  writeArm9U32(address: number, value: number): void
   delete?: () => void
 }
 
