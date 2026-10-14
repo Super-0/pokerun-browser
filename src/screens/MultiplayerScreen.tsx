@@ -7,7 +7,9 @@ import { loadRomFile } from '../core/rom/RomLoader'
 import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import { gameById } from '../data/games'
 import { LocalMultiplayerSession, type MultiplayerSessionSnapshot } from '../multiplayer/core/LocalMultiplayerSession'
+import type { MultiplayerPlayerState } from '../multiplayer/core/protocol'
 import { identifyWhite2Rom } from '../multiplayer/games/white2Rom'
+import { White2LiveStateAdapter } from '../multiplayer/games/White2LiveStateAdapter'
 import { multiplayerGames } from '../multiplayer/games/registry'
 import { BroadcastChannelTransport } from '../multiplayer/transports/BroadcastChannelTransport'
 import type { GameId } from '../types'
@@ -70,8 +72,59 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
   const remote = room.players.find(player => player.id !== session.localPlayerId)
   const remoteState = remote ? state.remoteStates[remote.id] : null
   const [bridge, setBridge] = useState<MelonDsBridge | null>(null)
+  const [localState, setLocalState] = useState<MultiplayerPlayerState | null>(null)
+  const [liveStateError, setLiveStateError] = useState<string | null>(null)
+  const localRomIdentity = state.localRom!.identity
+
+  useEffect(() => {
+    if (!bridge) {
+      setLocalState(null)
+      setLiveStateError(null)
+      return
+    }
+    if (!White2LiveStateAdapter.supportsRom(localRomIdentity)) {
+      setLocalState(null)
+      setLiveStateError('LIVE STATE IS NOT ENABLED FOR THIS WHITE 2 ROM FINGERPRINT.')
+      return
+    }
+
+    const adapter = new White2LiveStateAdapter(bridge)
+    let cancelled = false
+    let reading = false
+    let lastPublished = ''
+
+    async function poll() {
+      if (cancelled || reading) return
+      reading = true
+      try {
+        const live = await adapter.read()
+        if (cancelled) return
+        const normalized: MultiplayerPlayerState = { location: live.location, x: live.x, y: live.y, direction: live.direction }
+        setLocalState(normalized)
+        setLiveStateError(null)
+        const key = `${normalized.location.mapId}:${normalized.x}:${normalized.y}:${normalized.direction}`
+        if (key !== lastPublished) {
+          lastPublished = key
+          session.publishGameState(normalized)
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setLiveStateError(reason instanceof Error ? reason.message.toUpperCase() : 'WHITE 2 LIVE STATE READ FAILED.')
+        }
+      } finally {
+        reading = false
+      }
+    }
+
+    void poll()
+    const timer = window.setInterval(() => void poll(), 100)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [bridge, localRomIdentity, session])
+
+  const remoteDifferentMap = Boolean(localState && remoteState && localState.location.mapId !== remoteState.location.mapId)
+
   return <main className="screen themed-screen active-run" style={{ '--theme-sky': roomGame.theme.sky, '--theme-sky-soft': roomGame.theme.skySoft, '--theme-accent': roomGame.theme.accent, '--theme-accent-dark': roomGame.theme.accentDark, '--theme-ground': roomGame.theme.ground, '--theme-water': roomGame.theme.water } as React.CSSProperties}>
-    <div className="screen-shell"><AppHeader onHome={onHome} right={right}/><section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>Each tab runs its own local ROM. The multiplayer room remains connected.</p></div><PixelButton tone="ghost" onClick={() => session.leave()}>LEAVE SESSION</PixelButton></section><section className="emulator-column"><MelonDsPlayer game={roomGame} rom={state.localRom!.rom} onBridgeReady={setBridge}/></section>{import.meta.env.DEV && <White2MemoryResearchPanel bridge={bridge} rom={state.localRom!.identity}/>}<section className="multiplayer-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong><span>WAITING FOR WHITE 2 ADAPTER</span></div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}</span> : <span>NO REMOTE STATE YET</span>}</div></section></div>
+    <div className="screen-shell"><AppHeader onHome={onHome} right={right}/><section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>Each tab runs its own local ROM. The multiplayer room remains connected.</p></div><PixelButton tone="ghost" onClick={() => session.leave()}>LEAVE SESSION</PixelButton></section><section className="emulator-column"><MelonDsPlayer game={roomGame} rom={state.localRom!.rom} onBridgeReady={setBridge}/></section>{import.meta.env.DEV && <White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/>}<section className="multiplayer-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></div>
   </main>
 }
 
