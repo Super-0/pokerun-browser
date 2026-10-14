@@ -46,7 +46,7 @@ index 28334ab..6f5c9f0 100644
 +    .function("readArm9U16", &wasmelon::WasmEmulator::readArm9U16)
 +    .function("readArm9U32", &wasmelon::WasmEmulator::readArm9U32)
      .function("touchScreen", &wasmelon::WasmEmulator::touchScreen)
-     .function("releaseTouch", &wasmelon::WasmEmulator::releaseTouch)
+     .function("releaseScreen", &wasmelon::WasmEmulator::releaseScreen)
      .function("setInput", &wasmelon::WasmEmulator::setInput)
 diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.h b/wasmelonDS/src/frontend/wasm/WasmEmulator.h
 index ea63aec..c8812ce 100644
@@ -61,5 +61,5 @@ index ea63aec..c8812ce 100644
 +    melonDS::u32 readArm9U32(melonDS::u32 address);
 +
      void touchScreen(int x, int y);
-     void releaseTouch();
+     void releaseScreen();
      void writeSave(const melonDS::u8* savedata, melonDS::u32 savelen);
