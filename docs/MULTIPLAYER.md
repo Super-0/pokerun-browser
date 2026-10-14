@@ -8,9 +8,11 @@ local ROM validation—enter a common `GAME_START` session. ROM bytes never leav
 the browser tab that selected them.
 
 The melonDS boot and ARM9 bus boundary are documented in [`MELONDS.md`](MELONDS.md).
-This document does **not** claim White 2 map/position/direction reads or remote
-state exchange are working; no tested ROM bytes or verified memory structures
-are available in this worktree.
+For the first manually tested White 2 fingerprint, PokéRun now has a
+revision-specific live-state adapter for map, X, Y, and facing direction. The
+multiplayer runtime publishes normalized state between tabs and displays local
+and remote values in the debug panel. Remote overworld rendering is not yet
+implemented.
 
 ## Identity and room lifecycle
 
@@ -26,6 +28,9 @@ so duplicating a browser tab creates another multiplayer player instance.
 5. Both players must have verified White 2 headers and the exact same SHA-256
    before Ready is enabled.
 6. The host alone can issue `GAME_START` after both players are ready.
+7. Each tab boots its own local ROM while the multiplayer session remains alive.
+8. For a supported live-state fingerprint, each tab polls normalized player
+   state and publishes changed `GAME_STATE` packets.
 
 The room is capped at two players. Host migration and reconnect recovery remain
 future WebSocket-room work.
@@ -40,19 +45,31 @@ Every packet includes `version`, `senderId`, and `sentAt`.
 | `PLAYER_ROM` | Guest ROM identity update; never contains bytes |
 | `PLAYER_READY` | Ready request, accepted only by host for compatible ROMs |
 | `GAME_START` | Host-authoritative start with random `startId` epoch |
-| `GAME_STATE` | Future normalized player state, carrying `startId` and monotonic sequence |
+| `GAME_STATE` | Normalized player state with `startId` and monotonic sequence |
 | `PLAYER_LEAVE` | Explicit/page-close cleanup |
 
 `GAME_STATE` messages are ignored unless their `startId` matches the live room
 and their sequence is newer than the last state accepted for that remote player.
+The White 2 runtime currently sends state only when map/X/Y/direction changes,
+with a roughly 10 Hz polling loop.
 
 ## ROM policy
 
 The first compatibility policy is intentionally strict: same game and exact
-SHA-256. `white2Rom.ts` checks the NDS header title `POKEMON W2` and a Gen-5
-`IR?D` game code before marking a local ROM as verified. This is a header sanity
-check, not a claim of universal revision support. A specific tested hash must be
-documented before a White 2 memory adapter is enabled.
+SHA-256. `white2Rom.ts` requires the NDS header title `POKEMON W2` and an
+explicit known White 2 game-code whitelist (`IRDO`, `IRDJ`, `IRDS`, `IRDF`,
+`IRDI`, `IRDD`, `IRDK`) before marking the local ROM as verified.
+
+Header verification is separate from live-memory support. The first enabled
+live-state fingerprint is:
+
+```text
+54bec4091ba3eb89f4e1ee4e2f3421005835804376a34e5e45f3157e1f55625a
+```
+
+Other verified White 2 ROMs may enter a room, but the revision-specific live
+state reader remains disabled until their memory layout is independently
+validated.
 
 ## Runtime handoff
 
@@ -62,8 +79,14 @@ tab's `LoadedRom` directly from local multiplayer state and boots that tab's
 own bytes. It does not use the normal run store and does not send the ROM to
 the other tab.
 
-## Next evidence gate
+`White2LiveStateAdapter` owns the revision-specific ARM9 addresses and exposes
+only generic `MultiplayerPlayerState` data to the multiplayer layer. The game
+screen displays local and remote map/X/Y/direction values; if map IDs differ it
+marks the remote player as being in a different location.
 
-Use a legal local White 2 ROM to record its exact SHA-256, region/game code,
-and repeatable ARM9 observations. Only then add `White2LiveStateAdapter` and
-enable local/remote coordinates in the multiplayer debug panel.
+## Next milestone
+
+Manually verify two-tab live state exchange in the Codespace, including movement
+in both directions and a map transition. After that, keep remote-avatar
+injection as a separate phase rather than mixing it with memory discovery or
+room synchronization.
