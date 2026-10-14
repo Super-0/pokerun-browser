@@ -15,8 +15,11 @@ if (!existsSync(resolve(source, '.git'))) throw new Error('Missing third_party/d
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim()
 if (revision !== expectedRevision) throw new Error(`DS Anywhere must be pinned to ${expectedRevision}; found ${revision}.`)
 
-try { run('git', ['apply', '--reverse', '--check', patch], source) }
-catch { run('git', ['apply', '--check', patch], source); run('git', ['apply', patch], source) }
+// The patch is PokéRun-owned and can change while the pinned upstream revision stays fixed.
+// Always restore tracked upstream files first so an older applied patch cannot block a newer one.
+run('git', ['reset', '--hard', expectedRevision], source)
+run('git', ['apply', '--check', patch], source)
+run('git', ['apply', patch], source)
 
 run('emcmake', ['cmake', '-S', 'wasmelonDS', '-B', build, '-DBUILD_QT_SDL=OFF', '-DENABLE_OGLRENDERER=OFF', '-DENABLE_GDBSTUB=OFF'], source)
 run('cmake', ['--build', build, '--target', 'wasmemulator', '-j2'], source)
