@@ -6,6 +6,13 @@ import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
 
+export type DsPartnerMarker = {
+  dx: number
+  dy: number
+  direction: 'north' | 'south' | 'east' | 'west'
+  label?: string
+}
+
 interface Props {
   game: GameDefinition
   run?: RunState
@@ -14,6 +21,7 @@ interface Props {
   saveKey?: string
   batterySave?: Uint8Array | null
   onBatterySave?: (save: Uint8Array) => void | Promise<void>
+  partnerMarker?: DsPartnerMarker | null
 }
 
 const keys: Record<string, DsButton> = {
@@ -24,6 +32,7 @@ const keys: Record<string, DsButton> = {
 
 const SPEED_STORAGE_KEY = 'pokerun-melonds-speed'
 const SPEED_OPTIONS: DsSpeedMultiplier[] = [1, 2, 4]
+const directionGlyph = { north: '↑', south: '↓', east: '→', west: '←' } as const
 
 function storedSpeed(): DsSpeedMultiplier {
   const value = Number(localStorage.getItem(SPEED_STORAGE_KEY))
@@ -35,7 +44,7 @@ function formatBytes(bytes: Uint8Array) {
 }
 
 /** React shell only: frame rendering and emulated-memory access stay inside MelonDsBridge. */
-export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave }: Props) {
+export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave, partnerMarker }: Props) {
   const topRef = useRef<HTMLCanvasElement>(null)
   const bottomRef = useRef<HTMLCanvasElement>(null)
   const bridgeRef = useRef<MelonDsBridge | null>(null)
@@ -135,6 +144,11 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
     }
   }
 
+  const partnerStyle = partnerMarker ? {
+    '--partner-x': `${50 + partnerMarker.dx * 6.25}%`,
+    '--partner-y': `${52 + partnerMarker.dy * (100 / 12)}%`,
+  } as React.CSSProperties : undefined
+
   return (
     <div className="melonds-player">
       <div className="emulator-toolbar pixel-border">
@@ -146,7 +160,13 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
         <span>DUAL SCREEN</span>
       </div>
       <div className="melonds-stack pixel-border">
-        <canvas ref={topRef} className="melonds-screen" width={256} height={192} aria-label="Nintendo DS top screen" />
+        <div className="melonds-screen-wrap">
+          <canvas ref={topRef} className="melonds-screen" width={256} height={192} aria-label="Nintendo DS top screen" />
+          {ready && partnerMarker && <div className={`ds-partner-marker facing-${partnerMarker.direction}`} style={partnerStyle} aria-label={`${partnerMarker.label ?? 'Partner'} at ${partnerMarker.dx}, ${partnerMarker.dy} tiles from you`}>
+            <span className="ds-partner-label">{partnerMarker.label ?? 'P2'}</span>
+            <span className="ds-partner-avatar" aria-hidden="true"><i>{directionGlyph[partnerMarker.direction]}</i></span>
+          </div>}
+        </div>
         <canvas ref={bottomRef} className="melonds-screen touch" width={256} height={192} aria-label="Nintendo DS touch screen" onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); bridgeRef.current?.touch(event.clientX, event.clientY) }} onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) bridgeRef.current?.touch(event.clientX, event.clientY) }} onPointerUp={() => bridgeRef.current?.releaseTouch()} onPointerCancel={() => bridgeRef.current?.releaseTouch()} />
         {status !== 'running' && <div className={`melonds-status ${status === 'error' ? 'error' : ''}`}><strong>{status === 'error' ? 'EMULATOR ERROR' : 'BOOTING'}</strong><span>{statusText}</span></div>}
       </div>
