@@ -85,6 +85,30 @@
   cursor: not-allowed;
 }
 
+.emulator-speed-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px;
+  border: 2px solid #9ba8b5;
+  background: #edf2f5;
+}
+
+.emulator-speed-controls button {
+  min-width: 28px;
+  padding: 5px 7px;
+  border: 0;
+  background: transparent;
+  color: #243445;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.emulator-speed-controls button.active {
+  background: #243445;
+  color: #fff;
+}
+
 .melonds-player { display: grid; gap: 12px; }
 .melonds-stack {
   position: relative;
