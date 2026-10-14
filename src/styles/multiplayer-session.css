@@ -1,0 +1,243 @@
+.multiplayer-play-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 240px) minmax(0, 560px) minmax(190px, 240px);
+  align-items: start;
+  justify-content: center;
+  gap: 18px;
+  margin-top: 18px;
+}
+
+.multiplayer-emulator-center {
+  min-width: 0;
+}
+
+.multiplayer-emulator-center .emulator-column {
+  margin: 0;
+}
+
+.multiplayer-player-panel {
+  display: grid;
+  align-content: start;
+  gap: 0;
+  min-height: 100%;
+  padding: 14px;
+  background: rgba(248,252,247,.97);
+  color: #17212b;
+  box-shadow: 8px 8px 0 rgba(32,54,79,.18);
+}
+
+.multiplayer-player-heading {
+  padding-bottom: 12px;
+  border-bottom: 2px solid rgba(37,54,74,.25);
+}
+
+.multiplayer-player-heading h2 {
+  margin: 4px 0 0;
+  font-size: 19px;
+  line-height: 1.05;
+}
+
+.multiplayer-player-section {
+  display: grid;
+  gap: 8px;
+  padding: 14px 0;
+  border-bottom: 2px solid rgba(37,54,74,.18);
+}
+
+.multiplayer-panel-label {
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .11em;
+}
+
+.multiplayer-location-name {
+  font-family: 'Silkscreen', sans-serif;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.multiplayer-location-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.multiplayer-location-meta span {
+  padding: 4px 6px;
+  border: 2px solid rgba(37,54,74,.28);
+  background: #fff;
+}
+
+.multiplayer-player-section small {
+  font-size: 8px;
+  line-height: 1.45;
+  color: #5a6674;
+}
+
+.multiplayer-section-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.multiplayer-badges {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 7px;
+}
+
+.multiplayer-badges span {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  min-width: 0;
+  border: 2px solid #9eabb6;
+  background: #eef2f3;
+  color: #87939f;
+  font-family: 'Silkscreen', sans-serif;
+  font-size: 8px;
+}
+
+.multiplayer-badges span.earned {
+  border-color: var(--theme-accent-dark, #25364a);
+  background: var(--theme-accent, #90b4c8);
+  color: #0d1821;
+  box-shadow: inset -3px -3px 0 rgba(0,0,0,.14);
+}
+
+.multiplayer-party-section {
+  border-bottom: 0;
+}
+
+.multiplayer-party-list {
+  display: grid;
+  gap: 6px;
+}
+
+.multiplayer-party-slot {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  padding: 6px;
+  border: 2px solid rgba(37,54,74,.28);
+  background: #fff;
+}
+
+.multiplayer-party-slot > span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  background: #25364a;
+  color: white;
+  font-family: 'Silkscreen', sans-serif;
+  font-size: 7px;
+}
+
+.multiplayer-party-slot > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.multiplayer-party-slot strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+}
+
+.multiplayer-party-slot small {
+  font-size: 7px;
+}
+
+.multiplayer-party-slot.empty {
+  opacity: .58;
+}
+
+.multiplayer-party-hp {
+  height: 5px;
+  overflow: hidden;
+  border: 1px solid #5c6874;
+  background: #dbe0e3;
+}
+
+.multiplayer-party-hp i {
+  display: block;
+  height: 100%;
+  background: var(--theme-accent-dark, #25364a);
+}
+
+.multiplayer-proximity {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 9px;
+  border: 2px solid rgba(37,54,74,.28);
+  background: #fff;
+  font-size: 8px;
+}
+
+.multiplayer-proximity-dot {
+  width: 9px;
+  height: 9px;
+  border: 2px solid #25364a;
+  background: #aab3bb;
+}
+
+.multiplayer-proximity.together .multiplayer-proximity-dot {
+  background: #58a66a;
+}
+
+.multiplayer-proximity.apart .multiplayer-proximity-dot {
+  background: #d39847;
+}
+
+.multiplayer-session-debug {
+  margin-top: 18px;
+}
+
+@media (max-width: 1180px) {
+  .multiplayer-play-layout {
+    grid-template-columns: minmax(165px, 200px) minmax(0, 520px) minmax(165px, 200px);
+    gap: 12px;
+  }
+
+  .multiplayer-player-panel {
+    padding: 10px;
+  }
+}
+
+@media (max-width: 980px) {
+  .multiplayer-play-layout {
+    grid-template-columns: 1fr;
+    width: min(100%, 620px);
+    margin-inline: auto;
+  }
+
+  .multiplayer-emulator-center {
+    order: 1;
+  }
+
+  .multiplayer-player-panel:first-child {
+    order: 0;
+  }
+
+  .multiplayer-player-panel:last-child {
+    order: 2;
+  }
+
+  .multiplayer-badges {
+    grid-template-columns: repeat(8, 1fr);
+  }
+
+  .multiplayer-party-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
