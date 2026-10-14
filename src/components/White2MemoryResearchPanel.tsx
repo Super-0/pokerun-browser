@@ -9,6 +9,9 @@ const MAX_LENGTH = 0x10000
 const TESTED_WHITE2_SHA256 = '54bec4091ba3eb89f4e1ee4e2f3421005835804376a34e5e45f3157e1f55625a'
 const WHITE2_BASE_POINTER = 0x02000024
 const WHITE2_POSITION_OFFSET = 0x36780
+const SCRATCH_ACTOR_SLOT = 11
+const SCRATCH_TEST_OFFSET = 0xfc
+const SCRATCH_TEST_MARKER = 0x50524b4e
 
 type Comparison = { label: string; before: Arm9Snapshot; after: Arm9Snapshot; changes: Arm9ByteChange[] }
 type PositionProbe = { base: number; position: number; map: number; x: number; y: number; z: number }
@@ -37,6 +40,8 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
   const [actorHeapScan, setActorHeapScan] = useState<White2ActorHeapScan | null>(null)
   const [actorHeapScanError, setActorHeapScanError] = useState<string | null>(null)
   const [actorHeapScanBusy, setActorHeapScanBusy] = useState(false)
+  const [scratchWriteBusy, setScratchWriteBusy] = useState(false)
+  const [scratchWriteResult, setScratchWriteResult] = useState<string | null>(null)
 
   const probeEnabled = rom.sha256?.toLowerCase() === TESTED_WHITE2_SHA256
 
@@ -79,6 +84,7 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
       setActorProbeError(null)
       setActorHeapScan(null)
       setActorHeapScanError(null)
+      setScratchWriteResult(null)
       return
     }
     const actorSystem = new White2ActorSystemProbe(bridge)
@@ -111,6 +117,7 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
     if (!bridge || !probeEnabled || !White2ActorSystemProbe.supportsRom(rom)) return
     setActorHeapScanBusy(true)
     setActorHeapScanError(null)
+    setScratchWriteResult(null)
     try {
       setActorHeapScan(await new White2ActorSystemProbe(bridge).scanHeap())
     } catch (reason) {
@@ -135,6 +142,48 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
       ...actorHeapScan.entries.map(entry => `SLOT ${entry.index} ${entry.state.toUpperCase()} @0x${hex(entry.address, 8)} FLAGS 0x${hex(entry.flags, 8)} MOVE 0x${hex(entry.movementFlags, 8)} UID ${entry.uid} MODEL ${entry.modelId} ZONE ${entry.zoneId} X ${entry.x} Y ${entry.y} H ${entry.height} FACE ${entry.faceDir} TCB 0x${hex(entry.tcb, 8)} OWNER 0x${hex(entry.actorSystemBackptr, 8)} MOVEVT 0x${hex(entry.moveCodeVTable, 8)} SCENEVT 0x${hex(entry.sceneNodeVTable, 8)}`),
     ]
     void navigator.clipboard.writeText(lines.join('\n')).then(() => setActorHeapScanError('ACTOR HEAP SCAN COPIED.')).catch(() => setActorHeapScanError('COPY FAILED: BROWSER CLIPBOARD PERMISSION WAS DENIED.'))
+  }
+
+  async function testScratchActorWrite() {
+    if (!bridge || !probeEnabled || !White2ActorSystemProbe.supportsRom(rom)) return
+    setScratchWriteBusy(true)
+    setScratchWriteResult(null)
+    setActorHeapScanError(null)
+    const wasRunning = bridge.status === 'running'
+    let testAddress: number | null = null
+    let originalValue: number | null = null
+    try {
+      if (wasRunning) await bridge.pause()
+      const actorSystem = new White2ActorSystemProbe(bridge)
+      const freshScan = await actorSystem.scanHeap()
+      setActorHeapScan(freshScan)
+      if (freshScan.suspiciousSlots.length) throw new Error('Scratch write blocked because suspicious actor slots are present.')
+      const candidate = freshScan.entries.find(entry => entry.index === SCRATCH_ACTOR_SLOT)
+      if (!candidate || candidate.state !== 'zeroed') throw new Error(`Scratch write blocked because slot ${SCRATCH_ACTOR_SLOT} is no longer zeroed.`)
+
+      testAddress = candidate.address + SCRATCH_TEST_OFFSET
+      originalValue = await bridge.read32(testAddress)
+      if (originalValue !== 0) throw new Error(`Scratch write blocked because 0x${hex(testAddress, 8)} is not zero.`)
+
+      await bridge.write32(testAddress, SCRATCH_TEST_MARKER)
+      const readback = await bridge.read32(testAddress)
+      if (readback !== SCRATCH_TEST_MARKER) throw new Error(`Write/readback mismatch at 0x${hex(testAddress, 8)}.`)
+
+      await bridge.write32(testAddress, originalValue)
+      const restored = await bridge.read32(testAddress)
+      if (restored !== originalValue) throw new Error(`Restore verification failed at 0x${hex(testAddress, 8)}.`)
+
+      setScratchWriteResult(`PASS • SLOT ${SCRATCH_ACTOR_SLOT} +0x${hex(SCRATCH_TEST_OFFSET)} • WROTE 0x${hex(SCRATCH_TEST_MARKER, 8)} • READ BACK • RESTORED 0x${hex(restored, 8)}`)
+      setActorHeapScan(await actorSystem.scanHeap())
+    } catch (reason) {
+      if (testAddress !== null && originalValue !== null) {
+        try { await bridge.write32(testAddress, originalValue) } catch { /* best-effort restore before reporting failure */ }
+      }
+      setScratchWriteResult(reason instanceof Error ? `FAIL • ${reason.message.toUpperCase()}` : 'FAIL • SCRATCH WRITE TEST FAILED.')
+    } finally {
+      if (wasRunning) await bridge.resume()
+      setScratchWriteBusy(false)
+    }
   }
 
   function range() {
@@ -191,13 +240,15 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
   const option = (index: number) => snapshotLabel(index)
   const visibleChanges = comparisons.flatMap(comparison => comparison.changes.map(change => ({ comparison: comparison.label, change }))).slice(0, 500)
   const nonActiveActorEntries = actorHeapScan?.entries.filter(entry => entry.state !== 'active' && entry.state !== 'player') ?? []
+  const scratchWriteReady = !!actorHeapScan && actorHeapScan.suspiciousSlots.length === 0 && actorHeapScan.zeroedSlots.includes(SCRATCH_ACTOR_SLOT)
 
   return <section className="white2-memory-research pixel-border"><h2>WHITE 2 ARM9 MEMORY RESEARCH</h2><p>Reads the emulated ARM9 bus, not the WASM heap. Capture only controlled, bounded ranges; no bytes leave this tab.</p>
     <div className="memory-results"><strong>EXPERIMENTAL POSITION PROBE</strong>{!probeEnabled ? <span>DISABLED FOR THIS ROM FINGERPRINT.</span> : !bridge ? <span>WAITING FOR MELONDS.</span> : probeError ? <span className="form-error">{probeError}</span> : probe ? <><code>BASE PTR 0x{hex(probe.base, 8)}</code><code>POS STRUCT 0x{hex(probe.position, 8)}</code><code>MAP {probe.map} • X {probe.x} • Y {probe.y} • Z {probe.z}</code><span>VALIDATED POSITION STRUCT FOR THE TESTED WHITE 2 FINGERPRINT.</span></> : <span>READING POSITION DATA...</span>}</div>
     <div className="memory-results"><strong>FIELD ACTOR SYSTEM PROBE</strong>{!probeEnabled ? <span>DISABLED FOR THIS ROM FINGERPRINT.</span> : !bridge ? <span>WAITING FOR MELONDS.</span> : actorProbeError ? <span className="form-error">{actorProbeError}</span> : actorProbe ? <><code>GSYS 0x{hex(actorProbe.gameSystem, 8)} • GAME DATA 0x{hex(actorProbe.gameData, 8)}</code><code>ACTOR SYSTEM 0x{hex(actorProbe.actorSystem, 8)} • HEAP 0x{hex(actorProbe.actorHeap, 8)}</code><code>ACTORS {actorProbe.count}/{actorProbe.capacity}</code>{actorProbe.playerActor ? <code>PLAYER SLOT {actorProbe.playerActor.index} • 0x{hex(actorProbe.playerActor.address, 8)} • MODEL {actorProbe.playerActor.modelId} • ZONE {actorProbe.playerActor.zoneId} • X {actorProbe.playerActor.x} Y {actorProbe.playerActor.y} H {actorProbe.playerActor.height} • FACE {actorProbe.playerActor.faceDir}</code> : <span>ACTOR HEAP FOUND; PLAYER UID 0xFF NOT FOUND.</span>}<span>READ ONLY — USE THE ONE-SHOT INVENTORY BEFORE ANY NATIVE ACTOR WORK.</span></> : <span>READING FIELD ACTOR SYSTEM...</span>}
-      <div className="memory-compare"><PixelButton tone="ghost" disabled={!bridge || !probeEnabled || actorHeapScanBusy} onClick={() => void scanActorHeap()}>{actorHeapScanBusy ? 'SCANNING 64 SLOTS...' : 'SCAN ACTOR HEAP'}</PixelButton><PixelButton tone="ghost" disabled={!actorHeapScan} onClick={copyActorHeapScan}>COPY HEAP SCAN</PixelButton></div>
+      <div className="memory-compare"><PixelButton tone="ghost" disabled={!bridge || !probeEnabled || actorHeapScanBusy || scratchWriteBusy} onClick={() => void scanActorHeap()}>{actorHeapScanBusy ? 'SCANNING 64 SLOTS...' : 'SCAN ACTOR HEAP'}</PixelButton><PixelButton tone="ghost" disabled={!actorHeapScan || scratchWriteBusy} onClick={copyActorHeapScan}>COPY HEAP SCAN</PixelButton><PixelButton tone="danger" disabled={!scratchWriteReady || scratchWriteBusy || actorHeapScanBusy} onClick={() => void testScratchActorWrite()}>{scratchWriteBusy ? 'TESTING + RESTORING...' : 'TEST SLOT 11 WRITE + RESTORE'}</PixelButton></div>
       {actorHeapScanError && <span className={actorHeapScanError === 'ACTOR HEAP SCAN COPIED.' ? 'memory-ok' : 'form-error'}>{actorHeapScanError}</span>}
-      {actorHeapScan && <><code>INVENTORY • PLAYER {actorHeapScan.playerSlots.length} • ACTIVE {actorHeapScan.activeSlots.length} • ZEROED {actorHeapScan.zeroedSlots.length} • DETACHED {actorHeapScan.detachedSlots.length} • SUSPICIOUS {actorHeapScan.suspiciousSlots.length}</code><code>ZEROED CANDIDATES: {slots(actorHeapScan.zeroedSlots)}</code><code>DETACHED SLOTS: {slots(actorHeapScan.detachedSlots)}</code><code>SUSPICIOUS SLOTS: {slots(actorHeapScan.suspiciousSlots)}</code>{nonActiveActorEntries.map(entry => <code key={entry.index}>SLOT {entry.index} • {entry.state.toUpperCase()} • UID {entry.uid} MODEL {entry.modelId} • X {entry.x} Y {entry.y} H {entry.height} • TCB 0x{hex(entry.tcb, 8)} • OWNER 0x{hex(entry.actorSystemBackptr, 8)}</code>)}<span>ZEROED MEANS ALL CHECKED IDENTITY/RUNTIME FIELDS WERE ZERO. DETACHED MEANS RUNTIME POINTERS WERE ZERO BUT OTHER DATA REMAINED. NEITHER IS WRITTEN TO YET.</span></>}
+      {scratchWriteResult && <span className={scratchWriteResult.startsWith('PASS') ? 'memory-ok' : 'form-error'}>{scratchWriteResult}</span>}
+      {actorHeapScan && <><code>INVENTORY • PLAYER {actorHeapScan.playerSlots.length} • ACTIVE {actorHeapScan.activeSlots.length} • ZEROED {actorHeapScan.zeroedSlots.length} • DETACHED {actorHeapScan.detachedSlots.length} • SUSPICIOUS {actorHeapScan.suspiciousSlots.length}</code><code>ZEROED CANDIDATES: {slots(actorHeapScan.zeroedSlots)}</code><code>DETACHED SLOTS: {slots(actorHeapScan.detachedSlots)}</code><code>SUSPICIOUS SLOTS: {slots(actorHeapScan.suspiciousSlots)}</code>{nonActiveActorEntries.map(entry => <code key={entry.index}>SLOT {entry.index} • {entry.state.toUpperCase()} • UID {entry.uid} MODEL {entry.modelId} • X {entry.x} Y {entry.y} H {entry.height} • TCB 0x{hex(entry.tcb, 8)} • OWNER 0x{hex(entry.actorSystemBackptr, 8)}</code>)}<span>ZEROED MEANS ALL CHECKED IDENTITY/RUNTIME FIELDS WERE ZERO. THE SLOT 11 TEST PAUSES MELONDS, RE-SCANS THE HEAP, WRITES ONE 32-BIT MARKER AT +0xFC, VERIFIES IT, RESTORES THE ORIGINAL VALUE, VERIFIES RESTORE, THEN RESUMES. NO FRAME RUNS WITH THE MARKER PRESENT.</span></>}
     </div>
     <div className="memory-inputs"><label>START ADDRESS <input value={addressText} onChange={event => setAddressText(event.target.value)} inputMode="text" spellCheck="false"/></label><label>LENGTH <input value={lengthText} onChange={event => setLengthText(event.target.value)} inputMode="numeric"/></label><PixelButton disabled={busy || !bridge} onClick={() => void capture()}>{busy ? 'CAPTURING...' : 'CAPTURE SNAPSHOT'}</PixelButton></div>
     <div className="memory-snapshots"><strong>SNAPSHOTS</strong>{snapshots.length ? snapshots.map((snapshot, index) => <span key={`${snapshot.capturedAt}-${index}`}>{option(index)} • 0x{hex(snapshot.address, 8)} • {snapshot.bytes.length} B • {date(snapshot.capturedAt)}</span>) : <span>NONE YET — CAPTURE A WHILE STANDING STILL.</span>}</div>
