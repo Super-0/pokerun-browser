@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { MelonDsPlayer } from '../components/MelonDsPlayer'
+import { MultiplayerPlayerPanel } from '../components/MultiplayerPlayerPanel'
 import { White2MemoryResearchPanel } from '../components/White2MemoryResearchPanel'
 import { PixelButton } from '../components/PixelButton'
 import { loadRomFile } from '../core/rom/RomLoader'
@@ -15,6 +16,7 @@ import { multiplayerGames } from '../multiplayer/games/registry'
 import { BroadcastChannelTransport } from '../multiplayer/transports/BroadcastChannelTransport'
 import type { GameId } from '../types'
 import '../styles/my-runs.css'
+import '../styles/multiplayer-session.css'
 
 interface Props { onHome: () => void; onMyRuns: () => void; onSettings: () => void }
 
@@ -100,7 +102,10 @@ function RomStatus({ player, compatible }: { player: MultiplayerSessionSnapshot[
 
 function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame: typeof gameById[GameId]; session: LocalMultiplayerSession; state: MultiplayerSessionSnapshot; onHome: () => void; right: React.ReactNode }) {
   const room = state.room!
+  const localPlayer = room.players.find(player => player.id === session.localPlayerId)
+  const localIndex = Math.max(0, room.players.findIndex(player => player.id === session.localPlayerId))
   const remote = room.players.find(player => player.id !== session.localPlayerId)
+  const remoteIndex = Math.max(0, room.players.findIndex(player => player.id !== session.localPlayerId))
   const remoteState = remote ? state.remoteStates[remote.id] : null
   const [bridge, setBridge] = useState<MelonDsBridge | null>(null)
   const [localState, setLocalState] = useState<MultiplayerPlayerState | null>(null)
@@ -178,9 +183,23 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
   }, [bridge, localRomIdentity, session])
 
   const remoteDifferentMap = Boolean(localState && remoteState && localState.location.mapId !== remoteState.location.mapId)
+  const relation: 'together' | 'apart' | 'waiting' = !localState || !remoteState ? 'waiting' : remoteDifferentMap ? 'apart' : 'together'
+  const localLabel = localPlayer?.label && localPlayer.label !== 'PLAYER' ? localPlayer.label : 'YOU'
+  const remoteLabel = remote?.label && remote.label !== 'PLAYER' ? remote.label : 'PARTNER'
 
   return <main className="screen themed-screen active-run" style={{ '--theme-sky': roomGame.theme.sky, '--theme-sky-soft': roomGame.theme.skySoft, '--theme-accent': roomGame.theme.accent, '--theme-accent-dark': roomGame.theme.accentDark, '--theme-ground': roomGame.theme.ground, '--theme-water': roomGame.theme.water } as React.CSSProperties}>
-    <div className="screen-shell"><AppHeader onHome={onHome} right={right}/><section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>Each tab runs its own local ROM. Use Pokémon's normal Save command; PokéRun mirrors that cartridge save into local browser storage.</p><span className={saveStatus === 'LOCAL SAVE FAILED' ? 'form-error' : 'memory-ok'}>{saveStatus}</span></div><PixelButton tone="ghost" onClick={() => session.leave()}>LEAVE SESSION</PixelButton></section><section className="emulator-column">{batteryReady ? <MelonDsPlayer game={roomGame} rom={state.localRom!.rom} onBridgeReady={setBridge} saveKey={saveProfileId ?? session.localPlayerId} batterySave={batterySave} onBatterySave={persistBatterySave}/> : <section className="runs-empty pixel-border"><h2>RESTORING LOCAL SAVE...</h2></section>}</section>{import.meta.env.DEV && <White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/>}<section className="multiplayer-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></div>
+    <div className="screen-shell">
+      <AppHeader onHome={onHome} right={right}/>
+      <section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>Both players keep independent saves. Live position is shared between the two games; party and gym reads are the next adapter fields.</p><span className={saveStatus === 'LOCAL SAVE FAILED' ? 'form-error' : 'memory-ok'}>{saveStatus}</span></div><PixelButton tone="ghost" onClick={() => session.leave()}>LEAVE SESSION</PixelButton></section>
+
+      <section className="multiplayer-play-layout">
+        <MultiplayerPlayerPanel playerLabel={localLabel} roleLabel={`PLAYER ${localIndex + 1} • YOU`} state={localState} relation={relation} error={liveStateError}/>
+        <div className="multiplayer-emulator-center"><section className="emulator-column">{batteryReady ? <MelonDsPlayer game={roomGame} rom={state.localRom!.rom} onBridgeReady={setBridge} saveKey={saveProfileId ?? session.localPlayerId} batterySave={batterySave} onBatterySave={persistBatterySave}/> : <section className="runs-empty pixel-border"><h2>RESTORING LOCAL SAVE...</h2></section>}</section></div>
+        <MultiplayerPlayerPanel playerLabel={remoteLabel} roleLabel={`PLAYER ${remoteIndex + 1} • PARTNER`} state={remoteState} relation={relation}/>
+      </section>
+
+      {import.meta.env.DEV && <><White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/><section className="multiplayer-debug multiplayer-session-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></>}
+    </div>
   </main>
 }
 
