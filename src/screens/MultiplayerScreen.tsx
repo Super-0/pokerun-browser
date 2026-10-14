@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { MelonDsPlayer } from '../components/MelonDsPlayer'
+import { White2MemoryResearchPanel } from '../components/White2MemoryResearchPanel'
 import { PixelButton } from '../components/PixelButton'
 import { loadRomFile } from '../core/rom/RomLoader'
+import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import { gameById } from '../data/games'
 import { LocalMultiplayerSession, type MultiplayerSessionSnapshot } from '../multiplayer/core/LocalMultiplayerSession'
 import { identifyWhite2Rom } from '../multiplayer/games/white2Rom'
@@ -67,8 +69,9 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
   const room = state.room!
   const remote = room.players.find(player => player.id !== session.localPlayerId)
   const remoteState = remote ? state.remoteStates[remote.id] : null
+  const [bridge, setBridge] = useState<MelonDsBridge | null>(null)
   return <main className="screen themed-screen active-run" style={{ '--theme-sky': roomGame.theme.sky, '--theme-sky-soft': roomGame.theme.skySoft, '--theme-accent': roomGame.theme.accent, '--theme-accent-dark': roomGame.theme.accentDark, '--theme-ground': roomGame.theme.ground, '--theme-water': roomGame.theme.water } as React.CSSProperties}>
-    <div className="screen-shell"><AppHeader onHome={onHome} right={right}/><section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>Each tab runs its own local ROM. The multiplayer room remains connected.</p></div><PixelButton tone="ghost" onClick={() => session.leave()}>LEAVE SESSION</PixelButton></section><section className="emulator-column"><MelonDsPlayer game={roomGame} rom={state.localRom!.rom}/></section><section className="multiplayer-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong><span>WAITING FOR WHITE 2 ADAPTER</span></div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}</span> : <span>NO REMOTE STATE YET</span>}</div></section></div>
+    <div className="screen-shell"><AppHeader onHome={onHome} right={right}/><section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>Each tab runs its own local ROM. The multiplayer room remains connected.</p></div><PixelButton tone="ghost" onClick={() => session.leave()}>LEAVE SESSION</PixelButton></section><section className="emulator-column"><MelonDsPlayer game={roomGame} rom={state.localRom!.rom} onBridgeReady={setBridge}/></section>{import.meta.env.DEV && <White2MemoryResearchPanel bridge={bridge} rom={state.localRom!.identity}/>}<section className="multiplayer-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong><span>WAITING FOR WHITE 2 ADAPTER</span></div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}</span> : <span>NO REMOTE STATE YET</span>}</div></section></div>
   </main>
 }
 

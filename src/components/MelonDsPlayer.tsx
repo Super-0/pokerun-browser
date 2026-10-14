@@ -6,7 +6,7 @@ import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
 
-interface Props { game: GameDefinition; run?: RunState; rom?: LoadedRom }
+interface Props { game: GameDefinition; run?: RunState; rom?: LoadedRom; onBridgeReady?: (bridge: MelonDsBridge | null) => void }
 
 const keys: Record<string, DsButton> = {
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
@@ -19,7 +19,7 @@ function formatBytes(bytes: Uint8Array) {
 }
 
 /** React shell only: frame rendering and emulated-memory access stay inside MelonDsBridge. */
-export function MelonDsPlayer({ game, run, rom: suppliedRom }: Props) {
+export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady }: Props) {
   const topRef = useRef<HTMLCanvasElement>(null)
   const bottomRef = useRef<HTMLCanvasElement>(null)
   const bridgeRef = useRef<MelonDsBridge | null>(null)
@@ -64,6 +64,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom }: Props) {
         setStatusText('DIRECT-BOOTING ROM...')
         await bridge.start()
         if (cancelled) return
+        onBridgeReady?.(bridge)
         setStatus('running')
         setStatusText(`READY • ${game.title.toUpperCase()}`)
       } catch (error) {
@@ -81,9 +82,10 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom }: Props) {
       window.removeEventListener('keydown', keyDown)
       window.removeEventListener('keyup', keyUp)
       bridgeRef.current = null
+      onBridgeReady?.(null)
       void bridge.dispose()
     }
-  }, [game.title, run?.id, suppliedRom])
+  }, [game.title, run?.id, suppliedRom, onBridgeReady])
 
   const ready = status === 'running'
   async function togglePause() {

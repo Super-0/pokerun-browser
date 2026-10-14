@@ -116,3 +116,15 @@
 .melonds-status span { max-width: 460px; font-size: 11px; line-height: 1.6; }
 .melonds-debug { display: flex; align-items: center; gap: 10px; padding: 8px 10px; font-size: 9px; overflow: auto; }
 .melonds-debug code { white-space: nowrap; }
+
+.white2-memory-research { margin-top: 18px; padding: 14px; background: rgba(248,252,247,.96); color: #17212b; }
+.white2-memory-research h2 { margin: 0 0 8px; font-size: 13px; }
+.white2-memory-research p { margin: 6px 0 12px; font-size: 10px; line-height: 1.5; }
+.memory-inputs, .memory-compare { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin: 10px 0; }
+.memory-inputs label, .memory-compare label { display: grid; gap: 4px; font-size: 8px; font-weight: 700; }
+.memory-inputs input, .memory-compare select { min-height: 30px; padding: 5px 7px; border: 2px solid #25364a; background: white; font: inherit; }
+.memory-snapshots, .memory-results { display: grid; gap: 5px; margin-top: 12px; padding: 9px; border: 2px solid #aab7c3; background: #fff; font-size: 9px; }
+.memory-snapshots span, .memory-results span { color: #536171; }
+.memory-results { max-height: 330px; overflow: auto; }
+.memory-results code { display: block; font-size: 10px; white-space: pre; }
+.memory-ok { color: #168052; font-weight: 700; }

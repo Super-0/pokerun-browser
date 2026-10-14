@@ -11,6 +11,16 @@ the White 2 adapter until one is empirically validated for a fingerprint.
 primitives over the deliberate `MelonDsBridge.readBytes()` ARM9 bus boundary.
 It is intentionally generic: it does not include any White 2 offsets.
 
+## Development panel workflow
+
+In a development build, enter a started White 2 multiplayer session. Under the
+emulator, **WHITE 2 ARM9 MEMORY RESEARCH** accepts an ARM9 hexadecimal start
+address (default `02000000`) and a bounded byte length (maximum `65536`).
+Capture A while still, capture B after one controlled movement, select A/B,
+then compare. **COPY RESULTS** produces plain text with ROM header/hash,
+snapshot range, and every changed byte for pasting into research notes. The
+panel is omitted from production builds.
+
 ## Required evidence record
 
 For every supported revision, record:
