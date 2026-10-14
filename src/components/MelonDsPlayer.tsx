@@ -6,7 +6,15 @@ import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
 
-interface Props { game: GameDefinition; run?: RunState; rom?: LoadedRom; onBridgeReady?: (bridge: MelonDsBridge | null) => void }
+interface Props {
+  game: GameDefinition
+  run?: RunState
+  rom?: LoadedRom
+  onBridgeReady?: (bridge: MelonDsBridge | null) => void
+  saveKey?: string
+  batterySave?: Uint8Array | null
+  onBatterySave?: (save: Uint8Array) => void | Promise<void>
+}
 
 const keys: Record<string, DsButton> = {
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
@@ -19,7 +27,7 @@ function formatBytes(bytes: Uint8Array) {
 }
 
 /** React shell only: frame rendering and emulated-memory access stay inside MelonDsBridge. */
-export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady }: Props) {
+export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave }: Props) {
   const topRef = useRef<HTMLCanvasElement>(null)
   const bottomRef = useRef<HTMLCanvasElement>(null)
   const bridgeRef = useRef<MelonDsBridge | null>(null)
@@ -35,6 +43,8 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady }: Pr
     let cancelled = false
     const bridge = new MelonDsBridge()
     bridgeRef.current = bridge
+    if (saveKey) bridge.setSaveKey(saveKey)
+    bridge.setBatterySaveListener(onBatterySave ?? null)
 
     const onKey = (event: KeyboardEvent, pressed: boolean) => {
       const target = event.target as HTMLElement | null
@@ -56,6 +66,10 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady }: Pr
         const rom = suppliedRom ?? (run ? romSessionStore.get(run.id) ?? await romSessionStore.restore(run.id) : null)
         if (!rom) throw new Error('This run does not have a ROM saved on this device. Choose the ROM again to continue.')
         if (rom.platform !== 'NDS' || rom.extension.toLowerCase() !== '.nds') throw new Error('melonDS needs a valid .nds ROM for this run.')
+        if (batterySave?.length) {
+          setStatusText('RESTORING IN-GAME SAVE...')
+          await bridge.importBatterySave(batterySave)
+        }
         if (cancelled) return
         bridge.attachScreens(top!, bottom!)
         setStatusText('LOADING melonDS WASM...')
@@ -85,7 +99,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady }: Pr
       onBridgeReady?.(null)
       void bridge.dispose()
     }
-  }, [game.title, run?.id, suppliedRom, onBridgeReady])
+  }, [game.title, run?.id, suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave])
 
   const ready = status === 'running'
   async function togglePause() {
