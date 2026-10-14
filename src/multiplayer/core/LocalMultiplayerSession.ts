@@ -3,7 +3,7 @@ import type { GameId } from '../../types'
 import { MULTIPLAYER_PROTOCOL_VERSION, type MultiplayerConnectionState, type MultiplayerGameStart, type MultiplayerMessage, type MultiplayerPlayer, type MultiplayerPlayerState, type MultiplayerRomIdentity, type MultiplayerRoom } from './protocol'
 import type { MultiplayerTransport } from './transport'
 
-export type LocalMultiplayerRom = { gameId: GameId; rom: LoadedRom; identity: MultiplayerRomIdentity }
+export type LocalMultiplayerRom = { gameId: GameId; rom: LoadedRom; identity: MultiplayerRomIdentity; saveProfileId?: string }
 export type MultiplayerSessionSnapshot = { connection: MultiplayerConnectionState; room: MultiplayerRoom | null; error: string | null; localRom: LocalMultiplayerRom | null; remoteStates: Record<string, MultiplayerPlayerState> }
 type Listener = (snapshot: MultiplayerSessionSnapshot) => void
 type OutboundMessage = { type: MultiplayerMessage['type']; [key: string]: unknown }
