@@ -1,5 +1,6 @@
 import type { LoadedRom } from '../../core/rom/RomLoader'
 import type { GameId } from '../../types'
+import { multiplayerPresence } from './MultiplayerPresence'
 import { MULTIPLAYER_PROTOCOL_VERSION, type MultiplayerConnectionState, type MultiplayerGameStart, type MultiplayerMessage, type MultiplayerPlayer, type MultiplayerPlayerState, type MultiplayerRomIdentity, type MultiplayerRoom } from './protocol'
 import type { MultiplayerTransport } from './transport'
 
@@ -26,8 +27,8 @@ export class LocalMultiplayerSession {
   connect() { this.unsubscribeMessage = this.transport.onMessage(message => this.receive(message)); this.unsubscribeConnection = this.transport.onConnectionChange(connection => this.update({ connection })); window.addEventListener('pagehide', this.handlePageHide); this.transport.connect() }
   dispose() { this.leave(); window.removeEventListener('pagehide', this.handlePageHide); this.unsubscribeMessage?.(); this.unsubscribeConnection?.(); this.transport.disconnect() }
   subscribe(listener: Listener) { this.listeners.add(listener); listener(this.snapshot); return () => this.listeners.delete(listener) }
-  create(gameId: GameId) { const room: MultiplayerRoom = { code: roomCode(), gameId, hostId: this.localPlayerId, players: [newPlayer(this.localPlayerId, this.label, gameId)] }; this.update({ room, error: null, localRom: null, remoteStates: {} }); this.send({ type: 'ROOM_CREATE', room }) }
-  join(code: string) { const normalized = code.trim().toUpperCase(); if (!/^[A-Z2-9]{6}$/.test(normalized)) return this.update({ error: 'ENTER THE 6-CHARACTER ROOM CODE.' }); this.update({ room: { code: normalized, gameId: 'white2', hostId: '', players: [newPlayer(this.localPlayerId, this.label, 'white2')] }, error: null, localRom: null, remoteStates: {} }); this.send({ type: 'ROOM_JOIN', roomCode: normalized, player: newPlayer(this.localPlayerId, this.label, 'white2') }) }
+  create(gameId: GameId) { multiplayerPresence.reset(); const room: MultiplayerRoom = { code: roomCode(), gameId, hostId: this.localPlayerId, players: [newPlayer(this.localPlayerId, this.label, gameId)] }; this.update({ room, error: null, localRom: null, remoteStates: {} }); this.send({ type: 'ROOM_CREATE', room }) }
+  join(code: string) { const normalized = code.trim().toUpperCase(); if (!/^[A-Z2-9]{6}$/.test(normalized)) return this.update({ error: 'ENTER THE 6-CHARACTER ROOM CODE.' }); multiplayerPresence.reset(); this.update({ room: { code: normalized, gameId: 'white2', hostId: '', players: [newPlayer(this.localPlayerId, this.label, 'white2')] }, error: null, localRom: null, remoteStates: {} }); this.send({ type: 'ROOM_JOIN', roomCode: normalized, player: newPlayer(this.localPlayerId, this.label, 'white2') }) }
   setLocalRom(localRom: LocalMultiplayerRom) {
     const room = this.snapshot.room
     if (!room || localRom.gameId !== room.gameId) return this.update({ error: 'ROM DOES NOT MATCH THIS ROOM.' })
@@ -39,24 +40,28 @@ export class LocalMultiplayerSession {
   get canReady() { const room = this.snapshot.room; const me = room?.players.find(player => player.id === this.localPlayerId); return Boolean(room && me?.rom.status === 'verified' && this.isCompatible(room)) }
   get canStart() { const room = this.snapshot.room; return Boolean(room && room.hostId === this.localPlayerId && room.players.length === 2 && room.players.every(player => player.ready) && this.isCompatible(room)) }
   toggleReady() { const room = this.snapshot.room; const player = room?.players.find(candidate => candidate.id === this.localPlayerId); if (!room || !player || !this.canReady) return; const ready = !player.ready; this.updateRoom({ ...room, players: room.players.map(candidate => candidate.id === this.localPlayerId ? { ...candidate, ready } : candidate) }); this.send({ type: 'PLAYER_READY', roomCode: room.code, playerId: this.localPlayerId, ready }) }
-  startGame() { const room = this.snapshot.room; if (!room || !this.canStart) return; const start: MultiplayerGameStart = { startId: crypto.randomUUID(), gameId: room.gameId, startedAt: Date.now() }; const next = { ...room, gameStart: start }; this.updateRoom(next); this.send({ type: 'GAME_START', roomCode: room.code, start }); this.send({ type: 'ROOM_STATE', room: next }) }
-  publishGameState(state: MultiplayerPlayerState) { const room = this.snapshot.room; const start = room?.gameStart; if (!room || !start) return; this.send({ type: 'GAME_STATE', roomCode: room.code, startId: start.startId, sequence: ++this.sequence, playerId: this.localPlayerId, state }) }
-  leave() { const room = this.snapshot.room; if (!room) return; this.send({ type: 'PLAYER_LEAVE', roomCode: room.code, playerId: this.localPlayerId }); this.update({ room: null, localRom: null, remoteStates: {} }) }
+  startGame() { const room = this.snapshot.room; if (!room || !this.canStart) return; multiplayerPresence.reset(); const start: MultiplayerGameStart = { startId: crypto.randomUUID(), gameId: room.gameId, startedAt: Date.now() }; const next = { ...room, gameStart: start }; this.updateRoom(next); this.send({ type: 'GAME_START', roomCode: room.code, start }); this.send({ type: 'ROOM_STATE', room: next }) }
+  publishGameState(state: MultiplayerPlayerState) { const room = this.snapshot.room; const start = room?.gameStart; if (!room || !start) return; multiplayerPresence.setLocal(state); this.send({ type: 'GAME_STATE', roomCode: room.code, startId: start.startId, sequence: ++this.sequence, playerId: this.localPlayerId, state }) }
+  leave() { const room = this.snapshot.room; multiplayerPresence.reset(); if (!room) return; this.send({ type: 'PLAYER_LEAVE', roomCode: room.code, playerId: this.localPlayerId }); this.update({ room: null, localRom: null, remoteStates: {} }) }
   private receive(message: MultiplayerMessage) {
     if (message.senderId === this.localPlayerId || message.version !== MULTIPLAYER_PROTOCOL_VERSION) return
     const room = this.snapshot.room
     if (message.type === 'ROOM_JOIN' && room && room.hostId === this.localPlayerId && message.roomCode === room.code) { const next = !room.players.some(player => player.id === message.player.id) && room.players.length < 2 ? { ...room, players: [...room.players, message.player] } : room; this.updateRoom(next); this.send({ type: 'ROOM_STATE', room: next }); return }
-    if (message.type === 'ROOM_STATE' && room && message.room.code === room.code) { if (!message.room.players.some(player => player.id === this.localPlayerId)) this.update({ room: null, error: 'THIS ROOM IS FULL OR NO LONGER AVAILABLE.' }); else this.updateRoom(message.room, null); return }
+    if (message.type === 'ROOM_STATE' && room && message.room.code === room.code) { if (!message.room.players.some(player => player.id === this.localPlayerId)) { multiplayerPresence.reset(); this.update({ room: null, error: 'THIS ROOM IS FULL OR NO LONGER AVAILABLE.' }) } else this.updateRoom(message.room, null); return }
     if (!room || message.roomCode !== room.code) return
     if (message.type === 'PLAYER_ROM' && room.hostId === this.localPlayerId) this.hostUpdatePlayer(message.playerId, player => ({ ...player, rom: message.rom, ready: false }))
     if (message.type === 'PLAYER_READY' && room.hostId === this.localPlayerId && this.canPlayerReady(message.playerId, message.ready)) this.hostUpdatePlayer(message.playerId, player => ({ ...player, ready: message.ready }))
-    if (message.type === 'GAME_START' && message.start.gameId === room.gameId && this.isCompatible(room)) this.updateRoom({ ...room, gameStart: message.start }, null)
+    if (message.type === 'GAME_START' && message.start.gameId === room.gameId && this.isCompatible(room)) { multiplayerPresence.reset(); this.updateRoom({ ...room, gameStart: message.start }, null) }
     if (message.type === 'GAME_STATE' && room.gameStart?.startId === message.startId && message.playerId !== this.localPlayerId) {
       const key = `${message.startId}:${message.playerId}`
       const previous = this.receivedSequences.get(key) ?? -1
-      if (message.sequence > previous) { this.receivedSequences.set(key, message.sequence); this.update({ remoteStates: { ...this.snapshot.remoteStates, [message.playerId]: message.state } }) }
+      if (message.sequence > previous) {
+        this.receivedSequences.set(key, message.sequence)
+        multiplayerPresence.setRemote(message.state)
+        this.update({ remoteStates: { ...this.snapshot.remoteStates, [message.playerId]: message.state } })
+      }
     }
-    if (message.type === 'PLAYER_LEAVE') { const remaining = room.players.filter(player => player.id !== message.playerId); this.update({ room: message.playerId === room.hostId ? null : { ...room, players: remaining }, remoteStates: {} }) }
+    if (message.type === 'PLAYER_LEAVE') { multiplayerPresence.reset(); const remaining = room.players.filter(player => player.id !== message.playerId); this.update({ room: message.playerId === room.hostId ? null : { ...room, players: remaining }, remoteStates: {} }) }
   }
   private hostUpdatePlayer(id: string, change: (player: MultiplayerPlayer) => MultiplayerPlayer) { const room = this.snapshot.room; if (!room) return; const next = { ...room, players: room.players.map(player => player.id === id ? change(player) : player) }; this.updateRoom(next); this.send({ type: 'ROOM_STATE', room: next }) }
   private canPlayerReady(id: string, ready: boolean) { if (!ready) return true; const room = this.snapshot.room; return Boolean(room && room.players.find(player => player.id === id)?.rom.status === 'verified' && this.isCompatible(room)) }
