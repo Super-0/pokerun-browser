@@ -24,11 +24,11 @@ const ACTOR_ZONE_ID = 0x0a
 const ACTOR_MODEL_ID = 0x0c
 const ACTOR_FACE_DIR = 0x18
 const ACTOR_GPOS = 0x3c
-// Offsets below come directly from the Swan FieldActor layout after the tile/model fields.
-const ACTOR_TCB = 0x80
-const ACTOR_SYSTEM_BACKPTR = 0x84
-const ACTOR_MOVE_CODE_VTABLE = 0x88
-const ACTOR_SCENE_NODE_VTABLE = 0x8c
+// Swan FieldActor has tile/model bytes through 0x83, then the four runtime pointers below.
+const ACTOR_TCB = 0x84
+const ACTOR_SYSTEM_BACKPTR = 0x88
+const ACTOR_MOVE_CODE_VTABLE = 0x8c
+const ACTOR_SCENE_NODE_VTABLE = 0x90
 
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
