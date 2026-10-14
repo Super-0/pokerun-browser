@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Arm9MemoryInspector, type Arm9ByteChange, type Arm9Snapshot } from '../core/emulator/melonds/Arm9MemoryInspector'
 import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
+import { White2ActorSystemProbe, type White2ActorSystemSnapshot } from '../multiplayer/games/White2ActorSystem'
 import { PixelButton } from './PixelButton'
 
 const MAX_LENGTH = 0x10000
@@ -30,6 +31,8 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
   const [busy, setBusy] = useState(false)
   const [probe, setProbe] = useState<PositionProbe | null>(null)
   const [probeError, setProbeError] = useState<string | null>(null)
+  const [actorProbe, setActorProbe] = useState<White2ActorSystemSnapshot | null>(null)
+  const [actorProbeError, setActorProbeError] = useState<string | null>(null)
 
   const probeEnabled = rom.sha256?.toLowerCase() === TESTED_WHITE2_SHA256
 
@@ -65,6 +68,38 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
     const timer = window.setInterval(() => void refreshProbe(), 150)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [bridge, probeEnabled])
+
+  useEffect(() => {
+    if (!bridge || !probeEnabled || !White2ActorSystemProbe.supportsRom(rom)) {
+      setActorProbe(null)
+      setActorProbeError(null)
+      return
+    }
+    const actorSystem = new White2ActorSystemProbe(bridge)
+    let cancelled = false
+    let reading = false
+    async function refreshActors() {
+      if (reading || cancelled) return
+      reading = true
+      try {
+        const snapshot = await actorSystem.inspect()
+        if (!cancelled) {
+          setActorProbe(snapshot)
+          setActorProbeError(null)
+        }
+      } catch (reason) {
+        if (!cancelled) {
+          setActorProbe(null)
+          setActorProbeError(reason instanceof Error ? reason.message.toUpperCase() : 'ACTOR SYSTEM PROBE FAILED.')
+        }
+      } finally {
+        reading = false
+      }
+    }
+    void refreshActors()
+    const timer = window.setInterval(() => void refreshActors(), 1000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [bridge, probeEnabled, rom])
 
   function range() {
     const address = parseHex(addressText)
@@ -120,7 +155,8 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
   const option = (index: number) => snapshotLabel(index)
   const visibleChanges = comparisons.flatMap(comparison => comparison.changes.map(change => ({ comparison: comparison.label, change }))).slice(0, 500)
   return <section className="white2-memory-research pixel-border"><h2>WHITE 2 ARM9 MEMORY RESEARCH</h2><p>Reads the emulated ARM9 bus, not the WASM heap. Capture only controlled, bounded ranges; no bytes leave this tab.</p>
-    <div className="memory-results"><strong>EXPERIMENTAL POSITION PROBE</strong>{!probeEnabled ? <span>DISABLED FOR THIS ROM FINGERPRINT.</span> : !bridge ? <span>WAITING FOR MELONDS.</span> : probeError ? <span className="form-error">{probeError}</span> : probe ? <><code>BASE PTR 0x{hex(probe.base, 8)}</code><code>POS STRUCT 0x{hex(probe.position, 8)}</code><code>MAP {probe.map} • X {probe.x} • Y {probe.y} • Z {probe.z}</code><span>CANDIDATE B2W2 OFFSETS ONLY — MOVE ONE TILE AT A TIME TO VALIDATE.</span></> : <span>READING CANDIDATE POSITION DATA...</span>}</div>
+    <div className="memory-results"><strong>EXPERIMENTAL POSITION PROBE</strong>{!probeEnabled ? <span>DISABLED FOR THIS ROM FINGERPRINT.</span> : !bridge ? <span>WAITING FOR MELONDS.</span> : probeError ? <span className="form-error">{probeError}</span> : probe ? <><code>BASE PTR 0x{hex(probe.base, 8)}</code><code>POS STRUCT 0x{hex(probe.position, 8)}</code><code>MAP {probe.map} • X {probe.x} • Y {probe.y} • Z {probe.z}</code><span>VALIDATED POSITION STRUCT FOR THE TESTED WHITE 2 FINGERPRINT.</span></> : <span>READING POSITION DATA...</span>}</div>
+    <div className="memory-results"><strong>FIELD ACTOR SYSTEM PROBE</strong>{!probeEnabled ? <span>DISABLED FOR THIS ROM FINGERPRINT.</span> : !bridge ? <span>WAITING FOR MELONDS.</span> : actorProbeError ? <span className="form-error">{actorProbeError}</span> : actorProbe ? <><code>GSYS 0x{hex(actorProbe.gameSystem, 8)} • GAME DATA 0x{hex(actorProbe.gameData, 8)}</code><code>ACTOR SYSTEM 0x{hex(actorProbe.actorSystem, 8)} • HEAP 0x{hex(actorProbe.actorHeap, 8)}</code><code>ACTORS {actorProbe.count}/{actorProbe.capacity}</code>{actorProbe.playerActor ? <code>PLAYER SLOT {actorProbe.playerActor.index} • 0x{hex(actorProbe.playerActor.address, 8)} • MODEL {actorProbe.playerActor.modelId} • ZONE {actorProbe.playerActor.zoneId} • X {actorProbe.playerActor.x} Y {actorProbe.playerActor.y} H {actorProbe.playerActor.height} • FACE {actorProbe.playerActor.faceDir}</code> : <span>ACTOR HEAP FOUND; PLAYER UID 0xFF NOT FOUND.</span>}<span>READ ONLY — NATIVE PARTNER SPAWNING STAYS DISABLED UNTIL THIS HEAP IS VALIDATED.</span></> : <span>READING FIELD ACTOR SYSTEM...</span>}</div>
     <div className="memory-inputs"><label>START ADDRESS <input value={addressText} onChange={event => setAddressText(event.target.value)} inputMode="text" spellCheck="false"/></label><label>LENGTH <input value={lengthText} onChange={event => setLengthText(event.target.value)} inputMode="numeric"/></label><PixelButton disabled={busy || !bridge} onClick={() => void capture()}>{busy ? 'CAPTURING...' : 'CAPTURE SNAPSHOT'}</PixelButton></div>
     <div className="memory-snapshots"><strong>SNAPSHOTS</strong>{snapshots.length ? snapshots.map((snapshot, index) => <span key={`${snapshot.capturedAt}-${index}`}>{option(index)} • 0x{hex(snapshot.address, 8)} • {snapshot.bytes.length} B • {date(snapshot.capturedAt)}</span>) : <span>NONE YET — CAPTURE A WHILE STANDING STILL.</span>}</div>
     <div className="memory-compare"><label>COMPARE <select value={first} onChange={event => setFirst(event.target.value)}>{snapshots.map((_, index) => <option key={option(index)}>{option(index)}</option>)}</select> VS <select value={second} onChange={event => setSecond(event.target.value)}>{snapshots.map((_, index) => <option key={option(index)}>{option(index)}</option>)}</select></label><PixelButton tone="ghost" disabled={snapshots.length < 2 || busy} onClick={compareSelected}>COMPARE</PixelButton><PixelButton tone="ghost" disabled={snapshots.length < 2 || busy} onClick={compareAll}>COMPARE ALL</PixelButton><PixelButton tone="ghost" disabled={!comparisons.length} onClick={copyResults}>COPY RESULTS</PixelButton><PixelButton tone="danger" disabled={!snapshots.length} onClick={() => { setSnapshots([]); setComparisons([]); setFirst('A'); setSecond('B'); setError(null) }}>CLEAR SNAPSHOTS</PixelButton></div>
