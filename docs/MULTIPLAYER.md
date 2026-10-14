@@ -1,56 +1,69 @@
 # Multiplayer architecture
 
-## Current proof
+## Verified foundation
 
-As of this implementation, PokéRun has an experimental, browser-local lobby for **Pokémon White 2**. Two tabs under the same browser origin can create/join a six-character room, see presence, synchronize ready state, and observe a leave event. This is a lobby proof only; it does not boot a DS ROM or synchronize gameplay.
+The browser-local White 2 lobby uses the versioned `BroadcastChannel` transport.
+Two tabs can create/join a room, synchronize presence and readiness, and—after
+local ROM validation—enter a common `GAME_START` session. ROM bytes never leave
+the browser tab that selected them.
 
-ROM bytes are never transmitted. The local transport only broadcasts typed room messages between browser contexts.
+The melonDS boot and ARM9 bus boundary are documented in [`MELONDS.md`](MELONDS.md).
+This document does **not** claim White 2 map/position/direction reads or remote
+state exchange are working; no tested ROM bytes or verified memory structures
+are available in this worktree.
 
-## Boundaries
+## Identity and room lifecycle
 
-```text
-Game multiplayer adapter (future)
-          ↓ normalized player state
-Multiplayer core: room/session/protocol
-          ↓ typed transport interface
-BroadcastChannel (current) / WebSocket (future)
-```
+Each `LocalMultiplayerSession` generates `localPlayerId` at construction with
+`crypto.randomUUID()`. It deliberately does not read or write `sessionStorage`,
+so duplicating a browser tab creates another multiplayer player instance.
 
-- `src/multiplayer/core`: game-independent room state, protocol, and transport contract.
-- `src/multiplayer/games/registry.ts`: data-driven list of multiplayer-capable games. UI availability derives from this registry.
-- `src/multiplayer/transports/BroadcastChannelTransport.ts`: local development transport for two tabs in one browser profile.
-- `src/multiplayer/transports/WebSocketTransport.ts`: server transport boundary only. It is not configured until a room server exists.
+1. Host creates a six-character room.
+2. Guest joins. The host remains authoritative for `ROOM_STATE`.
+3. Each player selects a local `.nds` file.
+4. Only ROM identity metadata is advertised: game ID, filename, header title,
+   game code, SHA-256, and validation status.
+5. Both players must have verified White 2 headers and the exact same SHA-256
+   before Ready is enabled.
+6. The host alone can issue `GAME_START` after both players are ready.
 
-No transport is allowed to know emulator memory offsets. A future `White2MultiplayerAdapter` should receive an emulator bridge and expose normalized player state such as map, coordinates, facing, and movement state.
+The room is capped at two players. Host migration and reconnect recovery remain
+future WebSocket-room work.
 
-## Protocol version 1
+## Protocol version 2
 
-Every packet carries `version`, `senderId`, and `sentAt`. Current message types are `HELLO`, `ROOM_CREATE`, `ROOM_JOIN`, `ROOM_STATE`, `PLAYER_READY`, `PLAYER_LEAVE`, `PING`, `PONG`, and `ERROR`.
+Every packet includes `version`, `senderId`, and `sentAt`.
 
-`BroadcastChannelTransport` ignores malformed payloads and messages with an unsupported version. The room host is authoritative for `ROOM_STATE`; the room is intentionally capped at two players for this first slice.
+| Message | Purpose |
+| --- | --- |
+| `ROOM_CREATE`, `ROOM_JOIN`, `ROOM_STATE` | Room lifecycle and host-authoritative state |
+| `PLAYER_ROM` | Guest ROM identity update; never contains bytes |
+| `PLAYER_READY` | Ready request, accepted only by host for compatible ROMs |
+| `GAME_START` | Host-authoritative start with random `startId` epoch |
+| `GAME_STATE` | Future normalized player state, carrying `startId` and monotonic sequence |
+| `PLAYER_LEAVE` | Explicit/page-close cleanup |
 
-## Room lifecycle
+`GAME_STATE` messages are ignored unless their `startId` matches the live room
+and their sequence is newer than the last state accepted for that remote player.
 
-1. Host creates a six-character room code.
-2. Guest enters the code in another tab.
-3. Host accepts one guest and broadcasts the authoritative room state.
-4. Ready changes go to the host and are rebroadcast as room state.
-5. `pagehide` and explicit Leave emit `PLAYER_LEAVE`; when the host leaves, the guest clears its room.
+## ROM policy
 
-This local transport is intentionally ephemeral. Refreshing both tabs or closing the host does not preserve/recover a room; reconnect/session recovery belongs with a future WebSocket room service.
+The first compatibility policy is intentionally strict: same game and exact
+SHA-256. `white2Rom.ts` checks the NDS header title `POKEMON W2` and a Gen-5
+`IR?D` game code before marking a local ROM as verified. This is a header sanity
+check, not a claim of universal revision support. A specific tested hash must be
+documented before a White 2 memory adapter is enabled.
 
-## White 2 / melonDS audit
+## Runtime handoff
 
-The current repository has no melonDS dependency, WASM bundle, emulator bridge, DS memory bridge, or NDS player implementation. NDS runs currently render a `melonDS NOT CONNECTED` placeholder in `ActiveRunScreen`. Therefore the following are **not proven**:
+After `GAME_START`, `MultiplayerScreen` remains mounted so its
+`LocalMultiplayerSession`/transport remains alive. `MelonDsPlayer` receives the
+tab's `LoadedRom` directly from local multiplayer state and boots that tab's
+own bytes. It does not use the normal run store and does not send the ROM to
+the other tab.
 
-- White 2 ROM boot in the browser
-- JavaScript read/write access to DS memory
-- a supported White 2 ROM revision or fingerprint
-- local player map/x/y/direction reads
-- remote overworld avatar injection
+## Next evidence gate
 
-The mGBA/Emerald path is separate and remains in place: `MgbaPlayer` loads local GBA ROMs and `EmeraldLiveStateReader` reads live Emerald map/party state from the exposed mGBA WASM heap. It was not modified by the multiplayer work.
-
-## Next milestone
-
-Integrate and validate a specific browser-compatible melonDS WASM implementation behind `EmulatorBridge`, then document the exact supported White 2 ROM fingerprint before researching live player-state structures. Do not add memory offsets until they are repeatably verified for that fingerprint.
+Use a legal local White 2 ROM to record its exact SHA-256, region/game code,
+and repeatable ARM9 observations. Only then add `White2LiveStateAdapter` and
+enable local/remote coordinates in the multiplayer debug panel.

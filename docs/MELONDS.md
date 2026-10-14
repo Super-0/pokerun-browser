@@ -14,11 +14,13 @@ and `MelonDsBridge`; it does not embed DS Anywhere's Preact application.
 | Keyboard and scaled touchscreen input | Implemented |
 | Lifecycle (pause/resume/dispose) | Implemented |
 | ARM9 emulated-bus reads | Implemented through native wrapper exports |
-| White 2 boot with a legal local ROM | **Not yet proven in this environment** (no ROM is present) |
+| White 2 boot with a legal local ROM | Manually verified in the development Codespace |
 | Audio / battery-save import-export | Not implemented yet |
 
-This is deliberately not a claim that every DS game runs. A user-supplied,
-locally owned `.nds` ROM is required for the remaining runtime verification.
+This is deliberately not a claim that every DS game runs. White 2 boot, both
+screens, controls, touchscreen use, and JavaScript-to-ARM9 bus reads were
+manually verified in the development Codespace with a user-owned ROM. That ROM
+is not present here, so no exact fingerprint or memory-location claim is made.
 
 ## Chosen source and license
 
@@ -92,8 +94,8 @@ native core; that is separate from game-memory access.
 
 ## Current limitations / next verification
 
-- Test White 2 boot, controls, touch, leaving/relaunching, and the ARM9
-  diagnostic with a user-owned local ROM.
+- Record the manually tested ROM's exact SHA-256/header and use it for the
+  first revision-specific White 2 live-state adapter.
 - Verify/persist cartridge saves through the core's eventual IDBFS/save hook.
 - Add audio only after visual/input/lifecycle validation.
 - Do not begin White 2 player-coordinate research until DS boot and ARM9 reads

@@ -1,10 +1,14 @@
 import type { GameId } from '../../types'
 
-export const MULTIPLAYER_PROTOCOL_VERSION = 1 as const
-
+export const MULTIPLAYER_PROTOCOL_VERSION = 2 as const
 export type MultiplayerConnectionState = 'connecting' | 'connected' | 'disconnected' | 'error'
-export type MultiplayerPlayer = { id: string; label: string; ready: boolean }
-export type MultiplayerRoom = { code: string; gameId: GameId; hostId: string; players: MultiplayerPlayer[] }
+export type MultiplayerRomStatus = 'missing' | 'loaded' | 'verified' | 'unsupported'
+/** Safe to share: ROM bytes never appear in this type. */
+export type MultiplayerRomIdentity = { gameId: GameId; fileName?: string; sha256?: string; gameCode?: string; title?: string; status: MultiplayerRomStatus }
+export type MultiplayerPlayer = { id: string; label: string; ready: boolean; rom: MultiplayerRomIdentity }
+export type MultiplayerGameStart = { startId: string; gameId: GameId; startedAt: number }
+export type MultiplayerPlayerState = { location: { mapId: number | string }; x: number; y: number; direction: 'north' | 'south' | 'east' | 'west'; movementState?: string }
+export type MultiplayerRoom = { code: string; gameId: GameId; hostId: string; players: MultiplayerPlayer[]; gameStart?: MultiplayerGameStart }
 
 type BaseMessage = { version: typeof MULTIPLAYER_PROTOCOL_VERSION; roomCode?: string; senderId: string; sentAt: number }
 export type MultiplayerMessage =
@@ -12,7 +16,10 @@ export type MultiplayerMessage =
   | (BaseMessage & { type: 'ROOM_CREATE'; room: MultiplayerRoom })
   | (BaseMessage & { type: 'ROOM_JOIN'; player: MultiplayerPlayer })
   | (BaseMessage & { type: 'ROOM_STATE'; room: MultiplayerRoom })
+  | (BaseMessage & { type: 'PLAYER_ROM'; playerId: string; rom: MultiplayerRomIdentity })
   | (BaseMessage & { type: 'PLAYER_READY'; playerId: string; ready: boolean })
+  | (BaseMessage & { type: 'GAME_START'; start: MultiplayerGameStart })
+  | (BaseMessage & { type: 'GAME_STATE'; startId: string; sequence: number; playerId: string; state: MultiplayerPlayerState })
   | (BaseMessage & { type: 'PLAYER_LEAVE'; playerId: string })
   | (BaseMessage & { type: 'PING' | 'PONG' })
   | (BaseMessage & { type: 'ERROR'; code: string; message: string })
@@ -20,8 +27,5 @@ export type MultiplayerMessage =
 export function isProtocolMessage(value: unknown): value is MultiplayerMessage {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<MultiplayerMessage>
-  return candidate.version === MULTIPLAYER_PROTOCOL_VERSION
-    && typeof candidate.type === 'string'
-    && typeof candidate.senderId === 'string'
-    && typeof candidate.sentAt === 'number'
+  return candidate.version === MULTIPLAYER_PROTOCOL_VERSION && typeof candidate.type === 'string' && typeof candidate.senderId === 'string' && typeof candidate.sentAt === 'number'
 }

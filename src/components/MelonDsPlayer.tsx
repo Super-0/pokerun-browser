@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { MelonDsBridge, type DsButton } from '../core/emulator/melonds/MelonDsBridge'
 import { romSessionStore } from '../core/rom/RomSessionStore'
+import type { LoadedRom } from '../core/rom/RomLoader'
 import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
 
-interface Props { game: GameDefinition; run: RunState }
+interface Props { game: GameDefinition; run?: RunState; rom?: LoadedRom }
 
 const keys: Record<string, DsButton> = {
   ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
@@ -18,7 +19,7 @@ function formatBytes(bytes: Uint8Array) {
 }
 
 /** React shell only: frame rendering and emulated-memory access stay inside MelonDsBridge. */
-export function MelonDsPlayer({ game, run }: Props) {
+export function MelonDsPlayer({ game, run, rom: suppliedRom }: Props) {
   const topRef = useRef<HTMLCanvasElement>(null)
   const bottomRef = useRef<HTMLCanvasElement>(null)
   const bridgeRef = useRef<MelonDsBridge | null>(null)
@@ -52,7 +53,7 @@ export function MelonDsPlayer({ game, run }: Props) {
       try {
         setStatus('booting')
         setStatusText('RESTORING LOCAL ROM...')
-        const rom = romSessionStore.get(run.id) ?? await romSessionStore.restore(run.id)
+        const rom = suppliedRom ?? (run ? romSessionStore.get(run.id) ?? await romSessionStore.restore(run.id) : null)
         if (!rom) throw new Error('This run does not have a ROM saved on this device. Choose the ROM again to continue.')
         if (rom.platform !== 'NDS' || rom.extension.toLowerCase() !== '.nds') throw new Error('melonDS needs a valid .nds ROM for this run.')
         if (cancelled) return
@@ -82,7 +83,7 @@ export function MelonDsPlayer({ game, run }: Props) {
       bridgeRef.current = null
       void bridge.dispose()
     }
-  }, [game.title, run.id])
+  }, [game.title, run?.id, suppliedRom])
 
   const ready = status === 'running'
   async function togglePause() {
