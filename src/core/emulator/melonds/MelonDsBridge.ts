@@ -20,8 +20,22 @@ export class MelonDsBridge implements EmulatorBridge {
   private running = false
   private topImage: ImageData | null = null
   private bottomImage: ImageData | null = null
+  private pendingBatterySave: Uint8Array | null = null
+  private batterySaveListener: ((save: Uint8Array) => void | Promise<void>) | null = null
+  private saveFlushTimer: number | null = null
+  private saveDirty = false
+  private savePath = '/pokerun/saves/game.sav'
 
   attachScreens(top: HTMLCanvasElement, bottom: HTMLCanvasElement) { this.topCanvas = top; this.bottomCanvas = bottom }
+
+  setSaveKey(key: string) {
+    const safe = key.replace(/[^a-z0-9_-]/gi, '_')
+    this.savePath = `/pokerun/saves/${safe || 'game'}.sav`
+  }
+
+  setBatterySaveListener(listener: ((save: Uint8Array) => void | Promise<void>) | null) {
+    this.batterySaveListener = listener
+  }
 
   async loadRom(rom: ArrayBuffer) {
     if (!this.topCanvas || !this.bottomCanvas) throw new Error('DS screen canvases are not ready.')
@@ -34,11 +48,13 @@ export class MelonDsBridge implements EmulatorBridge {
     try { fs.mkdir('/pokerun/roms') } catch { /* directory already exists */ }
     try { fs.mkdir('/pokerun/saves') } catch { /* directory already exists */ }
     fs.writeFile('/pokerun/roms/game.nds', new Uint8Array(rom))
+    if (this.pendingBatterySave?.length) fs.writeFile(this.savePath, this.pendingBatterySave)
+    this.pendingBatterySave = null
     this.emulator?.delete?.(); this.cart?.delete?.()
     this.emulator = new module.WasmEmulator()
     this.cart = new module.WasmNdsCart()
     if (!this.cart.loadFromFile('/pokerun/roms/game.nds')) throw new Error('melonDS rejected this .nds ROM.')
-    this.emulator.setSavePath('/pokerun/saves/game.sav')
+    this.emulator.setSavePath(this.savePath)
     this.emulator.loadFreeBIOS()
     if (!this.emulator.loadRom(this.cart, false)) throw new Error('melonDS could not attach the ROM cartridge.')
     this.status = 'loaded'
@@ -52,9 +68,29 @@ export class MelonDsBridge implements EmulatorBridge {
   async pause() { if (this.status === 'running') { this.running = false; if (this.frame) cancelAnimationFrame(this.frame); this.frame = null; this.status = 'paused' } }
   async resume() { if (this.status === 'paused') { this.running = true; this.status = 'running'; this.scheduleFrame() } }
   async reset() { if (!this.emulator) return; await this.pause(); this.emulator.initialize(true); await this.resume() }
-  async exportBatterySave() { return null }
-  async importBatterySave(_save: Uint8Array) { throw new Error('melonDS save import is not implemented yet.') }
-  async dispose() { await this.pause(); this.cart?.delete?.(); this.emulator?.delete?.(); this.cart = null; this.emulator = null; this.status = 'stopped' }
+
+  async exportBatterySave() {
+    try {
+      const fs = window.FS
+      if (!fs) return null
+      const bytes = fs.readFile(this.savePath)
+      return bytes?.length ? new Uint8Array(bytes) : null
+    } catch {
+      return null
+    }
+  }
+
+  async importBatterySave(save: Uint8Array) {
+    this.pendingBatterySave = save.slice()
+  }
+
+  async dispose() {
+    await this.flushBatterySave()
+    await this.pause()
+    if (this.saveFlushTimer !== null) window.clearTimeout(this.saveFlushTimer)
+    this.saveFlushTimer = null
+    this.cart?.delete?.(); this.emulator?.delete?.(); this.cart = null; this.emulator = null; this.status = 'stopped'
+  }
 
   press(button: DsButton, pressed: boolean) { this.inputMask = pressed ? this.inputMask | buttonMasks[button] : this.inputMask & ~buttonMasks[button] }
   touch(clientX: number, clientY: number) {
@@ -80,8 +116,23 @@ export class MelonDsBridge implements EmulatorBridge {
   private assertEmulator() { if (!this.emulator || this.status === 'idle' || this.status === 'stopped') throw new Error('melonDS is not running.'); return this.emulator }
   private assertAddress(address: number) { if (!Number.isInteger(address) || address < 0 || address > 0xffffffff) throw new Error('Invalid ARM9 bus address.'); return address >>> 0 }
   private scheduleFrame() { this.frame = requestAnimationFrame(now => { if (!this.running || !this.emulator) return; if (now - this.lastFrameAt >= 1000 / 60) { this.lastFrameAt = now; this.emulator.setInput(this.inputMask); this.emulator.processFrame(false) } this.scheduleFrame() }) }
+
+  private scheduleBatterySaveExport() {
+    this.saveDirty = true
+    if (this.saveFlushTimer !== null) window.clearTimeout(this.saveFlushTimer)
+    this.saveFlushTimer = window.setTimeout(() => { this.saveFlushTimer = null; void this.flushBatterySave() }, 650)
+  }
+
+  private async flushBatterySave() {
+    if (!this.saveDirty) return
+    const save = await this.exportBatterySave()
+    if (!save?.length) return
+    this.saveDirty = false
+    await this.batterySaveListener?.(save)
+  }
+
   private installRuntimeCallbacks() {
-    window.WebMelon = { _internal: { events: { onEmulatorFrameUpdate: () => this.draw(), onSaveWrite: () => undefined, onRumbleStart: () => undefined, onRumbleStop: () => undefined, onShutdown: () => { void this.pause() } } } }
+    window.WebMelon = { _internal: { events: { onEmulatorFrameUpdate: () => this.draw(), onSaveWrite: () => this.scheduleBatterySaveExport(), onRumbleStart: () => undefined, onRumbleStop: () => undefined, onShutdown: () => { void this.pause() } } } }
   }
   private draw() {
     if (!this.module || !this.emulator || !this.topCanvas || !this.bottomCanvas) return
