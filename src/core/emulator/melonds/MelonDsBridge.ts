@@ -4,6 +4,7 @@ import { DS_SCREEN_HEIGHT, DS_SCREEN_WIDTH, loadMelonDsRuntime, type MelonDsModu
 
 const buttonMasks = { a: 1 << 0, b: 1 << 1, select: 1 << 2, start: 1 << 3, right: 1 << 4, left: 1 << 5, up: 1 << 6, down: 1 << 7, r: 1 << 8, l: 1 << 9, x: 1 << 10, y: 1 << 11 } as const
 export type DsButton = keyof typeof buttonMasks
+export type DsSpeedMultiplier = 1 | 2 | 4
 
 /** PokéRun's melonDS boundary. ARM9 methods read the emulated DS bus, never the WASM host heap. */
 export class MelonDsBridge implements EmulatorBridge {
@@ -18,6 +19,7 @@ export class MelonDsBridge implements EmulatorBridge {
   private frame: number | null = null
   private lastFrameAt = 0
   private running = false
+  private speedMultiplier: DsSpeedMultiplier = 1
   private topImage: ImageData | null = null
   private bottomImage: ImageData | null = null
   private pendingBatterySave: Uint8Array | null = null
@@ -27,6 +29,9 @@ export class MelonDsBridge implements EmulatorBridge {
   private savePath = '/pokerun/saves/game.sav'
 
   attachScreens(top: HTMLCanvasElement, bottom: HTMLCanvasElement) { this.topCanvas = top; this.bottomCanvas = bottom }
+
+  setSpeedMultiplier(multiplier: DsSpeedMultiplier) { this.speedMultiplier = multiplier }
+  getSpeedMultiplier() { return this.speedMultiplier }
 
   setSaveKey(key: string) {
     const safe = key.replace(/[^a-z0-9_-]/gi, '_')
@@ -115,7 +120,17 @@ export class MelonDsBridge implements EmulatorBridge {
 
   private assertEmulator() { if (!this.emulator || this.status === 'idle' || this.status === 'stopped') throw new Error('melonDS is not running.'); return this.emulator }
   private assertAddress(address: number) { if (!Number.isInteger(address) || address < 0 || address > 0xffffffff) throw new Error('Invalid ARM9 bus address.'); return address >>> 0 }
-  private scheduleFrame() { this.frame = requestAnimationFrame(now => { if (!this.running || !this.emulator) return; if (now - this.lastFrameAt >= 1000 / 60) { this.lastFrameAt = now; this.emulator.setInput(this.inputMask); this.emulator.processFrame(false) } this.scheduleFrame() }) }
+  private scheduleFrame() {
+    this.frame = requestAnimationFrame(now => {
+      if (!this.running || !this.emulator) return
+      if (now - this.lastFrameAt >= 1000 / 60) {
+        this.lastFrameAt = now
+        this.emulator.setInput(this.inputMask)
+        for (let index = 0; index < this.speedMultiplier; index += 1) this.emulator.processFrame(false)
+      }
+      this.scheduleFrame()
+    })
+  }
 
   private scheduleBatterySaveExport() {
     this.saveDirty = true
