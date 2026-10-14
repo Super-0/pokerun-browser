@@ -6,7 +6,12 @@ import { TESTED_WHITE2_SHA256 } from './White2LiveStateAdapter'
 // This probe is intentionally read-only: native actor creation is not enabled until we validate
 // the live actor heap and a safe creation/destruction path on the exact tested ROM revision.
 const WHITE2_G_GAME_SYSTEM = 0x02141134
-const GAME_SYSTEM_GAME_DATA = 0x20
+
+// Swan GameSystem layout:
+// 0x18 CurrentEvent, 0x1C m_GameData, 0x20 m_Field.
+// Keep this explicit because confusing m_Field for m_GameData can still produce
+// plausible-looking pointers before failing later in the actor-system chain.
+const GAME_SYSTEM_GAME_DATA = 0x1c
 const GAME_DATA_ACTOR_SYSTEM = 0x1a8
 
 const ACTOR_SYSTEM_CAPACITY = 0x04
