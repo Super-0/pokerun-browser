@@ -6,7 +6,7 @@ const buttonMasks = { a: 1 << 0, b: 1 << 1, select: 1 << 2, start: 1 << 3, right
 export type DsButton = keyof typeof buttonMasks
 export type DsSpeedMultiplier = 1 | 2 | 4
 
-/** PokéRun's melonDS boundary. ARM9 methods read the emulated DS bus, never the WASM host heap. */
+/** PokéRun's melonDS boundary. ARM9 methods access the emulated DS bus, never the WASM host heap. */
 export class MelonDsBridge implements EmulatorBridge {
   readonly platform: Platform = 'NDS'
   status: EmulatorStatus = 'idle'
@@ -116,6 +116,19 @@ export class MelonDsBridge implements EmulatorBridge {
     this.assertAddress(address); const bytes = new Uint8Array(length)
     for (let offset = 0; offset < length; offset += 1) bytes[offset] = await this.read8(address + offset)
     return bytes
+  }
+
+  async write8(address: number, value: number) {
+    if (!Number.isInteger(value) || value < 0 || value > 0xff) throw new Error('ARM9 8-bit writes require a value from 0 to 255.')
+    this.assertEmulator().writeArm9U8(this.assertAddress(address), value)
+  }
+  async write16(address: number, value: number) {
+    if (!Number.isInteger(value) || value < 0 || value > 0xffff) throw new Error('ARM9 16-bit writes require a value from 0 to 65535.')
+    this.assertEmulator().writeArm9U16(this.assertAddress(address), value)
+  }
+  async write32(address: number, value: number) {
+    if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) throw new Error('ARM9 32-bit writes require an unsigned 32-bit value.')
+    this.assertEmulator().writeArm9U32(this.assertAddress(address), value >>> 0)
   }
 
   private assertEmulator() { if (!this.emulator || this.status === 'idle' || this.status === 'stopped') throw new Error('melonDS is not running.'); return this.emulator }
