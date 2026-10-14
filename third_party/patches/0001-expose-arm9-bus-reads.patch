@@ -1,8 +1,16 @@
 diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
-index 28334ab..c5c9f01 100644
+index 28334ab..6f5c9f0 100644
 --- a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
 +++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
-@@ -144,6 +144,18 @@ namespace wasmelon {
+@@ -107,6 +107,7 @@ namespace wasmelon {
+       saveData = std::make_unique<u8[]>(dataSize);
+ 
+       Platform::FileRead(saveData.get(), dataSize, 1, fileHandle);
++      Platform::CloseFile(fileHandle);
+ 
+       nds->SetNDSSave(saveData.get(), static_cast<melonDS::u32>(dataSize));
+       Platform::Log(Platform::LogLevel::Debug, "Successfully loaded save file!\n");
+@@ -144,6 +145,18 @@ namespace wasmelon {
      return audioSamples;
    }
  
@@ -21,7 +29,16 @@ index 28334ab..c5c9f01 100644
    void WasmEmulator::touchScreen(int x, int y) {
      touchX = x;
      touchY = y;
-@@ -232,6 +244,9 @@ EMSCRIPTEN_BINDINGS(WasmEmulator) {
+@@ -166,6 +179,8 @@ namespace wasmelon {
+     Platform::FileHandle* fileHandle = Platform::OpenFile(savePath, Platform::FileMode::Write);
+ 
+     Platform::FileWrite(savedata, savelen, 1, fileHandle);
++    Platform::FileFlush(fileHandle);
++    Platform::CloseFile(fileHandle);
+     EM_ASM(
+       window.WebMelon._internal.events.onSaveWrite();
+     );
+@@ -232,6 +247,9 @@ EMSCRIPTEN_BINDINGS(WasmEmulator) {
      .function("getBottomScreen", &wasmelon::WasmEmulator::getBottomScreenFrameBuffer, emscripten::allow_raw_pointers())
      .function("getAudioBuffer", &wasmelon::WasmEmulator::getAudioBuffer, emscripten::allow_raw_pointers())
      .function("getAudioSamples", &wasmelon::WasmEmulator::getAudioSamples)
@@ -29,7 +46,7 @@ index 28334ab..c5c9f01 100644
 +    .function("readArm9U16", &wasmelon::WasmEmulator::readArm9U16)
 +    .function("readArm9U32", &wasmelon::WasmEmulator::readArm9U32)
      .function("touchScreen", &wasmelon::WasmEmulator::touchScreen)
-     .function("releaseScreen", &wasmelon::WasmEmulator::releaseScreen)
+     .function("releaseTouch", &wasmelon::WasmEmulator::releaseTouch)
      .function("setInput", &wasmelon::WasmEmulator::setInput)
 diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.h b/wasmelonDS/src/frontend/wasm/WasmEmulator.h
 index ea63aec..c8812ce 100644
@@ -44,5 +61,5 @@ index ea63aec..c8812ce 100644
 +    melonDS::u32 readArm9U32(melonDS::u32 address);
 +
      void touchScreen(int x, int y);
-     void releaseScreen();
+     void releaseTouch();
      void writeSave(const melonDS::u8* savedata, melonDS::u32 savelen);
