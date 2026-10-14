@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MelonDsBridge, type DsButton, type DsSpeedMultiplier } from '../core/emulator/melonds/MelonDsBridge'
 import { romSessionStore } from '../core/rom/RomSessionStore'
 import type { LoadedRom } from '../core/rom/RomLoader'
+import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../multiplayer/core/MultiplayerPresence'
 import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
@@ -43,6 +44,18 @@ function formatBytes(bytes: Uint8Array) {
   return Array.from(bytes, value => value.toString(16).padStart(2, '0').toUpperCase()).join(' ')
 }
 
+function markerFromPresence(presence: MultiplayerPresenceSnapshot): DsPartnerMarker | null {
+  const local = presence.local
+  const remote = presence.remote
+  if (!local || !remote || local.location.mapId !== remote.location.mapId) return null
+  const dx = remote.x - local.x
+  const dy = remote.y - local.y
+  // The DS top screen is roughly 16x12 overworld tiles. Keep the marker inside
+  // the visible center-camera region until camera-boundary offsets are modeled.
+  if (Math.abs(dx) > 7 || Math.abs(dy) > 5) return null
+  return { dx, dy, direction: remote.direction, label: 'P2' }
+}
+
 /** React shell only: frame rendering and emulated-memory access stay inside MelonDsBridge. */
 export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave, partnerMarker }: Props) {
   const topRef = useRef<HTMLCanvasElement>(null)
@@ -53,7 +66,10 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   const [paused, setPaused] = useState(false)
   const [memoryText, setMemoryText] = useState('NOT READ')
   const [speed, setSpeed] = useState<DsSpeedMultiplier>(storedSpeed)
+  const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const speedRef = useRef<DsSpeedMultiplier>(speed)
+
+  useEffect(() => multiplayerPresence.subscribe(setPresence), [])
 
   useEffect(() => {
     const top = topRef.current
@@ -144,9 +160,11 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
     }
   }
 
-  const partnerStyle = partnerMarker ? {
-    '--partner-x': `${50 + partnerMarker.dx * 6.25}%`,
-    '--partner-y': `${52 + partnerMarker.dy * (100 / 12)}%`,
+  const automaticPartnerMarker = markerFromPresence(presence)
+  const visiblePartnerMarker = partnerMarker === undefined ? automaticPartnerMarker : partnerMarker
+  const partnerStyle = visiblePartnerMarker ? {
+    '--partner-x': `${50 + visiblePartnerMarker.dx * 6.25}%`,
+    '--partner-y': `${52 + visiblePartnerMarker.dy * (100 / 12)}%`,
   } as React.CSSProperties : undefined
 
   return (
@@ -162,9 +180,9 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
       <div className="melonds-stack pixel-border">
         <div className="melonds-screen-wrap">
           <canvas ref={topRef} className="melonds-screen" width={256} height={192} aria-label="Nintendo DS top screen" />
-          {ready && partnerMarker && <div className={`ds-partner-marker facing-${partnerMarker.direction}`} style={partnerStyle} aria-label={`${partnerMarker.label ?? 'Partner'} at ${partnerMarker.dx}, ${partnerMarker.dy} tiles from you`}>
-            <span className="ds-partner-label">{partnerMarker.label ?? 'P2'}</span>
-            <span className="ds-partner-avatar" aria-hidden="true"><i>{directionGlyph[partnerMarker.direction]}</i></span>
+          {ready && visiblePartnerMarker && <div className={`ds-partner-marker facing-${visiblePartnerMarker.direction}`} style={partnerStyle} aria-label={`${visiblePartnerMarker.label ?? 'Partner'} at ${visiblePartnerMarker.dx}, ${visiblePartnerMarker.dy} tiles from you`}>
+            <span className="ds-partner-label">{visiblePartnerMarker.label ?? 'P2'}</span>
+            <span className="ds-partner-avatar" aria-hidden="true"><i>{directionGlyph[visiblePartnerMarker.direction]}</i></span>
           </div>}
         </div>
         <canvas ref={bottomRef} className="melonds-screen touch" width={256} height={192} aria-label="Nintendo DS touch screen" onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); bridgeRef.current?.touch(event.clientX, event.clientY) }} onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) bridgeRef.current?.touch(event.clientX, event.clientY) }} onPointerUp={() => bridgeRef.current?.releaseTouch()} onPointerCancel={() => bridgeRef.current?.releaseTouch()} />
