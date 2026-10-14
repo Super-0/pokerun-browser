@@ -28,7 +28,13 @@ export type MelonDsModule = {
 declare global {
   interface Window {
     Module?: Partial<MelonDsModule> & { onRuntimeInitialized?: () => void; locateFile?: (path: string) => string }
-    FS?: { writeFile(path: string, data: Uint8Array): void; mkdir(path: string): void }
+    FS?: {
+      writeFile(path: string, data: Uint8Array): void
+      readFile(path: string): Uint8Array
+      mkdir(path: string): void
+      unlink?(path: string): void
+      analyzePath?(path: string): { exists: boolean }
+    }
     WebMelon?: { _internal: { events: Record<string, () => void> } }
   }
 }
