@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { MelonDsBridge, type DsButton } from '../core/emulator/melonds/MelonDsBridge'
+import { MelonDsBridge, type DsButton, type DsSpeedMultiplier } from '../core/emulator/melonds/MelonDsBridge'
 import { romSessionStore } from '../core/rom/RomSessionStore'
 import type { LoadedRom } from '../core/rom/RomLoader'
 import type { GameDefinition, RunState } from '../types'
@@ -22,6 +22,14 @@ const keys: Record<string, DsButton> = {
   Enter: 'start', ShiftRight: 'select',
 }
 
+const SPEED_STORAGE_KEY = 'pokerun-melonds-speed'
+const SPEED_OPTIONS: DsSpeedMultiplier[] = [1, 2, 4]
+
+function storedSpeed(): DsSpeedMultiplier {
+  const value = Number(localStorage.getItem(SPEED_STORAGE_KEY))
+  return value === 2 || value === 4 ? value : 1
+}
+
 function formatBytes(bytes: Uint8Array) {
   return Array.from(bytes, value => value.toString(16).padStart(2, '0').toUpperCase()).join(' ')
 }
@@ -35,6 +43,8 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   const [statusText, setStatusText] = useState('INITIALIZING melonDS...')
   const [paused, setPaused] = useState(false)
   const [memoryText, setMemoryText] = useState('NOT READ')
+  const [speed, setSpeed] = useState<DsSpeedMultiplier>(storedSpeed)
+  const speedRef = useRef<DsSpeedMultiplier>(speed)
 
   useEffect(() => {
     const top = topRef.current
@@ -43,6 +53,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
     let cancelled = false
     const bridge = new MelonDsBridge()
     bridgeRef.current = bridge
+    bridge.setSpeedMultiplier(speedRef.current)
     if (saveKey) bridge.setSaveKey(saveKey)
     bridge.setBatterySaveListener(onBatterySave ?? null)
 
@@ -109,6 +120,12 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
     else await bridge.pause()
     setPaused(value => !value)
   }
+  function changeSpeed(multiplier: DsSpeedMultiplier) {
+    speedRef.current = multiplier
+    setSpeed(multiplier)
+    localStorage.setItem(SPEED_STORAGE_KEY, String(multiplier))
+    bridgeRef.current?.setSpeedMultiplier(multiplier)
+  }
   async function inspectArm9() {
     try {
       const bytes = await bridgeRef.current?.readBytes(0x02000000, 16)
@@ -120,13 +137,20 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
 
   return (
     <div className="melonds-player">
-      <div className="emulator-toolbar pixel-border"><strong>melonDS</strong><button disabled={!ready} onClick={() => void togglePause()}>{paused ? 'RESUME' : 'PAUSE'}</button><span>DUAL SCREEN</span></div>
+      <div className="emulator-toolbar pixel-border">
+        <strong>melonDS</strong>
+        <div className="emulator-speed-controls" aria-label="Emulation speed">
+          {SPEED_OPTIONS.map(multiplier => <button key={multiplier} disabled={!ready} className={speed === multiplier ? 'active' : ''} aria-pressed={speed === multiplier} onClick={() => changeSpeed(multiplier)}>{multiplier}×</button>)}
+        </div>
+        <button disabled={!ready} onClick={() => void togglePause()}>{paused ? 'RESUME' : 'PAUSE'}</button>
+        <span>DUAL SCREEN</span>
+      </div>
       <div className="melonds-stack pixel-border">
         <canvas ref={topRef} className="melonds-screen" width={256} height={192} aria-label="Nintendo DS top screen" />
         <canvas ref={bottomRef} className="melonds-screen touch" width={256} height={192} aria-label="Nintendo DS touch screen" onPointerDown={event => { event.currentTarget.setPointerCapture(event.pointerId); bridgeRef.current?.touch(event.clientX, event.clientY) }} onPointerMove={event => { if (event.currentTarget.hasPointerCapture(event.pointerId)) bridgeRef.current?.touch(event.clientX, event.clientY) }} onPointerUp={() => bridgeRef.current?.releaseTouch()} onPointerCancel={() => bridgeRef.current?.releaseTouch()} />
         {status !== 'running' && <div className={`melonds-status ${status === 'error' ? 'error' : ''}`}><strong>{status === 'error' ? 'EMULATOR ERROR' : 'BOOTING'}</strong><span>{statusText}</span></div>}
       </div>
-      <div className="mgba-meta pixel-border"><span>{statusText}</span><span>ARROWS MOVE • X=A • Z=B • S=X • A=Y • Q/W=L/R • ENTER=START • RIGHT SHIFT=SELECT</span><span>TOUCH: BOTTOM SCREEN</span></div>
+      <div className="mgba-meta pixel-border"><span>{statusText} • {speed}× SPEED</span><span>ARROWS MOVE • X=A • Z=B • S=X • A=Y • Q/W=L/R • ENTER=START • RIGHT SHIFT=SELECT</span><span>TOUCH: BOTTOM SCREEN</span></div>
       {import.meta.env.DEV && <div className="melonds-debug pixel-border"><button disabled={!ready} onClick={() => void inspectArm9()}>READ ARM9 BUS</button><code>{memoryText}</code></div>}
     </div>
   )
