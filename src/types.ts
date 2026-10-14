@@ -60,6 +60,7 @@ export interface RunState {
   romLoaded: boolean
   romFileName?: string
   romSize?: number
+  romSha256?: string
   currentMap: string
   encounterStatus: 'AVAILABLE' | 'IN_PROGRESS' | 'CAUGHT' | 'MISSED'
   encounterSpecies?: string

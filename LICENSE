@@ -1,0 +1,17 @@
+PokéRun browser/client code is Copyright (c) 2026 Benjamin Kovarik.
+
+SPDX-License-Identifier: GPL-3.0-or-later
+
+PokéRun is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version.
+
+The complete GNU GPL version 3 text is included verbatim in the pinned
+`third_party/ds-anywhere/LICENSE` source distribution, which is the
+corresponding source for the melonDS-derived WebAssembly runtime. It must be
+included with any distribution that includes this repository or its generated
+melonDS runtime.
+
+This notice applies only to PokéRun-authored code. Third-party components retain
+their own copyright and license notices; see `THIRD_PARTY_NOTICES.md`.

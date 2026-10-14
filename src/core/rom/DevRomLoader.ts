@@ -1,5 +1,5 @@
 import type { GameDefinition } from '../../types'
-import type { LoadedRom } from './RomLoader'
+import { fingerprintRom, type LoadedRom } from './RomLoader'
 
 interface DevelopmentRomDefinition {
   url: string
@@ -40,6 +40,7 @@ export async function loadDevelopmentRom(game: GameDefinition): Promise<LoadedRo
       size: bytes.byteLength,
       platform: game.platform,
       extension: definition.extension,
+      sha256: await fingerprintRom(bytes),
       bytes,
     }
   } catch {

@@ -62,6 +62,15 @@ h2 { font-size: 22px; }
 .game-tile strong { font-size: 14px; line-height: 1; margin: 4px 0; }
 .game-generation,.run-status { font-size: 9px; color: #4e6b86; }
 .run-status.has-run { color: #315d97; font-weight: 700; }
+.run-status.experimental { color: #a96d25; font-weight: 700; }
+
+/* Multiplayer */
+.multiplayer-setup { display:grid; grid-template-columns:1fr 1fr; gap:0; background:rgba(248,252,247,.97); }
+.multiplayer-setup article { padding:26px; min-height:220px; }.multiplayer-setup article + article { border-left:3px dashed #9eb2c0; }
+.multiplayer-setup h2 { margin-bottom:10px; }.multiplayer-setup p { min-height:42px; font-size:11px; line-height:1.55; color:#4e6b86; }
+.join-row { display:flex; gap:9px; }.join-row input { width:150px; border:3px solid var(--ink); background:#e5f4fa; padding:8px 10px; font-family:'Silkscreen'; text-transform:uppercase; letter-spacing:.12em; }.form-error { display:block; margin-top:10px; color:var(--danger); font-size:10px; font-weight:700; }
+.multiplayer-lobby { background:rgba(248,252,247,.97); }.lobby-room-code { padding:24px; background:#e5f4fa; border-bottom:3px dashed #9eb2c0; display:flex; gap:14px; align-items:baseline; }.lobby-room-code span,.lobby-room-code small { font-size:10px; }.lobby-room-code strong { font-family:'Silkscreen'; font-size:28px; letter-spacing:.08em; }.lobby-room-code small { margin-left:auto; color:#4e6b86; }
+.lobby-players { display:grid; grid-template-columns:1fr 1fr; }.lobby-player { min-height:128px; padding:22px; display:flex; flex-direction:column; gap:7px; }.lobby-player + .lobby-player { border-left:3px dashed #9eb2c0; }.lobby-player span,.lobby-player b { font-size:10px; }.lobby-player strong { font-family:'Silkscreen'; font-size:16px; }.lobby-player b { color:var(--success); }.lobby-player b.ready { color:#a96d25; }.lobby-player.waiting { color:#4e6b86; }.lobby-actions { border-top:3px dashed #9eb2c0; padding:18px 22px; display:flex; align-items:center; gap:16px; }.lobby-actions span { font-size:10px; color:#4e6b86; }
 
 /* Exact-game backdrop */
 .themed-screen { background: var(--theme-sky); }

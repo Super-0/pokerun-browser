@@ -50,7 +50,7 @@ export function NewRunScreen({ game, onHome, onSettings, onStart }: Props) {
       }
 
       setRom(loaded)
-      setRomMessage(`DEV ROM • ${loaded.fileName} • ${formatRomSize(loaded.size)}`)
+      setRomMessage(`DEV ROM • ${loaded.fileName} • ${formatRomSize(loaded.size)} • SHA-256 ${loaded.sha256.slice(0, 12)}`)
     })
 
     return () => { cancelled = true }
@@ -61,7 +61,7 @@ export function NewRunScreen({ game, onHome, onSettings, onStart }: Props) {
     try {
       const loaded = await loadRomFile(file, game)
       setRom(loaded)
-      setRomMessage(`${loaded.fileName} • ${formatRomSize(loaded.size)}`)
+      setRomMessage(`${loaded.fileName} • ${formatRomSize(loaded.size)} • SHA-256 ${loaded.sha256.slice(0, 12)}`)
       setRomError(false)
     } catch (error) {
       setRom(null)
@@ -243,6 +243,7 @@ export function NewRunScreen({ game, onHome, onSettings, onStart }: Props) {
               <div><dt>PLATFORM</dt><dd>{game.platform}</dd></div>
               <div><dt>CORE</dt><dd>{runtime.emulator.toUpperCase()}</dd></div>
               <div><dt>ROM</dt><dd>{rom ? 'READY' : 'REQUIRED'}</dd></div>
+              {rom && <div><dt>SHA-256</dt><dd title={rom.sha256}>{rom.sha256.slice(0, 12).toUpperCase()}…</dd></div>}
             </dl>
 
             <div className="settings-summary">

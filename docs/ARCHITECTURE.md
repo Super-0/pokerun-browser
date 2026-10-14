@@ -20,13 +20,21 @@ React UI / Nuzlocke HUD
 RunRepository
 ```
 
+## Multiplayer
+
+Multiplayer is a separate platform layer: game adapters will provide normalized player state to a game-independent room/session core, which uses a transport abstraction. The first local `BroadcastChannel` lobby is implemented for experimental White 2 room testing, while WebSocket remains a future server boundary. See [`MULTIPLAYER.md`](MULTIPLAYER.md) for the verified status and protocol.
+
+## DS runtime
+
+NDS games use the experimental `MelonDsBridge`, built reproducibly from the pinned GPL DS Anywhere/melonDS source. It accepts locally stored `.nds` bytes and presents two canvases without exposing melonDS details to screens or multiplayer. Its ARM9 reads use explicit native bus exports, never the WebAssembly host heap. See [`MELONDS.md`](MELONDS.md) for build, attribution, and unproven-runtime limitations.
+
 The development simulator already follows this exact path. It uses `MockEmulatorBridge` and `MockGameStateAdapter`, so replacing the mocks later should not require rewriting the Active Run screen.
 
 ## Main boundaries
 
 ### `core/emulator`
 
-`EmulatorBridge` is the contract for browser emulators. Production implementations will wrap mGBA WASM for GB/GBC/GBA and melonDS WASM for NDS.
+`EmulatorBridge` is the contract for browser emulators. Production implementations wrap mGBA WASM for GB/GBC/GBA and the experimental melonDS WASM bridge for NDS.
 
 Responsibilities:
 

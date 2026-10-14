@@ -10,3 +10,7 @@ dist
 # Local development ROMs — never commit
 public/dev-roms/*
 !public/dev-roms/.gitkeep
+
+# Reproducible local melonDS build output — generated from the pinned GPL source.
+third_party/ds-anywhere/build-pokerun-wasm/
+public/emulators/melonds/

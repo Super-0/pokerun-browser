@@ -6,6 +6,8 @@ export interface RomMetadata {
   size: number
   platform: Platform
   extension: string
+  /** SHA-256 of local bytes; used for revision-safe adapters, never uploaded. */
+  sha256: string
 }
 
 export interface LoadedRom extends RomMetadata {
@@ -15,7 +17,7 @@ export interface LoadedRom extends RomMetadata {
 export interface RomValidationResult {
   valid: boolean
   message: string
-  metadata?: RomMetadata
+  metadata?: Omit<RomMetadata, 'sha256'>
 }
 
 function getExtension(fileName: string) {
@@ -57,7 +59,12 @@ export async function loadRomFile(file: File, game: GameDefinition): Promise<Loa
   }
 
   const bytes = new Uint8Array(await file.arrayBuffer())
-  return { ...validation.metadata, bytes }
+  return { ...validation.metadata, bytes, sha256: await fingerprintRom(bytes) }
+}
+
+export async function fingerprintRom(bytes: Uint8Array) {
+  const digest = await crypto.subtle.digest('SHA-256', bytes.slice().buffer)
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
 }
 
 export function formatRomSize(bytes: number) {

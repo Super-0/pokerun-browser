@@ -74,6 +74,7 @@ export function createRun(
     romLoaded: Boolean(rom),
     romFileName: rom?.fileName,
     romSize: rom?.size,
+    romSha256: rom?.sha256,
     currentMap: gameId === 'black2' ? 'Route 6' : 'Starter Town',
     encounterStatus: 'AVAILABLE',
     badges: gameId === 'black2' ? 4 : 0,

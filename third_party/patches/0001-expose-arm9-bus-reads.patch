@@ -1,0 +1,48 @@
+diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
+index 28334ab..c5c9f01 100644
+--- a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
++++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
+@@ -144,6 +144,18 @@ namespace wasmelon {
+     return audioSamples;
+   }
+ 
++  u8 WasmEmulator::readArm9U8(u32 address) {
++    return nds->ARM9Read8(address);
++  }
++
++  u16 WasmEmulator::readArm9U16(u32 address) {
++    return nds->ARM9Read16(address);
++  }
++
++  u32 WasmEmulator::readArm9U32(u32 address) {
++    return nds->ARM9Read32(address);
++  }
++
+   void WasmEmulator::touchScreen(int x, int y) {
+     touchX = x;
+     touchY = y;
+@@ -232,6 +244,9 @@ EMSCRIPTEN_BINDINGS(WasmEmulator) {
+     .function("getBottomScreen", &wasmelon::WasmEmulator::getBottomScreenFrameBuffer, emscripten::allow_raw_pointers())
+     .function("getAudioBuffer", &wasmelon::WasmEmulator::getAudioBuffer, emscripten::allow_raw_pointers())
+     .function("getAudioSamples", &wasmelon::WasmEmulator::getAudioSamples)
++    .function("readArm9U8", &wasmelon::WasmEmulator::readArm9U8)
++    .function("readArm9U16", &wasmelon::WasmEmulator::readArm9U16)
++    .function("readArm9U32", &wasmelon::WasmEmulator::readArm9U32)
+     .function("touchScreen", &wasmelon::WasmEmulator::touchScreen)
+     .function("releaseScreen", &wasmelon::WasmEmulator::releaseScreen)
+     .function("setInput", &wasmelon::WasmEmulator::setInput)
+diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.h b/wasmelonDS/src/frontend/wasm/WasmEmulator.h
+index ea63aec..c8812ce 100644
+--- a/wasmelonDS/src/frontend/wasm/WasmEmulator.h
++++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.h
+@@ -48,6 +48,10 @@ namespace wasmelon {
+     uintptr_t getAudioBuffer();
+     int getAudioSamples();
+ 
++    melonDS::u8 readArm9U8(melonDS::u32 address);
++    melonDS::u16 readArm9U16(melonDS::u32 address);
++    melonDS::u32 readArm9U32(melonDS::u32 address);
++
+     void touchScreen(int x, int y);
+     void releaseScreen();
+     void writeSave(const melonDS::u8* savedata, melonDS::u32 savelen);

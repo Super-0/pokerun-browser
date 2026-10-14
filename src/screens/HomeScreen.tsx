@@ -5,11 +5,12 @@ import type { GameDefinition, RunState } from '../types'
 interface Props {
   runs: RunState[]
   onChooseGame: (game: GameDefinition) => void
+  onMultiplayer: () => void
   onMyRuns: () => void
   onSettings: () => void
 }
 
-export function HomeScreen({ runs, onChooseGame, onMyRuns, onSettings }: Props) {
+export function HomeScreen({ runs, onChooseGame, onMultiplayer, onMyRuns, onSettings }: Props) {
   return (
     <main className="screen home-screen">
       <div className="home-sky" aria-hidden="true"><div className="home-water"/><div className="home-grass"/></div>
@@ -18,6 +19,7 @@ export function HomeScreen({ runs, onChooseGame, onMyRuns, onSettings }: Props) 
           onHome={() => {}}
           right={(
             <>
+              <button className="text-action" onClick={onMultiplayer}>MULTIPLAYER</button>
               <button className="text-action" onClick={onMyRuns}>MY RUNS</button>
               <button className="text-action" onClick={onSettings}>SETTINGS</button>
             </>

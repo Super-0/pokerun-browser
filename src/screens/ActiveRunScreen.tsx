@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { GameBackdrop } from '../components/GameBackdrop'
 import { MgbaPlayer } from '../components/MgbaPlayer'
+import { MelonDsPlayer } from '../components/MelonDsPlayer'
 import { PixelButton } from '../components/PixelButton'
 import { MockEmulatorBridge } from '../core/emulator/MockEmulatorBridge'
 import type { EmeraldLiveSnapshot } from '../core/game/emerald/EmeraldLiveState'
@@ -86,15 +87,7 @@ export function ActiveRunScreen({ game, run, onHome, onMyRuns, onSettings, onCha
 
         <div className="active-layout">
           <section className="emulator-column">
-            {game.platform === 'NDS' ? (
-              <>
-                <div className="emulator-toolbar pixel-border"><strong>melonDS</strong><span>NOT CONNECTED</span></div>
-                <div className="emulator-stack dual">
-                  <div className="emu-screen pixel-border"><span>{game.shortTitle}</span><small>NINTENDO DS CORE COMES NEXT</small></div>
-                  <div className="emu-screen bottom pixel-border"><span>TOUCH SCREEN</span><small>MELONDS PLACEHOLDER</small></div>
-                </div>
-              </>
-            ) : <MgbaPlayer game={game} run={run} onLiveState={setLiveState} />}
+            {game.platform === 'NDS' ? <MelonDsPlayer game={game} run={run} /> : <MgbaPlayer game={game} run={run} onLiveState={setLiveState} />}
           </section>
 
           <aside className="hud-column">

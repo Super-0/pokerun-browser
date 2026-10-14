@@ -89,6 +89,7 @@ class RomSessionStore {
         size: stored.size,
         platform: stored.platform,
         extension: stored.extension,
+        sha256: stored.sha256,
         bytes,
       }
 
@@ -129,6 +130,7 @@ class RomSessionStore {
       size: rom.size,
       platform: rom.platform,
       extension: rom.extension,
+      sha256: rom.sha256,
       bytes: rom.bytes.slice(),
     }
 
