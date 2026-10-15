@@ -10,7 +10,7 @@ index 28334ab..6f5c9f0 100644
  
        nds->SetNDSSave(saveData.get(), static_cast<melonDS::u32>(dataSize));
        Platform::Log(Platform::LogLevel::Debug, "Successfully loaded save file!\n");
-@@ -144,6 +145,30 @@ namespace wasmelon {
+@@ -144,6 +145,34 @@ namespace wasmelon {
      return audioSamples;
    }
  
@@ -38,10 +38,14 @@ index 28334ab..6f5c9f0 100644
 +    nds->ARM9Write32(address, value);
 +  }
 +
++  u32 WasmEmulator::pokerunRuntimeVersion() {
++    return 0x50524B32;
++  }
++
    void WasmEmulator::touchScreen(int x, int y) {
      touchX = x;
      touchY = y;
-@@ -166,6 +191,8 @@ namespace wasmelon {
+@@ -166,6 +195,8 @@ namespace wasmelon {
      Platform::FileHandle* fileHandle = Platform::OpenFile(savePath, Platform::FileMode::Write);
  
      Platform::FileWrite(savedata, savelen, 1, fileHandle);
@@ -50,7 +54,7 @@ index 28334ab..6f5c9f0 100644
      EM_ASM(
        window.WebMelon._internal.events.onSaveWrite();
      );
-@@ -232,6 +259,12 @@ EMSCRIPTEN_BINDINGS(WasmEmulator) {
+@@ -232,6 +263,13 @@ EMSCRIPTEN_BINDINGS(WasmEmulator) {
      .function("getBottomScreen", &wasmelon::WasmEmulator::getBottomScreenFrameBuffer, emscripten::allow_raw_pointers())
      .function("getAudioBuffer", &wasmelon::WasmEmulator::getAudioBuffer, emscripten::allow_raw_pointers())
      .function("getAudioSamples", &wasmelon::WasmEmulator::getAudioSamples)
@@ -60,6 +64,7 @@ index 28334ab..6f5c9f0 100644
 +    .function("writeArm9U8", &wasmelon::WasmEmulator::writeArm9U8)
 +    .function("writeArm9U16", &wasmelon::WasmEmulator::writeArm9U16)
 +    .function("writeArm9U32", &wasmelon::WasmEmulator::writeArm9U32)
++    .function("pokerunRuntimeVersion", &wasmelon::WasmEmulator::pokerunRuntimeVersion)
      .function("touchScreen", &wasmelon::WasmEmulator::touchScreen)
      .function("releaseScreen", &wasmelon::WasmEmulator::releaseScreen)
      .function("setInput", &wasmelon::WasmEmulator::setInput)
@@ -67,7 +72,7 @@ diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.h b/wasmelonDS/src/fronte
 index ea63aec..c8812ce 100644
 --- a/wasmelonDS/src/frontend/wasm/WasmEmulator.h
 +++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.h
-@@ -48,6 +48,13 @@ namespace wasmelon {
+@@ -48,6 +48,14 @@ namespace wasmelon {
      uintptr_t getAudioBuffer();
      int getAudioSamples();
  
@@ -77,6 +82,7 @@ index ea63aec..c8812ce 100644
 +    void writeArm9U8(melonDS::u32 address, melonDS::u8 value);
 +    void writeArm9U16(melonDS::u32 address, melonDS::u16 value);
 +    void writeArm9U32(melonDS::u32 address, melonDS::u32 value);
++    melonDS::u32 pokerunRuntimeVersion();
 +
      void touchScreen(int x, int y);
      void releaseScreen();
