@@ -2,6 +2,9 @@ export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
 const MELONDS_RUNTIME_VERSION = 'arm9-call-v3'
+const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
+  ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
+  : MELONDS_RUNTIME_VERSION
 
 export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B33
 
@@ -58,12 +61,12 @@ export function loadMelonDsRuntime() {
   loading = new Promise((resolve, reject) => {
     if (document.querySelector('script[data-pokerun-melonds]')) return reject(new Error('melonDS runtime script was already requested but did not initialize.'))
     window.Module = {
-      locateFile: file => `/emulators/melonds/${file}?v=${MELONDS_RUNTIME_VERSION}`,
+      locateFile: file => `/emulators/melonds/${file}?v=${MELONDS_RUNTIME_CACHE_TOKEN}`,
       onRuntimeInitialized: () => resolve(window.Module as MelonDsModule),
     }
     const script = document.createElement('script')
     script.dataset.pokerunMelonds = 'true'
-    script.src = `/emulators/melonds/wasmemulator.js?v=${MELONDS_RUNTIME_VERSION}`
+    script.src = `/emulators/melonds/wasmemulator.js?v=${MELONDS_RUNTIME_CACHE_TOKEN}`
     script.async = true
     script.onerror = () => reject(new Error('Could not load the melonDS runtime. Run the documented build:melonds command first.'))
     document.head.append(script)
