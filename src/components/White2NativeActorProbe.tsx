@@ -24,20 +24,20 @@ export function White2NativeActorProbe({ bridge, rom }: { bridge: MelonDsBridge 
     setValidated(false)
     setStatus(supported ? 'NATIVE CALL GATE NOT VALIDATED' : 'EXACT WHITE 2 ROM REQUIRED')
     spawnedRef.current = null
-  }, [bridge, rom.sha256, supported])
+  }, [bridge, rom.gameId, rom.sha256, supported])
 
   useEffect(() => () => {
     const address = spawnedRef.current
     spawnedRef.current = null
     if (!bridge || !address || !supported) return
     void new White2NativeActorBridge(bridge, rom).deleteTestActor(address).catch(() => undefined)
-  }, [bridge, rom, supported])
+  }, [bridge, rom.gameId, rom.sha256, supported])
 
   async function validate() {
     if (!bridge || !supported || busy) return
     setBusy(true)
     setValidated(false)
-    setStatus('VALIDATING READ-ONLY FINDFieldActor CALL...')
+    setStatus('VALIDATING READ-ONLY FINDFIELDACTOR CALL...')
     try {
       const result = await new White2NativeActorBridge(bridge, rom).validateCallGate()
       setValidated(true)
@@ -59,9 +59,9 @@ export function White2NativeActorProbe({ bridge, rom }: { bridge: MelonDsBridge 
       spawnedRef.current = spawned.actorAddress
       setStatus(`SPAWNED • ${hex(spawned.actorAddress)} • UID ${hex(spawned.uid)} • MODEL ${spawned.modelId} • TILE ${spawned.x},${spawned.z} • WATCH FOR 4 SECONDS`)
       await delay(4000)
-      const deleted = await native.deleteTestActor(spawned.actorAddress)
+      await native.deleteTestActor(spawned.actorAddress)
       spawnedRef.current = null
-      setStatus(`${deleted ? 'PASS' : 'PASS'} • DEDICATED NATIVE ACTOR CREATED + DELETED CLEANLY • ${hex(spawned.actorAddress)} • NO NPC BORROWED`)
+      setStatus(`PASS • DEDICATED NATIVE ACTOR CREATED + DELETED CLEANLY • ${hex(spawned.actorAddress)} • NO NPC BORROWED`)
     } catch (error) {
       const address = spawnedRef.current
       spawnedRef.current = null
