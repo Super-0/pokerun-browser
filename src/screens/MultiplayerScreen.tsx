@@ -13,6 +13,7 @@ import { LocalMultiplayerSession, type MultiplayerSessionSnapshot } from '../mul
 import type { MultiplayerPlayerState } from '../multiplayer/core/protocol'
 import { identifyWhite2Rom } from '../multiplayer/games/white2Rom'
 import { White2LiveStateAdapter } from '../multiplayer/games/White2LiveStateAdapter'
+import { White2WorldPositionReader } from '../multiplayer/games/White2WorldPositionReader'
 import { multiplayerGames } from '../multiplayer/games/registry'
 import { BroadcastChannelTransport } from '../multiplayer/transports/BroadcastChannelTransport'
 import type { GameId } from '../types'
@@ -155,20 +156,26 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
     }
 
     const adapter = new White2LiveStateAdapter(bridge)
+    const worldReader = new White2WorldPositionReader(bridge)
     let cancelled = false
     let reading = false
     let lastPublished = ''
+    let lastPanelKey = ''
 
     async function poll() {
       if (cancelled || reading) return
       reading = true
       try {
-        const live = await adapter.read()
+        const [live, worldPosition] = await Promise.all([adapter.read(), worldReader.read()])
         if (cancelled) return
-        const normalized: MultiplayerPlayerState = { location: live.location, x: live.x, y: live.y, direction: live.direction }
-        setLocalState(normalized)
+        const normalized: MultiplayerPlayerState = { location: live.location, x: live.x, y: live.y, direction: live.direction, worldPosition }
+        const panelKey = `${normalized.location.mapId}:${normalized.x}:${normalized.y}:${normalized.direction}`
+        if (panelKey !== lastPanelKey) {
+          lastPanelKey = panelKey
+          setLocalState(normalized)
+        }
         setLiveStateError(null)
-        const key = `${normalized.location.mapId}:${normalized.x}:${normalized.y}:${normalized.direction}`
+        const key = `${panelKey}:${worldPosition.x}:${worldPosition.y}:${worldPosition.z}`
         if (key !== lastPublished) {
           lastPublished = key
           session.publishGameState(normalized)
@@ -179,7 +186,7 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
     }
 
     void poll()
-    const timer = window.setInterval(() => void poll(), 100)
+    const timer = window.setInterval(() => void poll(), 40)
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [bridge, localRomIdentity, session])
 
