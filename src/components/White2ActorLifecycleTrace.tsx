@@ -1,12 +1,12 @@
 import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
-import { White2TrainerRenderProfileProbe } from './White2TrainerRenderProfileProbe'
+import { White2TrainerRenderSequenceProbe } from './White2TrainerRenderSequenceProbe'
 
 /**
  * Earlier White 2 actor / renderer probes are retired as soon as they answer their
- * question. Keep the existing dev-suite slot pointed only at the current trainer
- * render-profile learner + remote proxy experiment.
+ * question. Keep the existing dev-suite slot pointed only at the current native
+ * walk-sequence learner + remote proxy experiment.
  */
 export function White2ActorLifecycleTrace({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
-  return <White2TrainerRenderProfileProbe bridge={bridge} rom={rom}/>
+  return <White2TrainerRenderSequenceProbe bridge={bridge} rom={rom}/>
 }
