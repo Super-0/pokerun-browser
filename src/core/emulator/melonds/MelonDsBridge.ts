@@ -5,6 +5,8 @@ import { DS_SCREEN_HEIGHT, DS_SCREEN_WIDTH, loadMelonDsRuntime, POKERUN_MELONDS_
 const buttonMasks = { a: 1 << 0, b: 1 << 1, select: 1 << 2, start: 1 << 3, right: 1 << 4, left: 1 << 5, up: 1 << 6, down: 1 << 7, r: 1 << 8, l: 1 << 9, x: 1 << 10, y: 1 << 11 } as const
 export type DsButton = keyof typeof buttonMasks
 export type DsSpeedMultiplier = 1 | 2 | 4
+export type Arm9NativeCallStatus = 1 | 2 | 3 | 4
+export type Arm9NativeCallResult = { result: number; status: Arm9NativeCallStatus }
 
 /** PokéRun's melonDS boundary. ARM9 methods access the emulated DS bus, never the WASM host heap. */
 export class MelonDsBridge implements EmulatorBridge {
@@ -59,7 +61,10 @@ export class MelonDsBridge implements EmulatorBridge {
 
     const emulator = new module.WasmEmulator()
     const candidate = emulator as Partial<RuntimeEmulator>
-    const missing = ['readArm9U32', 'writeArm9U8', 'writeArm9U16', 'writeArm9U32', 'pokerunRuntimeVersion'].filter(name => typeof (candidate as Record<string, unknown>)[name] !== 'function')
+    const missing = [
+      'readArm9U32', 'writeArm9U8', 'writeArm9U16', 'writeArm9U32',
+      'getArm9Sp', 'callArm9Thumb4', 'arm9CallStatus', 'pokerunRuntimeVersion',
+    ].filter(name => typeof (candidate as Record<string, unknown>)[name] !== 'function')
     if (missing.length) {
       emulator.delete?.()
       throw new Error(`Stale melonDS runtime loaded; missing PokéRun WASM exports: ${missing.join(', ')}. Pull dev, run npm run build:melonds, restart Vite, and reopen the tab.`)
@@ -67,7 +72,7 @@ export class MelonDsBridge implements EmulatorBridge {
     const stamp = candidate.pokerunRuntimeVersion?.()
     if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP) {
       emulator.delete?.()
-      throw new Error(`Unexpected melonDS runtime stamp 0x${(stamp ?? 0).toString(16).toUpperCase()}; expected PokéRun ARM9 write runtime 0x${POKERUN_MELONDS_RUNTIME_STAMP.toString(16).toUpperCase()}.`)
+      throw new Error(`Unexpected melonDS runtime stamp 0x${(stamp ?? 0).toString(16).toUpperCase()}; expected PokéRun ARM9 native-call runtime 0x${POKERUN_MELONDS_RUNTIME_STAMP.toString(16).toUpperCase()}.`)
     }
 
     this.emulator = emulator
@@ -143,6 +148,27 @@ export class MelonDsBridge implements EmulatorBridge {
   async write32(address: number, value: number) {
     if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) throw new Error('ARM9 32-bit writes require an unsigned 32-bit value.')
     this.assertEmulator().writeArm9U32(this.assertAddress(address), value >>> 0)
+  }
+  async writeBytes(address: number, bytes: Uint8Array) {
+    if (bytes.length > 0x10000) throw new Error('DS memory writes must be 0–65536 bytes.')
+    this.assertAddress(address)
+    for (let offset = 0; offset < bytes.length; offset += 1) await this.write8(address + offset, bytes[offset])
+  }
+
+  async getArm9Sp() {
+    return this.assertEmulator().getArm9Sp() >>> 0
+  }
+
+  async callArm9Thumb4(functionAddress: number, r0 = 0, r1 = 0, r2 = 0, r3 = 0, stackReserve = 0x1000): Promise<Arm9NativeCallResult> {
+    this.assertAddress(functionAddress)
+    const args = [r0, r1, r2, r3]
+    if (args.some(value => !Number.isInteger(value) || value < 0 || value > 0xffffffff)) throw new Error('ARM9 native-call arguments must be unsigned 32-bit values.')
+    if (!Number.isInteger(stackReserve) || stackReserve < 0x100 || stackReserve > 0x4000 || stackReserve % 8 !== 0) throw new Error('ARM9 native-call stack reserve must be 0x100–0x4000 bytes and 8-byte aligned.')
+    const emulator = this.assertEmulator()
+    const result = emulator.callArm9Thumb4(functionAddress >>> 0, r0 >>> 0, r1 >>> 0, r2 >>> 0, r3 >>> 0, stackReserve) >>> 0
+    const status = emulator.arm9CallStatus() as Arm9NativeCallStatus
+    if (status < 1 || status > 4) throw new Error(`ARM9 native call returned unknown status ${status}.`)
+    return { result, status }
   }
 
   private assertEmulator() { if (!this.emulator || this.status === 'idle' || this.status === 'stopped') throw new Error('melonDS is not running.'); return this.emulator }
