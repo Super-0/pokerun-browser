@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
 
@@ -8,8 +8,10 @@ const patch = resolve(root, 'third_party/patches/0001-expose-arm9-bus-reads.patc
 const build = resolve(source, 'build-pokerun-wasm')
 const output = resolve(root, 'public/emulators/melonds')
 const expectedRevision = '53c7c6cb362560a9e362ae754a162f638fa3cd64'
+const requiredRuntimeSymbols = ['writeArm9U8', 'writeArm9U16', 'writeArm9U32', 'pokerunRuntimeVersion']
 
 function run(command, args, cwd = root) { execFileSync(command, args, { cwd, stdio: 'inherit' }) }
+function containsAscii(buffer, text) { return buffer.indexOf(Buffer.from(text, 'utf8')) !== -1 }
 
 if (!existsSync(resolve(source, '.git'))) throw new Error('Missing third_party/ds-anywhere. Run: git submodule update --init --recursive')
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim()
@@ -21,12 +23,29 @@ run('git', ['reset', '--hard', expectedRevision], source)
 run('git', ['apply', '--check', patch], source)
 run('git', ['apply', patch], source)
 
-// This runtime is intentionally rebuilt from a clean CMake directory. Incremental Emscripten
-// builds can otherwise leave an older Embind API in wasmemulator.wasm after the PokéRun patch changes.
+const patchedCpp = readFileSync(resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.cpp'), 'utf8')
+for (const symbol of requiredRuntimeSymbols) {
+  if (!patchedCpp.includes(`.function("${symbol}"`)) throw new Error(`PokéRun melonDS patch did not expose ${symbol} through Embind.`)
+}
+
+// Rebuild from scratch. We intentionally delete both the CMake directory and served output so
+// an older JS/WASM pair cannot survive a patch/API change.
 rmSync(build, { recursive: true, force: true })
+rmSync(output, { recursive: true, force: true })
 run('emcmake', ['cmake', '-S', 'wasmelonDS', '-B', build, '-DBUILD_QT_SDL=OFF', '-DENABLE_OGLRENDERER=OFF', '-DENABLE_GDBSTUB=OFF'], source)
 run('cmake', ['--build', build, '--target', 'wasmemulator', '-j2'], source)
+
+const builtJsPath = resolve(build, 'wasmemulator.js')
+const builtWasmPath = resolve(build, 'wasmemulator.wasm')
+const builtJs = readFileSync(builtJsPath)
+const builtWasm = readFileSync(builtWasmPath)
+for (const symbol of requiredRuntimeSymbols) {
+  if (!containsAscii(builtJs, symbol) && !containsAscii(builtWasm, symbol)) {
+    throw new Error(`Built melonDS runtime is missing required PokéRun export ${symbol}; refusing to publish stale WASM.`)
+  }
+}
+
 mkdirSync(output, { recursive: true })
-copyFileSync(resolve(build, 'wasmemulator.js'), resolve(output, 'wasmemulator.js'))
-copyFileSync(resolve(build, 'wasmemulator.wasm'), resolve(output, 'wasmemulator.wasm'))
-console.log('Built reproducible melonDS runtime into public/emulators/melonds/.')
+copyFileSync(builtJsPath, resolve(output, 'wasmemulator.js'))
+copyFileSync(builtWasmPath, resolve(output, 'wasmemulator.wasm'))
+console.log(`Built verified melonDS runtime into public/emulators/melonds/ with exports: ${requiredRuntimeSymbols.join(', ')}.`)
