@@ -12,6 +12,8 @@ const WHITE2_POSITION_OFFSET = 0x36780
 const SCRATCH_ACTOR_SLOT = 11
 const SCRATCH_TEST_OFFSET = 0xfc
 const SCRATCH_TEST_MARKER = 0x50524b4e
+const ACTOR_FACE_DIR_OFFSET = 0x18
+const PLAYER_FACE_TEST_MS = 1800
 
 type Comparison = { label: string; before: Arm9Snapshot; after: Arm9Snapshot; changes: Arm9ByteChange[] }
 type PositionProbe = { base: number; position: number; map: number; x: number; y: number; z: number }
@@ -42,6 +44,8 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
   const [actorHeapScanBusy, setActorHeapScanBusy] = useState(false)
   const [scratchWriteBusy, setScratchWriteBusy] = useState(false)
   const [scratchWriteResult, setScratchWriteResult] = useState<string | null>(null)
+  const [playerFaceBusy, setPlayerFaceBusy] = useState(false)
+  const [playerFaceResult, setPlayerFaceResult] = useState<string | null>(null)
 
   const probeEnabled = rom.sha256?.toLowerCase() === TESTED_WHITE2_SHA256
 
@@ -85,6 +89,7 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
       setActorHeapScan(null)
       setActorHeapScanError(null)
       setScratchWriteResult(null)
+      setPlayerFaceResult(null)
       return
     }
     const actorSystem = new White2ActorSystemProbe(bridge)
@@ -118,6 +123,7 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
     setActorHeapScanBusy(true)
     setActorHeapScanError(null)
     setScratchWriteResult(null)
+    setPlayerFaceResult(null)
     try {
       setActorHeapScan(await new White2ActorSystemProbe(bridge).scanHeap())
     } catch (reason) {
@@ -148,6 +154,7 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
     if (!bridge || !probeEnabled || !White2ActorSystemProbe.supportsRom(rom)) return
     setScratchWriteBusy(true)
     setScratchWriteResult(null)
+    setPlayerFaceResult(null)
     setActorHeapScanError(null)
     const wasRunning = bridge.status === 'running'
     let testAddress: number | null = null
@@ -183,6 +190,57 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
     } finally {
       if (wasRunning) await bridge.resume()
       setScratchWriteBusy(false)
+    }
+  }
+
+  async function testPlayerFacingWrite() {
+    if (!bridge || !probeEnabled || !White2ActorSystemProbe.supportsRom(rom)) return
+    setPlayerFaceBusy(true)
+    setPlayerFaceResult(null)
+    setActorHeapScanError(null)
+    const wasRunning = bridge.status === 'running'
+    let faceAddress: number | null = null
+    let originalFace: number | null = null
+    try {
+      if (!wasRunning) throw new Error('Player facing test requires melonDS to be running.')
+      await bridge.pause()
+      const actorSystem = new White2ActorSystemProbe(bridge)
+      const freshScan = await actorSystem.scanHeap()
+      setActorHeapScan(freshScan)
+      if (freshScan.suspiciousSlots.length) throw new Error('Player facing test blocked because suspicious actor slots are present.')
+      const player = freshScan.playerActor
+      if (!player) throw new Error('Player facing test blocked because the live player actor was not found.')
+
+      faceAddress = player.address + ACTOR_FACE_DIR_OFFSET
+      originalFace = await bridge.read16(faceAddress)
+      if (originalFace > 3) throw new Error(`Player facing test blocked because face direction ${originalFace} is outside 0–3.`)
+      const testFace = (originalFace + 2) & 0x3
+
+      await bridge.write16(faceAddress, testFace)
+      const readback = await bridge.read16(faceAddress)
+      if (readback !== testFace) throw new Error(`Facing write/readback mismatch at 0x${hex(faceAddress, 8)}.`)
+
+      await bridge.resume()
+      await new Promise<void>(resolve => window.setTimeout(resolve, PLAYER_FACE_TEST_MS))
+      await bridge.pause()
+
+      await bridge.write16(faceAddress, originalFace)
+      const restored = await bridge.read16(faceAddress)
+      if (restored !== originalFace) throw new Error(`Facing restore verification failed at 0x${hex(faceAddress, 8)}.`)
+
+      setPlayerFaceResult(`PASS • PLAYER SLOT ${player.index} FACE ${originalFace}→${testFace} FOR ${PLAYER_FACE_TEST_MS}MS→${restored} • NATIVE ACTOR FIELD RESTORED`)
+      setActorHeapScan(await actorSystem.scanHeap())
+    } catch (reason) {
+      if (faceAddress !== null && originalFace !== null) {
+        try {
+          if (bridge.status === 'running') await bridge.pause()
+          await bridge.write16(faceAddress, originalFace)
+        } catch { /* best-effort restore before reporting failure */ }
+      }
+      setPlayerFaceResult(reason instanceof Error ? `FAIL • ${reason.message.toUpperCase()}` : 'FAIL • PLAYER FACING TEST FAILED.')
+    } finally {
+      if (wasRunning && bridge.status === 'paused') await bridge.resume()
+      setPlayerFaceBusy(false)
     }
   }
 
@@ -241,14 +299,17 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
   const visibleChanges = comparisons.flatMap(comparison => comparison.changes.map(change => ({ comparison: comparison.label, change }))).slice(0, 500)
   const nonActiveActorEntries = actorHeapScan?.entries.filter(entry => entry.state !== 'active' && entry.state !== 'player') ?? []
   const scratchWriteReady = !!actorHeapScan && actorHeapScan.suspiciousSlots.length === 0 && actorHeapScan.zeroedSlots.includes(SCRATCH_ACTOR_SLOT)
+  const playerFaceReady = !!actorHeapScan && actorHeapScan.suspiciousSlots.length === 0 && actorHeapScan.playerSlots.length === 1
+  const actorResearchBusy = actorHeapScanBusy || scratchWriteBusy || playerFaceBusy
 
   return <section className="white2-memory-research pixel-border"><h2>WHITE 2 ARM9 MEMORY RESEARCH</h2><p>Reads the emulated ARM9 bus, not the WASM heap. Capture only controlled, bounded ranges; no bytes leave this tab.</p>
     <div className="memory-results"><strong>EXPERIMENTAL POSITION PROBE</strong>{!probeEnabled ? <span>DISABLED FOR THIS ROM FINGERPRINT.</span> : !bridge ? <span>WAITING FOR MELONDS.</span> : probeError ? <span className="form-error">{probeError}</span> : probe ? <><code>BASE PTR 0x{hex(probe.base, 8)}</code><code>POS STRUCT 0x{hex(probe.position, 8)}</code><code>MAP {probe.map} • X {probe.x} • Y {probe.y} • Z {probe.z}</code><span>VALIDATED POSITION STRUCT FOR THE TESTED WHITE 2 FINGERPRINT.</span></> : <span>READING POSITION DATA...</span>}</div>
-    <div className="memory-results"><strong>FIELD ACTOR SYSTEM PROBE</strong>{!probeEnabled ? <span>DISABLED FOR THIS ROM FINGERPRINT.</span> : !bridge ? <span>WAITING FOR MELONDS.</span> : actorProbeError ? <span className="form-error">{actorProbeError}</span> : actorProbe ? <><code>GSYS 0x{hex(actorProbe.gameSystem, 8)} • GAME DATA 0x{hex(actorProbe.gameData, 8)}</code><code>ACTOR SYSTEM 0x{hex(actorProbe.actorSystem, 8)} • HEAP 0x{hex(actorProbe.actorHeap, 8)}</code><code>ACTORS {actorProbe.count}/{actorProbe.capacity}</code>{actorProbe.playerActor ? <code>PLAYER SLOT {actorProbe.playerActor.index} • 0x{hex(actorProbe.playerActor.address, 8)} • MODEL {actorProbe.playerActor.modelId} • ZONE {actorProbe.playerActor.zoneId} • X {actorProbe.playerActor.x} Y {actorProbe.playerActor.y} H {actorProbe.playerActor.height} • FACE {actorProbe.playerActor.faceDir}</code> : <span>ACTOR HEAP FOUND; PLAYER UID 0xFF NOT FOUND.</span>}<span>READ ONLY — USE THE ONE-SHOT INVENTORY BEFORE ANY NATIVE ACTOR WORK.</span></> : <span>READING FIELD ACTOR SYSTEM...</span>}
-      <div className="memory-compare"><PixelButton tone="ghost" disabled={!bridge || !probeEnabled || actorHeapScanBusy || scratchWriteBusy} onClick={() => void scanActorHeap()}>{actorHeapScanBusy ? 'SCANNING 64 SLOTS...' : 'SCAN ACTOR HEAP'}</PixelButton><PixelButton tone="ghost" disabled={!actorHeapScan || scratchWriteBusy} onClick={copyActorHeapScan}>COPY HEAP SCAN</PixelButton><PixelButton tone="danger" disabled={!scratchWriteReady || scratchWriteBusy || actorHeapScanBusy} onClick={() => void testScratchActorWrite()}>{scratchWriteBusy ? 'TESTING + RESTORING...' : 'TEST SLOT 11 WRITE + RESTORE'}</PixelButton></div>
+    <div className="memory-results"><strong>FIELD ACTOR SYSTEM PROBE</strong>{!probeEnabled ? <span>DISABLED FOR THIS ROM FINGERPRINT.</span> : !bridge ? <span>WAITING FOR MELONDS.</span> : actorProbeError ? <span className="form-error">{actorProbeError}</span> : actorProbe ? <><code>GSYS 0x{hex(actorProbe.gameSystem, 8)} • GAME DATA 0x{hex(actorProbe.gameData, 8)}</code><code>ACTOR SYSTEM 0x{hex(actorProbe.actorSystem, 8)} • HEAP 0x{hex(actorProbe.actorHeap, 8)}</code><code>ACTORS {actorProbe.count}/{actorProbe.capacity}</code>{actorProbe.playerActor ? <code>PLAYER SLOT {actorProbe.playerActor.index} • 0x{hex(actorProbe.playerActor.address, 8)} • MODEL {actorProbe.playerActor.modelId} • ZONE {actorProbe.playerActor.zoneId} • X {actorProbe.playerActor.x} Y {actorProbe.playerActor.y} H {actorProbe.playerActor.height} • FACE {actorProbe.playerActor.faceDir}</code> : <span>ACTOR HEAP FOUND; PLAYER UID 0xFF NOT FOUND.</span>}<span>CONTROLLED WRITE TESTS ARE LIMITED TO THE EXACT TESTED WHITE 2 FINGERPRINT AND ALWAYS RESTORE THE ORIGINAL VALUE.</span></> : <span>READING FIELD ACTOR SYSTEM...</span>}
+      <div className="memory-compare"><PixelButton tone="ghost" disabled={!bridge || !probeEnabled || actorResearchBusy} onClick={() => void scanActorHeap()}>{actorHeapScanBusy ? 'SCANNING 64 SLOTS...' : 'SCAN ACTOR HEAP'}</PixelButton><PixelButton tone="ghost" disabled={!actorHeapScan || actorResearchBusy} onClick={copyActorHeapScan}>COPY HEAP SCAN</PixelButton><PixelButton tone="danger" disabled={!scratchWriteReady || actorResearchBusy} onClick={() => void testScratchActorWrite()}>{scratchWriteBusy ? 'TESTING + RESTORING...' : 'TEST SLOT 11 WRITE + RESTORE'}</PixelButton><PixelButton tone="danger" disabled={!playerFaceReady || actorResearchBusy} onClick={() => void testPlayerFacingWrite()}>{playerFaceBusy ? 'TURNING + RESTORING...' : 'TURN PLAYER 1.8S + RESTORE'}</PixelButton></div>
       {actorHeapScanError && <span className={actorHeapScanError === 'ACTOR HEAP SCAN COPIED.' ? 'memory-ok' : 'form-error'}>{actorHeapScanError}</span>}
       {scratchWriteResult && <span className={scratchWriteResult.startsWith('PASS') ? 'memory-ok' : 'form-error'}>{scratchWriteResult}</span>}
-      {actorHeapScan && <><code>INVENTORY • PLAYER {actorHeapScan.playerSlots.length} • ACTIVE {actorHeapScan.activeSlots.length} • ZEROED {actorHeapScan.zeroedSlots.length} • DETACHED {actorHeapScan.detachedSlots.length} • SUSPICIOUS {actorHeapScan.suspiciousSlots.length}</code><code>ZEROED CANDIDATES: {slots(actorHeapScan.zeroedSlots)}</code><code>DETACHED SLOTS: {slots(actorHeapScan.detachedSlots)}</code><code>SUSPICIOUS SLOTS: {slots(actorHeapScan.suspiciousSlots)}</code>{nonActiveActorEntries.map(entry => <code key={entry.index}>SLOT {entry.index} • {entry.state.toUpperCase()} • UID {entry.uid} MODEL {entry.modelId} • X {entry.x} Y {entry.y} H {entry.height} • TCB 0x{hex(entry.tcb, 8)} • OWNER 0x{hex(entry.actorSystemBackptr, 8)}</code>)}<span>ZEROED MEANS ALL CHECKED IDENTITY/RUNTIME FIELDS WERE ZERO. THE SLOT 11 TEST PAUSES MELONDS, RE-SCANS THE HEAP, WRITES ONE 32-BIT MARKER AT +0xFC, VERIFIES IT, RESTORES THE ORIGINAL VALUE, VERIFIES RESTORE, THEN RESUMES. NO FRAME RUNS WITH THE MARKER PRESENT.</span></>}
+      {playerFaceResult && <span className={playerFaceResult.startsWith('PASS') ? 'memory-ok' : 'form-error'}>{playerFaceResult}</span>}
+      {actorHeapScan && <><code>INVENTORY • PLAYER {actorHeapScan.playerSlots.length} • ACTIVE {actorHeapScan.activeSlots.length} • ZEROED {actorHeapScan.zeroedSlots.length} • DETACHED {actorHeapScan.detachedSlots.length} • SUSPICIOUS {actorHeapScan.suspiciousSlots.length}</code><code>ZEROED CANDIDATES: {slots(actorHeapScan.zeroedSlots)}</code><code>DETACHED SLOTS: {slots(actorHeapScan.detachedSlots)}</code><code>SUSPICIOUS SLOTS: {slots(actorHeapScan.suspiciousSlots)}</code>{nonActiveActorEntries.map(entry => <code key={entry.index}>SLOT {entry.index} • {entry.state.toUpperCase()} • UID {entry.uid} MODEL {entry.modelId} • X {entry.x} Y {entry.y} H {entry.height} • TCB 0x{hex(entry.tcb, 8)} • OWNER 0x{hex(entry.actorSystemBackptr, 8)}</code>)}<span>ZEROED MEANS ALL CHECKED IDENTITY/RUNTIME FIELDS WERE ZERO. SLOT 11 TESTS RAW WRITE/READBACK/RESTORE WHILE PAUSED. THE PLAYER-FACING TEST TEMPORARILY FLIPS ONLY FIELD ACTOR +0x18, RUNS FOR 1.8 SECONDS SO THE NATIVE SPRITE CAN RESPOND, THEN RESTORES AND VERIFIES THE ORIGINAL DIRECTION.</span></>}
     </div>
     <div className="memory-inputs"><label>START ADDRESS <input value={addressText} onChange={event => setAddressText(event.target.value)} inputMode="text" spellCheck="false"/></label><label>LENGTH <input value={lengthText} onChange={event => setLengthText(event.target.value)} inputMode="numeric"/></label><PixelButton disabled={busy || !bridge} onClick={() => void capture()}>{busy ? 'CAPTURING...' : 'CAPTURE SNAPSHOT'}</PixelButton></div>
     <div className="memory-snapshots"><strong>SNAPSHOTS</strong>{snapshots.length ? snapshots.map((snapshot, index) => <span key={`${snapshot.capturedAt}-${index}`}>{option(index)} • 0x{hex(snapshot.address, 8)} • {snapshot.bytes.length} B • {date(snapshot.capturedAt)}</span>) : <span>NONE YET — CAPTURE A WHILE STANDING STILL.</span>}</div>
