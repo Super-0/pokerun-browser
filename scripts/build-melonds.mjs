@@ -8,7 +8,11 @@ const patch = resolve(root, 'third_party/patches/0001-expose-arm9-bus-reads.patc
 const build = resolve(source, 'build-pokerun-wasm')
 const output = resolve(root, 'public/emulators/melonds')
 const expectedRevision = '53c7c6cb362560a9e362ae754a162f638fa3cd64'
-const requiredRuntimeSymbols = ['writeArm9U8', 'writeArm9U16', 'writeArm9U32', 'pokerunRuntimeVersion']
+const requiredRuntimeSymbols = [
+  'writeArm9U8', 'writeArm9U16', 'writeArm9U32',
+  'getArm9Sp', 'callArm9Thumb4', 'arm9CallStatus',
+  'pokerunRuntimeVersion',
+]
 
 function run(command, args, cwd = root) { execFileSync(command, args, { cwd, stdio: 'inherit' }) }
 function containsAscii(buffer, text) { return buffer.indexOf(Buffer.from(text, 'utf8')) !== -1 }
