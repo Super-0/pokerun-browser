@@ -3,6 +3,7 @@ import { MelonDsBridge, type DsButton, type DsSpeedMultiplier } from '../core/em
 import { romSessionStore } from '../core/rom/RomSessionStore'
 import type { LoadedRom } from '../core/rom/RomLoader'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../multiplayer/core/MultiplayerPresence'
+import { White2RemoteTrainerRuntime } from '../multiplayer/games/White2RemoteTrainerRuntime'
 import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
@@ -166,9 +167,16 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
     '--partner-x': `${50 + visiblePartnerMarker.dx * 6.25}%`,
     '--partner-y': `${52 + visiblePartnerMarker.dy * (100 / 12)}%`,
   } as React.CSSProperties : undefined
+  const multiplayerRomIdentity = suppliedRom ? {
+    gameId: game.id,
+    fileName: suppliedRom.fileName,
+    sha256: suppliedRom.sha256,
+    status: 'loaded' as const,
+  } : null
 
   return (
     <div className="melonds-player">
+      {multiplayerRomIdentity && <White2RemoteTrainerRuntime bridge={ready ? bridgeRef.current : null} rom={multiplayerRomIdentity}/>} 
       <div className="emulator-toolbar pixel-border">
         <strong>melonDS</strong>
         <div className="emulator-speed-controls" aria-label="Emulation speed">
