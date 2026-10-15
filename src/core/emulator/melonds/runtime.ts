@@ -1,7 +1,9 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-write-v1'
+const MELONDS_RUNTIME_VERSION = 'arm9-write-v2'
+
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B32
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
 type WasmEmulator = {
@@ -21,6 +23,7 @@ type WasmEmulator = {
   writeArm9U8(address: number, value: number): void
   writeArm9U16(address: number, value: number): void
   writeArm9U32(address: number, value: number): void
+  pokerunRuntimeVersion(): number
   delete?: () => void
 }
 
