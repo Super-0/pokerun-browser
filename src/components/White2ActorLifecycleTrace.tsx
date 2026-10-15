@@ -1,10 +1,8 @@
 import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
+import { White2NativeActorProbe } from './White2NativeActorProbe'
 
-/**
- * Compatibility shim for the old dev probe slot. The validated V6 behavior now
- * runs automatically inside MelonDsPlayer through White2RemoteTrainerRuntime.
- */
-export function White2ActorLifecycleTrace(_props: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
-  return null
+/** Active dev slot for moving White 2 multiplayer from borrowed NPCs to a dedicated native actor. */
+export function White2ActorLifecycleTrace({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
+  return <White2NativeActorProbe bridge={bridge} rom={rom}/>
 }
