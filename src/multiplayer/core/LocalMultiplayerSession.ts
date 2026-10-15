@@ -12,6 +12,14 @@ const codeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 function roomCode() { return Array.from({ length: 6 }, () => codeAlphabet[Math.floor(Math.random() * codeAlphabet.length)]).join('') }
 function missingRom(gameId: GameId): MultiplayerRomIdentity { return { gameId, status: 'missing' } }
 function newPlayer(id: string, label: string, gameId: GameId): MultiplayerPlayer { return { id, label, ready: false, rom: missingRom(gameId) } }
+function samePanelState(a: MultiplayerPlayerState | undefined, b: MultiplayerPlayerState) {
+  return !!a
+    && a.location.mapId === b.location.mapId
+    && a.x === b.x
+    && a.y === b.y
+    && a.direction === b.direction
+    && a.movementState === b.movementState
+}
 
 /** One constructed session represents one browser-tab player and intentionally never reads identity storage. */
 export class LocalMultiplayerSession {
@@ -58,7 +66,10 @@ export class LocalMultiplayerSession {
       if (message.sequence > previous) {
         this.receivedSequences.set(key, message.sequence)
         multiplayerPresence.setRemote(message.state)
-        this.update({ remoteStates: { ...this.snapshot.remoteStates, [message.playerId]: message.state } })
+        const previousState = this.snapshot.remoteStates[message.playerId]
+        if (!samePanelState(previousState, message.state)) {
+          this.update({ remoteStates: { ...this.snapshot.remoteStates, [message.playerId]: message.state } })
+        }
       }
     }
     if (message.type === 'PLAYER_LEAVE') { multiplayerPresence.reset(); const remaining = room.players.filter(player => player.id !== message.playerId); this.update({ room: message.playerId === room.hostId ? null : { ...room, players: remaining }, remoteStates: {} }) }
