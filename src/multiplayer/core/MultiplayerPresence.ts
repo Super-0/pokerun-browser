@@ -19,7 +19,9 @@ class MultiplayerPresenceStore {
   subscribe(listener: Listener) {
     this.listeners.add(listener)
     listener(this.snapshot)
-    return () => this.listeners.delete(listener)
+    return () => {
+      this.listeners.delete(listener)
+    }
   }
 
   setLocal(local: MultiplayerPlayerState) {
