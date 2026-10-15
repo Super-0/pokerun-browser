@@ -342,9 +342,11 @@ async function restoreNpc(bridge: MelonDsBridge, borrowed: BorrowedNpc) {
  * Production White 2 multiplayer avatar bridge.
  *
  * V6.1 keeps the validated continuous WPos path, synchronizes FieldActor and
- * billboard positions, learns turning-in-place render transitions, and debounces
- * map/range lifecycle churn. It still borrows one ordinary NPC as the renderer;
- * a dedicated native actor remains the next architecture milestone.
+ * billboard horizontal position, learns turning-in-place render transitions, and
+ * debounces map/range lifecycle churn. BlAct Y remains game-owned so native
+ * vertical sprite/shadow animation is not flattened or re-applied every tick.
+ * It still borrows one ordinary NPC as the renderer; a dedicated native actor
+ * remains the next architecture milestone.
  */
 export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -665,8 +667,9 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
         bridge.write32(binding.actor.address + ACTOR_WPOS + 0x00, world.x >>> 0),
         bridge.write32(binding.actor.address + ACTOR_WPOS + 0x04, world.y >>> 0),
         bridge.write32(binding.actor.address + ACTOR_WPOS + 0x08, world.z >>> 0),
+        // Keep billboard X/Z in lock-step with WPos to prevent sprite/shadow lag.
+        // BlAct Y is intentionally left to White 2's renderer/animation system.
         bridge.write32(binding.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
-        bridge.write32(binding.blActAddress + BLACT_POSITION + 0x04, world.y >>> 0),
         bridge.write32(binding.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
         bridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, playerMatEntry),
         bridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, profile.geomFlags),
