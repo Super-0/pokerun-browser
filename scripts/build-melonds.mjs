@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
 
@@ -21,6 +21,9 @@ run('git', ['reset', '--hard', expectedRevision], source)
 run('git', ['apply', '--check', patch], source)
 run('git', ['apply', patch], source)
 
+// This runtime is intentionally rebuilt from a clean CMake directory. Incremental Emscripten
+// builds can otherwise leave an older Embind API in wasmemulator.wasm after the PokéRun patch changes.
+rmSync(build, { recursive: true, force: true })
 run('emcmake', ['cmake', '-S', 'wasmelonDS', '-B', build, '-DBUILD_QT_SDL=OFF', '-DENABLE_OGLRENDERER=OFF', '-DENABLE_GDBSTUB=OFF'], source)
 run('cmake', ['--build', build, '--target', 'wasmemulator', '-j2'], source)
 mkdirSync(output, { recursive: true })
