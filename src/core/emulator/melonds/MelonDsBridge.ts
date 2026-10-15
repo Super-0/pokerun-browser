@@ -1,6 +1,6 @@
 import type { EmulatorBridge, EmulatorStatus } from '../EmulatorBridge'
 import type { Platform } from '../../../types'
-import { DS_SCREEN_HEIGHT, DS_SCREEN_WIDTH, loadMelonDsRuntime, type MelonDsModule, type RuntimeCart, type RuntimeEmulator } from './runtime'
+import { DS_SCREEN_HEIGHT, DS_SCREEN_WIDTH, loadMelonDsRuntime, POKERUN_MELONDS_RUNTIME_STAMP, type MelonDsModule, type RuntimeCart, type RuntimeEmulator } from './runtime'
 
 const buttonMasks = { a: 1 << 0, b: 1 << 1, select: 1 << 2, start: 1 << 3, right: 1 << 4, left: 1 << 5, up: 1 << 6, down: 1 << 7, r: 1 << 8, l: 1 << 9, x: 1 << 10, y: 1 << 11 } as const
 export type DsButton = keyof typeof buttonMasks
@@ -56,7 +56,21 @@ export class MelonDsBridge implements EmulatorBridge {
     if (this.pendingBatterySave?.length) fs.writeFile(this.savePath, this.pendingBatterySave)
     this.pendingBatterySave = null
     this.emulator?.delete?.(); this.cart?.delete?.()
-    this.emulator = new module.WasmEmulator()
+
+    const emulator = new module.WasmEmulator()
+    const candidate = emulator as Partial<RuntimeEmulator>
+    const missing = ['readArm9U32', 'writeArm9U8', 'writeArm9U16', 'writeArm9U32', 'pokerunRuntimeVersion'].filter(name => typeof (candidate as Record<string, unknown>)[name] !== 'function')
+    if (missing.length) {
+      emulator.delete?.()
+      throw new Error(`Stale melonDS runtime loaded; missing PokéRun WASM exports: ${missing.join(', ')}. Pull dev, run npm run build:melonds, restart Vite, and reopen the tab.`)
+    }
+    const stamp = candidate.pokerunRuntimeVersion?.()
+    if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP) {
+      emulator.delete?.()
+      throw new Error(`Unexpected melonDS runtime stamp 0x${(stamp ?? 0).toString(16).toUpperCase()}; expected PokéRun ARM9 write runtime 0x${POKERUN_MELONDS_RUNTIME_STAMP.toString(16).toUpperCase()}.`)
+    }
+
+    this.emulator = emulator
     this.cart = new module.WasmNdsCart()
     if (!this.cart.loadFromFile('/pokerun/roms/game.nds')) throw new Error('melonDS rejected this .nds ROM.')
     this.emulator.setSavePath(this.savePath)
