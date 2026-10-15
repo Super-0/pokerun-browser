@@ -13,7 +13,14 @@ const SCRATCH_ACTOR_SLOT = 11
 const SCRATCH_TEST_OFFSET = 0xfc
 const SCRATCH_TEST_MARKER = 0x50524b4e
 const ACTOR_FACE_DIR_OFFSET = 0x18
+const ACTOR_GPOS_OFFSET = 0x3c
+const ACTOR_WPOS_OFFSET = 0x44
 const PLAYER_FACE_TEST_MS = 1800
+const FX32_ONE = 4096
+const TILE_WORLD_UNITS = 16
+const PLAYER_WPOS_TEST_DELTA = (TILE_WORLD_UNITS / 2) * FX32_ONE
+const PLAYER_WPOS_TEST_MS = 1200
+const PLAYER_WPOS_REAPPLY_MS = 40
 
 type Comparison = { label: string; before: Arm9Snapshot; after: Arm9Snapshot; changes: Arm9ByteChange[] }
 type PositionProbe = { base: number; position: number; map: number; x: number; y: number; z: number }
@@ -46,6 +53,8 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
   const [scratchWriteResult, setScratchWriteResult] = useState<string | null>(null)
   const [playerFaceBusy, setPlayerFaceBusy] = useState(false)
   const [playerFaceResult, setPlayerFaceResult] = useState<string | null>(null)
+  const [playerWPosBusy, setPlayerWPosBusy] = useState(false)
+  const [playerWPosResult, setPlayerWPosResult] = useState<string | null>(null)
 
   const probeEnabled = rom.sha256?.toLowerCase() === TESTED_WHITE2_SHA256
 
@@ -90,6 +99,7 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
       setActorHeapScanError(null)
       setScratchWriteResult(null)
       setPlayerFaceResult(null)
+      setPlayerWPosResult(null)
       return
     }
     const actorSystem = new White2ActorSystemProbe(bridge)
@@ -124,6 +134,7 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
     setActorHeapScanError(null)
     setScratchWriteResult(null)
     setPlayerFaceResult(null)
+    setPlayerWPosResult(null)
     try {
       setActorHeapScan(await new White2ActorSystemProbe(bridge).scanHeap())
     } catch (reason) {
@@ -155,6 +166,7 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
     setScratchWriteBusy(true)
     setScratchWriteResult(null)
     setPlayerFaceResult(null)
+    setPlayerWPosResult(null)
     setActorHeapScanError(null)
     const wasRunning = bridge.status === 'running'
     let testAddress: number | null = null
@@ -197,6 +209,7 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
     if (!bridge || !probeEnabled || !White2ActorSystemProbe.supportsRom(rom)) return
     setPlayerFaceBusy(true)
     setPlayerFaceResult(null)
+    setPlayerWPosResult(null)
     setActorHeapScanError(null)
     const wasRunning = bridge.status === 'running'
     let faceAddress: number | null = null
@@ -241,6 +254,69 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
     } finally {
       if (wasRunning && bridge.status === 'paused') await bridge.resume()
       setPlayerFaceBusy(false)
+    }
+  }
+
+  async function testPlayerWPosWrite() {
+    if (!bridge || !probeEnabled || !White2ActorSystemProbe.supportsRom(rom)) return
+    setPlayerWPosBusy(true)
+    setPlayerWPosResult(null)
+    setPlayerFaceResult(null)
+    setActorHeapScanError(null)
+    const wasRunning = bridge.status === 'running'
+    let wPosXAddress: number | null = null
+    let originalWPosX: number | null = null
+    let reapplyTimer: number | null = null
+    try {
+      if (!wasRunning) throw new Error('Player WPos test requires melonDS to be running.')
+      await bridge.pause()
+      const actorSystem = new White2ActorSystemProbe(bridge)
+      const freshScan = await actorSystem.scanHeap()
+      setActorHeapScan(freshScan)
+      if (freshScan.suspiciousSlots.length) throw new Error('Player WPos test blocked because suspicious actor slots are present.')
+      const player = freshScan.playerActor
+      if (!player) throw new Error('Player WPos test blocked because the live player actor was not found.')
+
+      const gPosX = await bridge.read16(player.address + ACTOR_GPOS_OFFSET)
+      if (gPosX !== player.x) throw new Error(`Player WPos test blocked because GPos X changed during setup (${gPosX} != ${player.x}).`)
+
+      wPosXAddress = player.address + ACTOR_WPOS_OFFSET
+      originalWPosX = await bridge.read32(wPosXAddress)
+      const testWPosX = (originalWPosX + PLAYER_WPOS_TEST_DELTA) >>> 0
+
+      await bridge.write32(wPosXAddress, testWPosX)
+      const readback = await bridge.read32(wPosXAddress)
+      if (readback !== testWPosX) throw new Error(`WPos write/readback mismatch at 0x${hex(wPosXAddress, 8)}.`)
+
+      await bridge.resume()
+      reapplyTimer = window.setInterval(() => {
+        if (wPosXAddress !== null) void bridge.write32(wPosXAddress, testWPosX)
+      }, PLAYER_WPOS_REAPPLY_MS)
+      await new Promise<void>(resolve => window.setTimeout(resolve, PLAYER_WPOS_TEST_MS))
+      window.clearInterval(reapplyTimer)
+      reapplyTimer = null
+      await bridge.pause()
+
+      const observedWPosX = await bridge.read32(wPosXAddress)
+      const observedGPosX = await bridge.read16(player.address + ACTOR_GPOS_OFFSET)
+      await bridge.write32(wPosXAddress, originalWPosX)
+      const restored = await bridge.read32(wPosXAddress)
+      if (restored !== originalWPosX) throw new Error(`WPos restore verification failed at 0x${hex(wPosXAddress, 8)}.`)
+
+      setPlayerWPosResult(`PASS • PLAYER SLOT ${player.index} WPOS.X 0x${hex(originalWPosX, 8)}→0x${hex(testWPosX, 8)} FOR ${PLAYER_WPOS_TEST_MS}MS→0x${hex(restored, 8)} • GPOS.X ${player.x}→${observedGPosX} • LAST WPOS 0x${hex(observedWPosX, 8)}`)
+      setActorHeapScan(await actorSystem.scanHeap())
+    } catch (reason) {
+      if (reapplyTimer !== null) window.clearInterval(reapplyTimer)
+      if (wPosXAddress !== null && originalWPosX !== null) {
+        try {
+          if (bridge.status === 'running') await bridge.pause()
+          await bridge.write32(wPosXAddress, originalWPosX)
+        } catch { /* best-effort restore before reporting failure */ }
+      }
+      setPlayerWPosResult(reason instanceof Error ? `FAIL • ${reason.message.toUpperCase()}` : 'FAIL • PLAYER WPOS TEST FAILED.')
+    } finally {
+      if (wasRunning && bridge.status === 'paused') await bridge.resume()
+      setPlayerWPosBusy(false)
     }
   }
 
@@ -300,16 +376,18 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
   const nonActiveActorEntries = actorHeapScan?.entries.filter(entry => entry.state !== 'active' && entry.state !== 'player') ?? []
   const scratchWriteReady = !!actorHeapScan && actorHeapScan.suspiciousSlots.length === 0 && actorHeapScan.zeroedSlots.includes(SCRATCH_ACTOR_SLOT)
   const playerFaceReady = !!actorHeapScan && actorHeapScan.suspiciousSlots.length === 0 && actorHeapScan.playerSlots.length === 1
-  const actorResearchBusy = actorHeapScanBusy || scratchWriteBusy || playerFaceBusy
+  const playerWPosReady = playerFaceReady
+  const actorResearchBusy = actorHeapScanBusy || scratchWriteBusy || playerFaceBusy || playerWPosBusy
 
   return <section className="white2-memory-research pixel-border"><h2>WHITE 2 ARM9 MEMORY RESEARCH</h2><p>Reads the emulated ARM9 bus, not the WASM heap. Capture only controlled, bounded ranges; no bytes leave this tab.</p>
     <div className="memory-results"><strong>EXPERIMENTAL POSITION PROBE</strong>{!probeEnabled ? <span>DISABLED FOR THIS ROM FINGERPRINT.</span> : !bridge ? <span>WAITING FOR MELONDS.</span> : probeError ? <span className="form-error">{probeError}</span> : probe ? <><code>BASE PTR 0x{hex(probe.base, 8)}</code><code>POS STRUCT 0x{hex(probe.position, 8)}</code><code>MAP {probe.map} • X {probe.x} • Y {probe.y} • Z {probe.z}</code><span>VALIDATED POSITION STRUCT FOR THE TESTED WHITE 2 FINGERPRINT.</span></> : <span>READING POSITION DATA...</span>}</div>
     <div className="memory-results"><strong>FIELD ACTOR SYSTEM PROBE</strong>{!probeEnabled ? <span>DISABLED FOR THIS ROM FINGERPRINT.</span> : !bridge ? <span>WAITING FOR MELONDS.</span> : actorProbeError ? <span className="form-error">{actorProbeError}</span> : actorProbe ? <><code>GSYS 0x{hex(actorProbe.gameSystem, 8)} • GAME DATA 0x{hex(actorProbe.gameData, 8)}</code><code>ACTOR SYSTEM 0x{hex(actorProbe.actorSystem, 8)} • HEAP 0x{hex(actorProbe.actorHeap, 8)}</code><code>ACTORS {actorProbe.count}/{actorProbe.capacity}</code>{actorProbe.playerActor ? <code>PLAYER SLOT {actorProbe.playerActor.index} • 0x{hex(actorProbe.playerActor.address, 8)} • MODEL {actorProbe.playerActor.modelId} • ZONE {actorProbe.playerActor.zoneId} • X {actorProbe.playerActor.x} Y {actorProbe.playerActor.y} H {actorProbe.playerActor.height} • FACE {actorProbe.playerActor.faceDir}</code> : <span>ACTOR HEAP FOUND; PLAYER UID 0xFF NOT FOUND.</span>}<span>CONTROLLED WRITE TESTS ARE LIMITED TO THE EXACT TESTED WHITE 2 FINGERPRINT AND ALWAYS RESTORE THE ORIGINAL VALUE.</span></> : <span>READING FIELD ACTOR SYSTEM...</span>}
-      <div className="memory-compare"><PixelButton tone="ghost" disabled={!bridge || !probeEnabled || actorResearchBusy} onClick={() => void scanActorHeap()}>{actorHeapScanBusy ? 'SCANNING 64 SLOTS...' : 'SCAN ACTOR HEAP'}</PixelButton><PixelButton tone="ghost" disabled={!actorHeapScan || actorResearchBusy} onClick={copyActorHeapScan}>COPY HEAP SCAN</PixelButton><PixelButton tone="danger" disabled={!scratchWriteReady || actorResearchBusy} onClick={() => void testScratchActorWrite()}>{scratchWriteBusy ? 'TESTING + RESTORING...' : 'TEST SLOT 11 WRITE + RESTORE'}</PixelButton><PixelButton tone="danger" disabled={!playerFaceReady || actorResearchBusy} onClick={() => void testPlayerFacingWrite()}>{playerFaceBusy ? 'TURNING + RESTORING...' : 'TURN PLAYER 1.8S + RESTORE'}</PixelButton></div>
+      <div className="memory-compare"><PixelButton tone="ghost" disabled={!bridge || !probeEnabled || actorResearchBusy} onClick={() => void scanActorHeap()}>{actorHeapScanBusy ? 'SCANNING 64 SLOTS...' : 'SCAN ACTOR HEAP'}</PixelButton><PixelButton tone="ghost" disabled={!actorHeapScan || actorResearchBusy} onClick={copyActorHeapScan}>COPY HEAP SCAN</PixelButton><PixelButton tone="danger" disabled={!scratchWriteReady || actorResearchBusy} onClick={() => void testScratchActorWrite()}>{scratchWriteBusy ? 'TESTING + RESTORING...' : 'TEST SLOT 11 WRITE + RESTORE'}</PixelButton><PixelButton tone="danger" disabled={!playerFaceReady || actorResearchBusy} onClick={() => void testPlayerFacingWrite()}>{playerFaceBusy ? 'TURNING + RESTORING...' : 'TURN PLAYER 1.8S + RESTORE'}</PixelButton><PixelButton tone="danger" disabled={!playerWPosReady || actorResearchBusy} onClick={() => void testPlayerWPosWrite()}>{playerWPosBusy ? 'SHIFTING + RESTORING...' : 'SHIFT PLAYER 1/2 TILE 1.2S + RESTORE'}</PixelButton></div>
       {actorHeapScanError && <span className={actorHeapScanError === 'ACTOR HEAP SCAN COPIED.' ? 'memory-ok' : 'form-error'}>{actorHeapScanError}</span>}
       {scratchWriteResult && <span className={scratchWriteResult.startsWith('PASS') ? 'memory-ok' : 'form-error'}>{scratchWriteResult}</span>}
       {playerFaceResult && <span className={playerFaceResult.startsWith('PASS') ? 'memory-ok' : 'form-error'}>{playerFaceResult}</span>}
-      {actorHeapScan && <><code>INVENTORY • PLAYER {actorHeapScan.playerSlots.length} • ACTIVE {actorHeapScan.activeSlots.length} • ZEROED {actorHeapScan.zeroedSlots.length} • DETACHED {actorHeapScan.detachedSlots.length} • SUSPICIOUS {actorHeapScan.suspiciousSlots.length}</code><code>ZEROED CANDIDATES: {slots(actorHeapScan.zeroedSlots)}</code><code>DETACHED SLOTS: {slots(actorHeapScan.detachedSlots)}</code><code>SUSPICIOUS SLOTS: {slots(actorHeapScan.suspiciousSlots)}</code>{nonActiveActorEntries.map(entry => <code key={entry.index}>SLOT {entry.index} • {entry.state.toUpperCase()} • UID {entry.uid} MODEL {entry.modelId} • X {entry.x} Y {entry.y} H {entry.height} • TCB 0x{hex(entry.tcb, 8)} • OWNER 0x{hex(entry.actorSystemBackptr, 8)}</code>)}<span>ZEROED MEANS ALL CHECKED IDENTITY/RUNTIME FIELDS WERE ZERO. SLOT 11 TESTS RAW WRITE/READBACK/RESTORE WHILE PAUSED. THE PLAYER-FACING TEST TEMPORARILY FLIPS ONLY FIELD ACTOR +0x18, RUNS FOR 1.8 SECONDS SO THE NATIVE SPRITE CAN RESPOND, THEN RESTORES AND VERIFIES THE ORIGINAL DIRECTION.</span></>}
+      {playerWPosResult && <span className={playerWPosResult.startsWith('PASS') ? 'memory-ok' : 'form-error'}>{playerWPosResult}</span>}
+      {actorHeapScan && <><code>INVENTORY • PLAYER {actorHeapScan.playerSlots.length} • ACTIVE {actorHeapScan.activeSlots.length} • ZEROED {actorHeapScan.zeroedSlots.length} • DETACHED {actorHeapScan.detachedSlots.length} • SUSPICIOUS {actorHeapScan.suspiciousSlots.length}</code><code>ZEROED CANDIDATES: {slots(actorHeapScan.zeroedSlots)}</code><code>DETACHED SLOTS: {slots(actorHeapScan.detachedSlots)}</code><code>SUSPICIOUS SLOTS: {slots(actorHeapScan.suspiciousSlots)}</code>{nonActiveActorEntries.map(entry => <code key={entry.index}>SLOT {entry.index} • {entry.state.toUpperCase()} • UID {entry.uid} MODEL {entry.modelId} • X {entry.x} Y {entry.y} H {entry.height} • TCB 0x{hex(entry.tcb, 8)} • OWNER 0x{hex(entry.actorSystemBackptr, 8)}</code>)}<span>ZEROED MEANS ALL CHECKED IDENTITY/RUNTIME FIELDS WERE ZERO. SLOT 11 TESTS RAW WRITE/READBACK/RESTORE WHILE PAUSED. PLAYER-FACING TEMPORARILY FLIPS FIELD ACTOR +0x18. PLAYER WPOS TEMPORARILY OFFSETS ONLY FIELD ACTOR +0x44 BY HALF A TILE IN FX32, REAPPLIES THE OFFSET WHILE THE GAME RUNS, THEN RESTORES THE ORIGINAL WORLD X POSITION; GPOS IS LEFT UNTOUCHED.</span></>}
     </div>
     <div className="memory-inputs"><label>START ADDRESS <input value={addressText} onChange={event => setAddressText(event.target.value)} inputMode="text" spellCheck="false"/></label><label>LENGTH <input value={lengthText} onChange={event => setLengthText(event.target.value)} inputMode="numeric"/></label><PixelButton disabled={busy || !bridge} onClick={() => void capture()}>{busy ? 'CAPTURING...' : 'CAPTURE SNAPSHOT'}</PixelButton></div>
     <div className="memory-snapshots"><strong>SNAPSHOTS</strong>{snapshots.length ? snapshots.map((snapshot, index) => <span key={`${snapshot.capturedAt}-${index}`}>{option(index)} • 0x{hex(snapshot.address, 8)} • {snapshot.bytes.length} B • {date(snapshot.capturedAt)}</span>) : <span>NONE YET — CAPTURE A WHILE STANDING STILL.</span>}</div>
