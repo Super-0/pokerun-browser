@@ -45,6 +45,8 @@ const STANDARD_NPC_SCENE_VTABLE = 0x021cf92c
 const SPECIAL_PLAYER_COMPANION_UID = 0x00fe
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
+const MATERIAL_SWAP_MS = 1500
+const MATERIAL_SWAP_REAPPLY_MS = 40
 
 type BlActActor = {
   index: number
@@ -114,6 +116,10 @@ function signed32(value: number) {
   return value | 0
 }
 
+function delay(ms: number) {
+  return new Promise<void>(resolve => window.setTimeout(resolve, ms))
+}
+
 function isMainRamPointer(value: number) {
   return Number.isInteger(value) && value >= MAIN_RAM_START && value < MAIN_RAM_END && (value & 0x3) === 0
 }
@@ -126,7 +132,9 @@ function chooseStandardNpc(entries: White2ActorHeapEntry[], player: White2ActorH
 
 export function White2BlActBindingProbe({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const [busy, setBusy] = useState(false)
+  const [swapBusy, setSwapBusy] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
+  const [swapResult, setSwapResult] = useState<string | null>(null)
   const [inspection, setInspection] = useState<Inspection | null>(null)
   const supported = White2ActorSystemProbe.supportsRom(rom)
 
@@ -234,6 +242,7 @@ export function White2BlActBindingProbe({ bridge, rom }: { bridge: MelonDsBridge
     if (!bridge || !supported) return
     setBusy(true)
     setStatus(null)
+    setSwapResult(null)
     setInspection(null)
     const wasRunning = bridge.status === 'running'
 
@@ -291,6 +300,102 @@ export function White2BlActBindingProbe({ bridge, rom }: { bridge: MelonDsBridge
     }
   }
 
+  async function runMaterialSwap() {
+    if (!bridge || !supported || !inspection) return
+    setSwapBusy(true)
+    setSwapResult(null)
+    const wasRunning = bridge.status === 'running'
+    let timer: number | null = null
+    const playerHandle = inspection.player.handles[0]
+    const npcHandle = inspection.npc.handles[0]
+    const playerBlAct = inspection.player.matched
+    const npcBlAct = inspection.npc.matched
+
+    try {
+      if (!wasRunning) throw new Error('Billboard material swap test requires melonDS to be running.')
+      if (!playerHandle || !npcHandle || !playerBlAct || !npcBlAct) throw new Error('Inspect bindings first; player/NPC billboard bindings are incomplete.')
+      if (inspection.player.handles.length !== 1 || inspection.npc.handles.length !== 1) throw new Error('Material swap test requires exactly one billboard handle for the player and NPC.')
+      if (playerHandle.matEntryIndex >= inspection.materialCount || npcHandle.matEntryIndex >= inspection.materialCount) throw new Error('Player or NPC material entry is outside the current material table.')
+      if (playerHandle.matEntryIndex === npcHandle.matEntryIndex) throw new Error('Player and NPC already use the same material entry; this test would prove nothing.')
+
+      await bridge.pause()
+      const scan = await new White2ActorSystemProbe(bridge).scanHeap()
+      const livePlayer = scan.entries[inspection.player.slot]
+      const liveNpc = scan.entries[inspection.npc.slot]
+      if (!livePlayer || livePlayer.state !== 'player' || livePlayer.uid !== inspection.player.uid) throw new Error('Player actor changed since the billboard inspection; inspect again before testing.')
+      if (!liveNpc || liveNpc.state !== 'active' || liveNpc.uid !== inspection.npc.uid || liveNpc.modelId !== inspection.npc.fieldModelId) throw new Error('NPC actor changed since the billboard inspection; inspect again before testing.')
+
+      const [playerHandleActor, playerMatEntry, npcHandleActor, npcMatEntry, playerFace, npcFace] = await Promise.all([
+        bridge.read32(playerHandle.address + BLACT_HANDLE_ACTOR_INDEX),
+        bridge.read16(playerHandle.address + BLACT_HANDLE_MAT_ENTRY_INDEX),
+        bridge.read32(npcHandle.address + BLACT_HANDLE_ACTOR_INDEX),
+        bridge.read16(npcHandle.address + BLACT_HANDLE_MAT_ENTRY_INDEX),
+        bridge.read16(playerBlAct.address + BLACT_FACE_INDEX),
+        bridge.read16(npcBlAct.address + BLACT_FACE_INDEX),
+      ])
+      if (playerHandleActor !== playerBlAct.index || npcHandleActor !== npcBlAct.index) throw new Error('Billboard handle ownership changed since inspection; inspect again before testing.')
+      if (playerMatEntry !== playerHandle.matEntryIndex || npcMatEntry !== npcHandle.matEntryIndex) throw new Error('Billboard material binding changed since inspection; inspect again before testing.')
+
+      const applyPlayerMaterial = async () => {
+        await Promise.all([
+          bridge.write16(npcHandle.address + BLACT_HANDLE_MAT_ENTRY_INDEX, playerMatEntry),
+          bridge.write16(npcBlAct.address + BLACT_FACE_INDEX, playerFace),
+        ])
+      }
+
+      await applyPlayerMaterial()
+      const [initialMat, initialFace] = await Promise.all([
+        bridge.read16(npcHandle.address + BLACT_HANDLE_MAT_ENTRY_INDEX),
+        bridge.read16(npcBlAct.address + BLACT_FACE_INDEX),
+      ])
+      if (initialMat !== playerMatEntry || initialFace !== playerFace) throw new Error('Billboard material/face swap did not read back correctly before resume.')
+
+      await bridge.resume()
+      timer = window.setInterval(() => { void applyPlayerMaterial() }, MATERIAL_SWAP_REAPPLY_MS)
+      await delay(MATERIAL_SWAP_MS)
+      window.clearInterval(timer)
+      timer = null
+      await bridge.pause()
+
+      const [ownerAfter, observedMat, observedFace] = await Promise.all([
+        bridge.read32(npcHandle.address + BLACT_HANDLE_ACTOR_INDEX),
+        bridge.read16(npcHandle.address + BLACT_HANDLE_MAT_ENTRY_INDEX),
+        bridge.read16(npcBlAct.address + BLACT_FACE_INDEX),
+      ])
+      if (ownerAfter !== npcBlAct.index) throw new Error('NPC billboard handle changed ownership while the swap was active; stopping before writing into a replacement handle.')
+
+      await Promise.all([
+        bridge.write16(npcHandle.address + BLACT_HANDLE_MAT_ENTRY_INDEX, npcMatEntry),
+        bridge.write16(npcBlAct.address + BLACT_FACE_INDEX, npcFace),
+      ])
+      const [restoredMat, restoredFace] = await Promise.all([
+        bridge.read16(npcHandle.address + BLACT_HANDLE_MAT_ENTRY_INDEX),
+        bridge.read16(npcBlAct.address + BLACT_FACE_INDEX),
+      ])
+      if (restoredMat !== npcMatEntry || restoredFace !== npcFace) throw new Error('NPC billboard material/face could not be verified after restoration.')
+
+      setSwapResult(`PASS • NPC BLACT ${npcBlAct.index} HANDLE ${npcHandle.handleIndex} • MATENTRY ${npcMatEntry}→${playerMatEntry} FOR ${MATERIAL_SWAP_MS}MS→${npcMatEntry} • FACE ${npcFace}→${playerFace}→${npcFace} • OBSERVED ${observedMat}/${observedFace} • ORIGINAL BINDING RESTORED`)
+    } catch (reason) {
+      if (timer !== null) window.clearInterval(timer)
+      try {
+        if (npcHandle && npcBlAct) {
+          if (bridge.status === 'running') await bridge.pause()
+          const ownerNow = await bridge.read32(npcHandle.address + BLACT_HANDLE_ACTOR_INDEX)
+          if (ownerNow === npcBlAct.index) {
+            await Promise.all([
+              bridge.write16(npcHandle.address + BLACT_HANDLE_MAT_ENTRY_INDEX, npcHandle.matEntryIndex),
+              bridge.write16(npcBlAct.address + BLACT_FACE_INDEX, npcBlAct.faceIndex),
+            ])
+          }
+        }
+      } catch { /* best-effort restore guarded by current handle ownership */ }
+      setSwapResult(reason instanceof Error ? `FAIL • ${reason.message.toUpperCase()}` : 'FAIL • BILLBOARD MATERIAL SWAP TEST FAILED.')
+    } finally {
+      if (wasRunning && bridge.status === 'paused') await bridge.resume()
+      setSwapBusy(false)
+    }
+  }
+
   function bindingLines(binding: ActorBinding) {
     const matched = binding.matched
       ? `BLACT ${binding.matched.index} @0x${hex(binding.matched.address)} • DIST ${binding.distance} • POS 0x${hex(binding.matched.x)}/0x${hex(binding.matched.y)}/0x${hex(binding.matched.z)} • FACEIDX ${binding.matched.faceIndex} • MATFLAGS 0x${hex(binding.matched.matFlags, 4)}`
@@ -325,21 +430,26 @@ export function White2BlActBindingProbe({ bridge, rom }: { bridge: MelonDsBridge
     }
   }
 
+  const anyBusy = busy || swapBusy
+  const canSwap = !!inspection && inspection.player.handles.length === 1 && inspection.npc.handles.length === 1 && !!inspection.player.matched && !!inspection.npc.matched
+
   return <section className="white2-memory-research pixel-border">
     <h2>WHITE 2 NATIVE BILLBOARD / BLACT INSPECTOR</h2>
-    <p>The G3D actor entries for both the trainer and NPC were 0xFFFF0000, which is the sentinel for no FieldG3DObj binding. This reads White 2's separate billboard actor system, correlates live billboard positions back to the FieldActor WPos, and follows the matched BlAct handle into its texture/material binding. This probe performs no writes.</p>
+    <p>The G3D actor entries for both the trainer and NPC were 0xFFFF0000, so their visible sprites come through White 2's separate billboard actor system. The inspector correlates live billboard positions back to FieldActor WPos and follows each BlAct handle into its material binding. The controlled swap test temporarily gives the NPC the player's material entry + face index, then restores both.</p>
     <div className="memory-compare">
-      <PixelButton tone="ghost" disabled={!bridge || !supported || busy} onClick={() => void inspect()}>{busy ? 'READING BILLBOARD BINDINGS...' : 'INSPECT BILLBOARD / BLACT BINDINGS'}</PixelButton>
-      <PixelButton tone="ghost" disabled={!inspection || busy} onClick={() => void copyInspection()}>COPY BLACT BINDINGS</PixelButton>
+      <PixelButton tone="ghost" disabled={!bridge || !supported || anyBusy} onClick={() => void inspect()}>{busy ? 'READING BILLBOARD BINDINGS...' : 'INSPECT BILLBOARD / BLACT BINDINGS'}</PixelButton>
+      <PixelButton tone="ghost" disabled={!inspection || anyBusy} onClick={() => void copyInspection()}>COPY BLACT BINDINGS</PixelButton>
+      <PixelButton tone="danger" disabled={!bridge || !supported || !canSwap || anyBusy} onClick={() => void runMaterialSwap()}>{swapBusy ? 'SWAPPING NPC BILLBOARD + RESTORING...' : 'SWAP NPC→PLAYER MATERIAL 1.5S + RESTORE'}</PixelButton>
     </div>
     {!supported && <span className="form-error">DISABLED FOR THIS ROM FINGERPRINT.</span>}
     {status && <span className={status.startsWith('FAIL') ? 'form-error' : 'memory-ok'}>{status}</span>}
+    {swapResult && <span className={swapResult.startsWith('PASS') ? 'memory-ok' : 'form-error'}>{swapResult}</span>}
     {inspection && <div className="memory-results">
       <code>FIELD BLACT 0x{hex(inspection.fieldBlAct)} • BLACT SYSTEM 0x{hex(inspection.blActSystem)} • SCENE 0x{hex(inspection.scene)}</code>
       <code>MATERIALS {inspection.materialCount} • HANDLES {inspection.actorCount} • SCENE ACTORS {inspection.sceneActorCount}</code>
       {bindingLines(inspection.player).map((line, index) => <code key={`p-${index}`}>{line}</code>)}
       {bindingLines(inspection.npc).map((line, index) => <code key={`n-${index}`}>{line}</code>)}
     </div>}
-    <span>IF PLAYER AND NPC RESOLVE TO DIFFERENT MATERIAL ENTRIES, THE NEXT CONTROLLED TEST CAN SWAP ONLY THE NPC'S BILLBOARD MATERIAL/HANDLE BINDING AND RESTORE IT.</span>
+    <span>WATCH THE NPC DURING THE SWAP. IF IT VISIBLY BECOMES THE PLAYER TRAINER SPRITE, MATENTRY IS THE LIVE APPEARANCE BINDING WE NEED FOR THE NATIVE MULTIPLAYER PROXY.</span>
   </section>
 }
