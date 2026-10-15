@@ -17,6 +17,7 @@ const FX32_ONE = 4096
 const TILE_WORLD_UNITS = 16
 const TILE_FX32 = FX32_ONE * TILE_WORLD_UNITS
 const TEST_MS = 1500
+const MODEL_TEST_MS = 1500
 const REAPPLY_MS = 40
 const REMOTE_TEST_MS = 8000
 const REMOTE_REAPPLY_MS = 50
@@ -45,6 +46,10 @@ function sameActor(entry: White2ActorHeapEntry | undefined, original: OriginalAc
   return !!entry && entry.state === 'active' && entry.uid === original.uid && entry.modelId === original.modelId && entry.tcb === original.tcb
 }
 
+function sameActorIgnoringModel(entry: White2ActorHeapEntry | undefined, original: OriginalActorPose) {
+  return !!entry && entry.state === 'active' && entry.uid === original.uid && entry.tcb === original.tcb
+}
+
 function delay(ms: number) {
   return new Promise<void>(resolve => window.setTimeout(resolve, ms))
 }
@@ -52,14 +57,17 @@ function delay(ms: number) {
 /**
  * DEV-only proof that PokéRun can drive a second, independent native FieldActor.
  *
- * This deliberately does NOT create an actor or change ModelID/GPos. It borrows a
- * normal live NPC, changes only WPos + FaceDir, then restores the exact original
- * values. Collision, scripts and grid position remain untouched.
+ * The movement tests borrow a normal live NPC, change WPos + FaceDir, then restore
+ * the exact original values. The model test separately changes only ModelID while
+ * also moving that already-live NPC beside the player so the visual result is easy
+ * to inspect. None of these tests create an actor or alter UID/GPos/TCB/scripts.
  */
 export function White2NativeActorControlProbe({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const [busy, setBusy] = useState(false)
+  const [modelBusy, setModelBusy] = useState(false)
   const [remoteBusy, setRemoteBusy] = useState(false)
   const [result, setResult] = useState<string | null>(null)
+  const [modelResult, setModelResult] = useState<string | null>(null)
   const [remoteResult, setRemoteResult] = useState<string | null>(null)
   const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const presenceRef = useRef<MultiplayerPresenceSnapshot>(presence)
@@ -82,6 +90,25 @@ export function White2NativeActorControlProbe({ bridge, rom }: { bridge: MelonDs
       bridge.write32(original.address + ACTOR_WPOS + 0x08, original.wposZ),
     ])
     return (await bridge.read16(original.address + ACTOR_FACE_DIR)) === original.face &&
+      (await bridge.read32(original.address + ACTOR_WPOS + 0x00)) === original.wposX &&
+      (await bridge.read32(original.address + ACTOR_WPOS + 0x04)) === original.wposY &&
+      (await bridge.read32(original.address + ACTOR_WPOS + 0x08)) === original.wposZ
+  }
+
+  async function restoreModelAndPose(original: OriginalActorPose) {
+    if (!bridge) return false
+    const scan = await new White2ActorSystemProbe(bridge).scanHeap()
+    const entry = scan.entries[original.slot]
+    if (!sameActorIgnoringModel(entry, original)) return false
+    await Promise.all([
+      bridge.write16(original.address + ACTOR_MODEL_ID, original.modelId),
+      bridge.write16(original.address + ACTOR_FACE_DIR, original.face),
+      bridge.write32(original.address + ACTOR_WPOS + 0x00, original.wposX),
+      bridge.write32(original.address + ACTOR_WPOS + 0x04, original.wposY),
+      bridge.write32(original.address + ACTOR_WPOS + 0x08, original.wposZ),
+    ])
+    return (await bridge.read16(original.address + ACTOR_MODEL_ID)) === original.modelId &&
+      (await bridge.read16(original.address + ACTOR_FACE_DIR)) === original.face &&
       (await bridge.read32(original.address + ACTOR_WPOS + 0x00)) === original.wposX &&
       (await bridge.read32(original.address + ACTOR_WPOS + 0x04)) === original.wposY &&
       (await bridge.read32(original.address + ACTOR_WPOS + 0x08)) === original.wposZ
@@ -194,6 +221,93 @@ export function White2NativeActorControlProbe({ bridge, rom }: { bridge: MelonDs
     }
   }
 
+  async function runModelProbe() {
+    if (!bridge || !supported) return
+    setModelBusy(true)
+    setModelResult(null)
+    const wasRunning = bridge.status === 'running'
+    let timer: number | null = null
+    let original: OriginalActorPose | null = null
+
+    try {
+      if (!wasRunning) throw new Error('Native model test requires melonDS to be running.')
+      await bridge.pause()
+
+      const actorSystem = new White2ActorSystemProbe(bridge)
+      const scan = await actorSystem.scanHeap()
+      if (scan.suspiciousSlots.length) throw new Error('Native model test blocked because suspicious actor slots are present.')
+      const player = scan.entries.find(entry => entry.state === 'player')
+      if (!player || player.uid !== PLAYER_UID) throw new Error('Native model test blocked because the live player actor was not found.')
+      const candidate = chooseStandardNpc(scan.entries, player)
+      if (!candidate) throw new Error('No standard live NPC actor is available for the native model test on this map.')
+
+      const [face, wposX, wposY, wposZ, playerWPosX, playerWPosY, playerWPosZ] = await Promise.all([
+        bridge.read16(candidate.address + ACTOR_FACE_DIR),
+        bridge.read32(candidate.address + ACTOR_WPOS + 0x00),
+        bridge.read32(candidate.address + ACTOR_WPOS + 0x04),
+        bridge.read32(candidate.address + ACTOR_WPOS + 0x08),
+        bridge.read32(player.address + ACTOR_WPOS + 0x00),
+        bridge.read32(player.address + ACTOR_WPOS + 0x04),
+        bridge.read32(player.address + ACTOR_WPOS + 0x08),
+      ])
+      original = { slot: candidate.index, address: candidate.address, uid: candidate.uid, modelId: candidate.modelId, tcb: candidate.tcb, face, wposX, wposY, wposZ }
+
+      const targetX = (playerWPosX + TILE_FX32) >>> 0
+      const targetY = playerWPosY >>> 0
+      const targetZ = playerWPosZ >>> 0
+      const targetModel = player.modelId
+
+      const applyTarget = async () => {
+        await Promise.all([
+          bridge.write16(candidate.address + ACTOR_MODEL_ID, targetModel),
+          bridge.write16(candidate.address + ACTOR_FACE_DIR, DIR_LEFT),
+          bridge.write32(candidate.address + ACTOR_WPOS + 0x00, targetX),
+          bridge.write32(candidate.address + ACTOR_WPOS + 0x04, targetY),
+          bridge.write32(candidate.address + ACTOR_WPOS + 0x08, targetZ),
+        ])
+      }
+
+      await applyTarget()
+      const [modelReadback, uidReadback, tcbReadback] = await Promise.all([
+        bridge.read16(candidate.address + ACTOR_MODEL_ID),
+        bridge.read16(candidate.address + ACTOR_UID),
+        bridge.read32(candidate.address + ACTOR_TCB),
+      ])
+      if (modelReadback !== targetModel || uidReadback !== candidate.uid || tcbReadback !== candidate.tcb) {
+        throw new Error('Native model test write/readback or identity verification failed before resume.')
+      }
+
+      await bridge.resume()
+      timer = window.setInterval(() => { void applyTarget() }, REAPPLY_MS)
+      await delay(MODEL_TEST_MS)
+      window.clearInterval(timer)
+      timer = null
+      await bridge.pause()
+
+      const afterScan = await actorSystem.scanHeap()
+      const afterEntry = afterScan.entries[candidate.index]
+      if (!sameActorIgnoringModel(afterEntry, original)) throw new Error(`Slot ${candidate.index} changed UID/TCB while the native model test was running; stopping before restoring into a replacement actor.`)
+      const observedModel = await bridge.read16(candidate.address + ACTOR_MODEL_ID)
+
+      const restored = await restoreModelAndPose(original)
+      if (!restored) throw new Error(`Native model test could not verify restoration of NPC slot ${candidate.index}.`)
+
+      setModelResult(`PASS • NPC SLOT ${candidate.index} • UID ${candidate.uid} • MODEL FIELD ${candidate.modelId}→${targetModel} FOR ${MODEL_TEST_MS}MS→${candidate.modelId} • OBSERVED MODEL ${observedModel} • ORIGINAL MODEL + POSE RESTORED`)
+    } catch (reason) {
+      if (timer !== null) window.clearInterval(timer)
+      if (original) {
+        try {
+          if (bridge.status === 'running') await bridge.pause()
+          await restoreModelAndPose(original)
+        } catch { /* best-effort restore with UID/TCB identity guard */ }
+      }
+      setModelResult(reason instanceof Error ? `FAIL • ${reason.message.toUpperCase()}` : 'FAIL • NATIVE MODEL TEST FAILED.')
+    } finally {
+      if (wasRunning && bridge.status === 'paused') await bridge.resume()
+      setModelBusy(false)
+    }
+  }
+
   async function runRemoteDriveProbe() {
     if (!bridge || !supported) return
     setRemoteBusy(true)
@@ -294,19 +408,22 @@ export function White2NativeActorControlProbe({ bridge, rom }: { bridge: MelonDs
   }
 
   const remoteReady = !!presence.local && !!presence.remote && presence.local.location.mapId === presence.remote.location.mapId
-  const anyBusy = busy || remoteBusy
+  const anyBusy = busy || modelBusy || remoteBusy
 
   return <section className="white2-memory-research pixel-border">
     <h2>WHITE 2 NATIVE SECOND-ACTOR CONTROL</h2>
-    <p>Temporary native-actor proofs only. These tests borrow an already-live standard NPC and change only that actor's WPos + FaceDir, then restore its exact original pose. Model, GPos, collision, UID, scripts and TCB are never modified.</p>
+    <p>Temporary native-actor proofs. Movement tests borrow an already-live standard NPC and change WPos + FaceDir. The model-field test temporarily writes the live player's ModelID into that NPC while moving it beside the player. Every test restores the original values; UID, GPos, collision, scripts and TCB are never changed.</p>
     <div className="memory-compare">
       <PixelButton tone="danger" disabled={!bridge || !supported || anyBusy} onClick={() => void runProbe()}>{busy ? 'MOVING NPC + RESTORING...' : 'MOVE NEAREST NPC BESIDE PLAYER 1.5S + RESTORE'}</PixelButton>
+      <PixelButton tone="danger" disabled={!bridge || !supported || anyBusy} onClick={() => void runModelProbe()}>{modelBusy ? 'SWAPPING MODEL FIELD + RESTORING...' : 'TEST NPC MODEL→PLAYER 1.5S + RESTORE'}</PixelButton>
       <PixelButton tone="danger" disabled={!bridge || !supported || !remoteReady || anyBusy} onClick={() => void runRemoteDriveProbe()}>{remoteBusy ? 'DRIVING NATIVE NPC FROM REMOTE...' : 'DRIVE NPC FROM REMOTE 8S + RESTORE'}</PixelButton>
     </div>
     {!supported && <span className="form-error">DISABLED FOR THIS ROM FINGERPRINT.</span>}
     {presence.local && presence.remote ? <code>REMOTE LINK • LOCAL MAP {presence.local.location.mapId} X {presence.local.x} Y {presence.local.y} • REMOTE MAP {presence.remote.location.mapId} X {presence.remote.x} Y {presence.remote.y} {remoteReady ? '• SAME MAP' : '• DIFFERENT MAP'}</code> : <span>REMOTE NATIVE TEST WAITING FOR BOTH PLAYER STATES.</span>}
     {result && <span className={result.startsWith('PASS') ? 'memory-ok' : 'form-error'}>{result}</span>}
+    {modelResult && <span className={modelResult.startsWith('PASS') ? 'memory-ok' : 'form-error'}>{modelResult}</span>}
     {remoteResult && <span className={remoteResult.startsWith('PASS') ? 'memory-ok' : 'form-error'}>{remoteResult}</span>}
+    <span>MODEL TEST: WATCH THE NPC BESIDE YOU. IF IT VISIBLY BECOMES THE PLAYER TRAINER FOR 1.5S, THE LIVE RENDER OBJECT RESPONDS TO FIELD ACTOR MODELID. IF THE RESULT SAYS PASS BUT THE NPC'S APPEARANCE DOES NOT CHANGE, MODELID IS ONLY METADATA AFTER ACTOR CREATION AND WE NEED THE G3D/SCENE-NODE REBIND PATH.</span>
     <span>REMOTE TEST: PUT BOTH PLAYERS ON THE SAME MAP WITHIN 7 HORIZONTAL / 5 VERTICAL TILES. START THE 8-SECOND TEST IN ONE TAB, THEN MOVE THE OTHER PLAYER. THE BORROWED REAL NPC SHOULD FOLLOW THAT REMOTE PLAYER'S RELATIVE TILE POSITION AND FACING, THEN RETURN TO ITS ORIGINAL POSE.</span>
   </section>
 }
