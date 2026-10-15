@@ -1,6 +1,8 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
+const MELONDS_RUNTIME_VERSION = 'arm9-write-v1'
+
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
 type WasmEmulator = {
   loadFreeBIOS(): void
@@ -50,12 +52,12 @@ export function loadMelonDsRuntime() {
   loading = new Promise((resolve, reject) => {
     if (document.querySelector('script[data-pokerun-melonds]')) return reject(new Error('melonDS runtime script was already requested but did not initialize.'))
     window.Module = {
-      locateFile: file => `/emulators/melonds/${file}`,
+      locateFile: file => `/emulators/melonds/${file}?v=${MELONDS_RUNTIME_VERSION}`,
       onRuntimeInitialized: () => resolve(window.Module as MelonDsModule),
     }
     const script = document.createElement('script')
     script.dataset.pokerunMelonds = 'true'
-    script.src = '/emulators/melonds/wasmemulator.js'
+    script.src = `/emulators/melonds/wasmemulator.js?v=${MELONDS_RUNTIME_VERSION}`
     script.async = true
     script.onerror = () => reject(new Error('Could not load the melonDS runtime. Run the documented build:melonds command first.'))
     document.head.append(script)
