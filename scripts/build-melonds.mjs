@@ -24,8 +24,10 @@ if (revision !== expectedRevision) throw new Error(`DS Anywhere must be pinned t
 // The patch is PokéRun-owned and can change while the pinned upstream revision stays fixed.
 // Always restore tracked upstream files first so an older applied patch cannot block a newer one.
 run('git', ['reset', '--hard', expectedRevision], source)
-run('git', ['apply', '--check', patch], source)
-run('git', ['apply', patch], source)
+// --recount makes the build resilient to stale unified-diff hunk counts when the
+// PokéRun-owned patch is edited by hand; git still validates the actual context.
+run('git', ['apply', '--recount', '--check', patch], source)
+run('git', ['apply', '--recount', patch], source)
 
 const patchedCpp = readFileSync(resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.cpp'), 'utf8')
 for (const symbol of requiredRuntimeSymbols) {
