@@ -1,4 +1,4 @@
-import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
+import type { Arm9NativeCallResult, MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import { White2ActorSystemProbe, type White2ActorHeapEntry } from './White2ActorSystem'
 
@@ -37,16 +37,35 @@ export type White2NativeSpawn = {
   z: number
 }
 
+function hex(value: number) {
+  return `0x${(value >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
+}
+
+function armMode(cpsr: number) {
+  const mode = cpsr & 0x1f
+  if (mode === 0x10) return 'USR'
+  if (mode === 0x11) return 'FIQ'
+  if (mode === 0x12) return 'IRQ'
+  if (mode === 0x13) return 'SVC'
+  if (mode === 0x17) return 'ABT'
+  if (mode === 0x1b) return 'UND'
+  if (mode === 0x1f) return 'SYS'
+  return `MODE-${mode.toString(16).toUpperCase()}`
+}
+
 function assertMainRamPointer(value: number, label: string) {
   if (value < 0x02000000 || value >= 0x02400000 || (value & 0x3) !== 0) {
-    throw new Error(`${label} is not a valid White 2 main-RAM pointer: 0x${value.toString(16).toUpperCase()}.`)
+    throw new Error(`${label} is not a valid White 2 main-RAM pointer: ${hex(value)}.`)
   }
 }
 
-function assertCallReturned(status: number, label: string) {
-  if (status === 1) return
-  const reason = status === 2 ? 'invalid call arguments' : status === 3 ? 'instruction limit reached' : status === 4 ? 'callee halted ARM9' : `unknown status ${status}`
-  throw new Error(`${label} did not return normally: ${reason}.`)
+function assertCallReturned(call: Arm9NativeCallResult, label: string) {
+  if (call.status === 1) return
+  const reason = call.status === 2 ? 'invalid call arguments' : call.status === 3 ? 'instruction limit reached' : call.status === 4 ? 'callee halted ARM9' : `unknown status ${call.status}`
+  const diagnostics = call.pc || call.lr || call.cpsr || call.instructions
+    ? ` PC ${hex(call.pc)} • LR ${hex(call.lr)} • CPSR ${hex(call.cpsr)} (${armMode(call.cpsr)}) • STEPS ${call.instructions}`
+    : ''
+  throw new Error(`${label} did not return normally: ${reason}.${diagnostics}`)
 }
 
 function putU16(view: DataView, offset: number, value: number) {
@@ -97,7 +116,7 @@ export class White2NativeActorBridge {
 
   private async findActor(actorSystem: number, uid: number) {
     const call = await this.bridge.callArm9Thumb4(FIND_FIELD_ACTOR, actorSystem, uid, 0, 0, NATIVE_STACK_RESERVE)
-    assertCallReturned(call.status, 'FindFieldActor')
+    assertCallReturned(call, 'FindFieldActor')
     return call.result >>> 0
   }
 
@@ -106,7 +125,7 @@ export class White2NativeActorBridge {
     const deleteOpcode = await this.bridge.read16(DELETE_ACTOR)
     if (deleteOpcode === 0 || deleteOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-delete address.')
     const call = await this.bridge.callArm9Thumb4(DELETE_ACTOR, actorAddress, 0, 0, 0, NATIVE_STACK_RESERVE)
-    assertCallReturned(call.status, 'DeleteActor')
+    assertCallReturned(call, 'DeleteActor')
   }
 
   async validateCallGate(): Promise<White2NativeCallValidation> {
@@ -119,7 +138,7 @@ export class White2NativeActorBridge {
     const foundAddress = await this.findActor(scan.actorSystem, 0x00ff)
     assertMainRamPointer(foundAddress, 'FindFieldActor result')
     if (foundAddress !== player.address) {
-      throw new Error(`Native call gate returned player 0x${foundAddress.toString(16).toUpperCase()}, expected 0x${player.address.toString(16).toUpperCase()}.`)
+      throw new Error(`Native call gate returned player ${hex(foundAddress)}, expected ${hex(player.address)}.`)
     }
     return { actorSystem: scan.actorSystem, playerAddress: player.address, foundAddress, stackPointer }
   }
@@ -128,7 +147,7 @@ export class White2NativeActorBridge {
     const { scan, player } = await this.currentPlayer()
     if (!scan.zeroedSlots.length) throw new Error('Native actor test blocked because the FieldActor heap has no fully zeroed slot.')
     const existing = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
-    if (existing !== 0) throw new Error(`Test UID 0x${POKERUN_NATIVE_TEST_UID.toString(16).toUpperCase()} is already in use at 0x${existing.toString(16).toUpperCase()}.`)
+    if (existing !== 0) throw new Error(`Test UID ${hex(POKERUN_NATIVE_TEST_UID)} is already in use at ${hex(existing)}.`)
 
     const createOpcode = await this.bridge.read16(CREATE_ACTOR)
     if (createOpcode === 0 || createOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-create address.')
@@ -142,11 +161,11 @@ export class White2NativeActorBridge {
     try {
       await this.bridge.writeBytes(scratch, npc.bytes)
       const call = await this.bridge.callArm9Thumb4(CREATE_ACTOR, scan.actorSystem, scratch, player.zoneId, 0, NATIVE_STACK_RESERVE)
-      assertCallReturned(call.status, 'CreateNewActorByEntityNoWKOBJCODE')
+      assertCallReturned(call, 'CreateNewActorByEntityNoWKOBJCODE')
       const actorAddress = call.result >>> 0
       assertMainRamPointer(actorAddress, 'Created actor')
       const found = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
-      if (found !== actorAddress) throw new Error(`Created actor verification failed: returned 0x${actorAddress.toString(16).toUpperCase()}, FindFieldActor saw 0x${found.toString(16).toUpperCase()}.`)
+      if (found !== actorAddress) throw new Error(`Created actor verification failed: returned ${hex(actorAddress)}, FindFieldActor saw ${hex(found)}.`)
       return { actorAddress, uid: POKERUN_NATIVE_TEST_UID, modelId: npc.modelId, zoneId: player.zoneId, x: npc.x, z: npc.z }
     } catch (error) {
       const partial = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID).catch(() => 0)
@@ -163,7 +182,7 @@ export class White2NativeActorBridge {
     if (address === 0) return false
     await this.deleteActorAddress(address)
     const remaining = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
-    if (remaining !== 0) throw new Error(`DeleteActor returned, but test UID still resolves to 0x${remaining.toString(16).toUpperCase()}.`)
+    if (remaining !== 0) throw new Error(`DeleteActor returned, but test UID still resolves to ${hex(remaining)}.`)
     return true
   }
 }
