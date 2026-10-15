@@ -162,13 +162,22 @@ function turnKey(from: Direction, to: Direction): TurnKey {
   return `${from}->${to}`
 }
 
-function emptyKnowledge(): Record<Direction, DirectionKnowledge> {
-  return Object.fromEntries(DIRECTIONS.map(direction => [direction, {
+function createDirectionKnowledge(): DirectionKnowledge {
+  return {
     idle: null,
     idleCounts: new Map<string, { count: number; profile: RenderProfile }>(),
     movingSequence: [],
     currentRun: [],
-  }])) as Record<Direction, DirectionKnowledge>
+  }
+}
+
+function emptyKnowledge(): Record<Direction, DirectionKnowledge> {
+  return {
+    north: createDirectionKnowledge(),
+    south: createDirectionKnowledge(),
+    west: createDirectionKnowledge(),
+    east: createDirectionKnowledge(),
+  }
 }
 
 function appendStep(sequence: RenderSequenceStep[], profile: RenderProfile) {
@@ -370,6 +379,7 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
 
   useEffect(() => {
     if (!bridge || !White2ActorSystemProbe.supportsRom(rom)) return
+    const runtimeBridge = bridge
 
     let cancelled = false
     let playerBinding: Binding | null = null
@@ -413,7 +423,7 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
       if (!current) return
       if (cooldown) reacquireAfter = Math.max(reacquireAfter, Date.now() + REACQUIRE_COOLDOWN_MS)
       try {
-        await restoreNpc(bridge, current)
+        await restoreNpc(runtimeBridge, current)
       } catch {
         // Map lifecycle may already have destroyed/replaced the borrowed actor.
       }
@@ -455,9 +465,9 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
     }
 
     async function ensurePlayerBinding() {
-      if (playerBinding && await bindingIdentityMatches(bridge, playerBinding, PLAYER_UID, playerBinding.actor.modelId, playerBinding.actor.tcb)) return playerBinding
+      if (playerBinding && await bindingIdentityMatches(runtimeBridge, playerBinding, PLAYER_UID, playerBinding.actor.modelId, playerBinding.actor.tcb)) return playerBinding
       resetPlayerBinding()
-      const prepared = await prepareBindings(bridge)
+      const prepared = await prepareBindings(runtimeBridge)
       playerBinding = prepared.playerBinding
       if (playerModelId !== playerBinding.actor.modelId) {
         playerModelId = playerBinding.actor.modelId
@@ -476,13 +486,13 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
     async function learnLocalRender(now: number) {
       const binding = await ensurePlayerBinding()
       const [faceDir, x, z, faceIndex, geomFlags, matFlags, matEntry] = await Promise.all([
-        bridge.read16(binding.actor.address + ACTOR_FACE_DIR),
-        bridge.read32(binding.actor.address + ACTOR_WPOS + 0x00),
-        bridge.read32(binding.actor.address + ACTOR_WPOS + 0x08),
-        bridge.read16(binding.blActAddress + BLACT_FACE_INDEX),
-        bridge.read16(binding.blActAddress + BLACT_GEOM_FLAGS),
-        bridge.read16(binding.blActAddress + BLACT_MAT_FLAGS),
-        bridge.read16(binding.handleAddress + HANDLE_MAT_ENTRY),
+        runtimeBridge.read16(binding.actor.address + ACTOR_FACE_DIR),
+        runtimeBridge.read32(binding.actor.address + ACTOR_WPOS + 0x00),
+        runtimeBridge.read32(binding.actor.address + ACTOR_WPOS + 0x08),
+        runtimeBridge.read16(binding.blActAddress + BLACT_FACE_INDEX),
+        runtimeBridge.read16(binding.blActAddress + BLACT_GEOM_FLAGS),
+        runtimeBridge.read16(binding.blActAddress + BLACT_MAT_FLAGS),
+        runtimeBridge.read16(binding.handleAddress + HANDLE_MAT_ENTRY),
       ])
       playerMatEntry = matEntry
 
@@ -598,12 +608,12 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
     }
 
     async function ensureBorrowed() {
-      if (borrowed && await bindingIdentityMatches(bridge, borrowed.binding, borrowed.original.uid, borrowed.original.modelId, borrowed.original.tcb)) return borrowed
+      if (borrowed && await bindingIdentityMatches(runtimeBridge, borrowed.binding, borrowed.original.uid, borrowed.original.modelId, borrowed.original.tcb)) return borrowed
       borrowed = null
-      const prepared = await prepareBindings(bridge)
+      const prepared = await prepareBindings(runtimeBridge)
       playerBinding = prepared.playerBinding
       if (!prepared.npcBinding) return null
-      borrowed = { binding: prepared.npcBinding, original: await captureOriginalNpc(bridge, prepared.npcBinding) }
+      borrowed = { binding: prepared.npcBinding, original: await captureOriginalNpc(runtimeBridge, prepared.npcBinding) }
       return borrowed
     }
 
@@ -688,25 +698,25 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
       const world = renderedWorld
 
       await Promise.all([
-        bridge.write16(binding.actor.address + ACTOR_FACE_DIR, FIELD_FACE_BY_DIRECTION[remote.direction]),
-        bridge.write32(binding.actor.address + ACTOR_WPOS + 0x00, world.x >>> 0),
-        bridge.write32(binding.actor.address + ACTOR_WPOS + 0x04, world.y >>> 0),
-        bridge.write32(binding.actor.address + ACTOR_WPOS + 0x08, world.z >>> 0),
+        runtimeBridge.write16(binding.actor.address + ACTOR_FACE_DIR, FIELD_FACE_BY_DIRECTION[remote.direction]),
+        runtimeBridge.write32(binding.actor.address + ACTOR_WPOS + 0x00, world.x >>> 0),
+        runtimeBridge.write32(binding.actor.address + ACTOR_WPOS + 0x04, world.y >>> 0),
+        runtimeBridge.write32(binding.actor.address + ACTOR_WPOS + 0x08, world.z >>> 0),
         // Keep billboard X/Z in lock-step with the smoothed WPos to prevent sprite/shadow lag.
         // BlAct Y is intentionally left to White 2's renderer/animation system.
-        bridge.write32(binding.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
-        bridge.write32(binding.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
-        bridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, playerMatEntry),
-        bridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, profile.geomFlags),
-        bridge.write16(binding.blActAddress + BLACT_FACE_INDEX, profile.faceIndex),
-        bridge.write16(binding.blActAddress + BLACT_MAT_FLAGS, profile.matFlags),
+        runtimeBridge.write32(binding.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
+        runtimeBridge.write32(binding.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
+        runtimeBridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, playerMatEntry),
+        runtimeBridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, profile.geomFlags),
+        runtimeBridge.write16(binding.blActAddress + BLACT_FACE_INDEX, profile.faceIndex),
+        runtimeBridge.write16(binding.blActAddress + BLACT_MAT_FLAGS, profile.matFlags),
       ])
     }
 
     async function run() {
       while (!cancelled) {
         try {
-          if (bridge.status === 'running') {
+          if (runtimeBridge.status === 'running') {
             await tick()
             lastError = ''
           } else if (borrowed) {
