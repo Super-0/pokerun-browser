@@ -35,13 +35,16 @@ const PLAYER_UID = 0x00ff
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
 const TILE_FX32 = 16 * 4096
+const HALF_TILE_FX32 = TILE_FX32 / 2
 const LEARN_MS = 10_000
 const PROXY_MS = 10_000
-const UPDATE_MS = 50
-const MOVING_HOLD_MS = 300
+const UPDATE_MS = 40
+const MOVING_HOLD_MS = 120
 const MAX_REMOTE_DX = 7
 const MAX_REMOTE_DY = 5
 const MAX_STEP_HOLD_MS = 250
+const MIN_TILE_TRAVEL_MS = 180
+const MAX_TILE_TRAVEL_MS = 300
 
 const FIELD_FACE_BY_DIRECTION = { north: 0, south: 1, west: 2, east: 3 } as const
 const DIRECTION_BY_FIELD_FACE: Partial<Record<number, MultiplayerPlayerState['direction']>> = {
@@ -115,6 +118,18 @@ function signed32(value: number) {
 
 function delay(ms: number) {
   return new Promise<void>(resolve => window.setTimeout(resolve, ms))
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function lerpFx32(start: number, end: number, progress: number) {
+  return Math.round(start + (end - start) * clamp(progress, 0, 1)) >>> 0
+}
+
+function tileCenterFx32(tile: number) {
+  return Math.round(tile * TILE_FX32 + HALF_TILE_FX32) >>> 0
 }
 
 function isMainRamPointer(value: number) {
@@ -192,6 +207,12 @@ function learnedComplete(learned: LearnedRenderMap | null) {
 
 function sequenceDuration(sequence: RenderSequenceStep[]) {
   return sequence.reduce((total, step) => total + step.holdMs, 0)
+}
+
+function tileTravelMs(direction: LearnedDirection) {
+  const learnedLoop = sequenceDuration(direction.movingSequence)
+  if (!learnedLoop) return 220
+  return clamp(Math.round(learnedLoop / 2), MIN_TILE_TRAVEL_MS, MAX_TILE_TRAVEL_MS)
 }
 
 export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
@@ -390,7 +411,7 @@ export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: Melo
     }
   }
 
-  async function runProxyV4() {
+  async function runProxyV5() {
     if (!bridge || !supported || !learnedComplete(learned) || !learned) return
     setBusy('proxy')
     setStatus(null)
@@ -398,7 +419,7 @@ export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: Melo
     let npcBinding: Binding | null = null
     let original: OriginalNpcState | null = null
     try {
-      if (!wasRunning) throw new Error('Remote proxy v4 requires melonDS to be running.')
+      if (!wasRunning) throw new Error('Remote proxy v5 requires melonDS to be running.')
       const startPresence = presenceRef.current
       if (!startPresence.local || !startPresence.remote) throw new Error('Two live multiplayer player states are required.')
       if (startPresence.local.location.mapId !== startPresence.remote.location.mapId) throw new Error('Both players must be on the same map.')
@@ -415,7 +436,6 @@ export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: Melo
 
       const deadline = Date.now() + PROXY_MS
       let updates = 0
-      let movingUntil = 0
       let previousRemoteX = startPresence.remote.x
       let previousRemoteY = startPresence.remote.y
       let activeDirection: Direction = startPresence.remote.direction
@@ -424,27 +444,43 @@ export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: Melo
       let wasMoving = false
       let lastProfile = learned.directions[activeDirection].idle!
 
+      let renderedX = tileCenterFx32(startPresence.remote.x)
+      let renderedZ = tileCenterFx32(startPresence.remote.y)
+      let moveStartX = renderedX
+      let moveStartZ = renderedZ
+      let moveTargetX = renderedX
+      let moveTargetZ = renderedZ
+      let moveStartedAt = Date.now()
+      let moveDurationMs = 1
+      let movingUntil = 0
+
       while (Date.now() < deadline) {
         const current = presenceRef.current
-        if (!current.local || !current.remote) throw new Error('Remote player state disappeared while proxy v4 was active.')
-        if (current.local.location.mapId !== startMap || current.remote.location.mapId !== startMap) throw new Error('Map changed while proxy v4 was active; stopping before touching replacement actors.')
-        if (!(await bindingIdentityMatches(resolvedNpc, original.uid, original.modelId, original.tcb))) throw new Error('Borrowed NPC changed identity while proxy v4 was active.')
+        if (!current.local || !current.remote) throw new Error('Remote player state disappeared while proxy v5 was active.')
+        if (current.local.location.mapId !== startMap || current.remote.location.mapId !== startMap) throw new Error('Map changed while proxy v5 was active; stopping before touching replacement actors.')
+        if (!(await bindingIdentityMatches(resolvedNpc, original.uid, original.modelId, original.tcb))) throw new Error('Borrowed NPC changed identity while proxy v5 was active.')
 
         const now = Date.now()
         const dx = current.remote.x - current.local.x
         const dy = current.remote.y - current.local.y
         if (Math.abs(dx) > MAX_REMOTE_DX || Math.abs(dy) > MAX_REMOTE_DY) throw new Error(`Remote player moved outside the proxy window (${dx}, ${dy}).`)
 
+        const priorProgress = moveDurationMs <= 0 ? 1 : clamp((now - moveStartedAt) / moveDurationMs, 0, 1)
+        renderedX = lerpFx32(moveStartX, moveTargetX, priorProgress)
+        renderedZ = lerpFx32(moveStartZ, moveTargetZ, priorProgress)
+
         const positionChanged = current.remote.x !== previousRemoteX || current.remote.y !== previousRemoteY
-        const wasAlreadyMoving = now < movingUntil
         if (positionChanged) {
+          const tileDistance = Math.max(1, Math.abs(current.remote.x - previousRemoteX) + Math.abs(current.remote.y - previousRemoteY))
           previousRemoteX = current.remote.x
           previousRemoteY = current.remote.y
-          movingUntil = now + MOVING_HOLD_MS
-          if (!wasAlreadyMoving) {
-            sequenceIndex = 0
-            stepStartedAt = now
-          }
+          moveStartX = renderedX
+          moveStartZ = renderedZ
+          moveTargetX = tileCenterFx32(current.remote.x)
+          moveTargetZ = tileCenterFx32(current.remote.y)
+          moveStartedAt = now
+          moveDurationMs = tileTravelMs(learned.directions[current.remote.direction]) * tileDistance
+          movingUntil = now + moveDurationMs + MOVING_HOLD_MS
         }
 
         const direction = current.remote.direction
@@ -453,6 +489,10 @@ export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: Melo
           sequenceIndex = 0
           stepStartedAt = now
         }
+
+        const progress = moveDurationMs <= 0 ? 1 : clamp((now - moveStartedAt) / moveDurationMs, 0, 1)
+        renderedX = lerpFx32(moveStartX, moveTargetX, progress)
+        renderedZ = lerpFx32(moveStartZ, moveTargetZ, progress)
 
         const directionProfile = learned.directions[direction]
         const moving = now < movingUntil
@@ -476,19 +516,11 @@ export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: Melo
         }
         wasMoving = moving
 
-        const [playerWPosX, playerWPosY, playerWPosZ] = await Promise.all([
-          bridge.read32(playerBinding.actor.address + ACTOR_WPOS + 0x00),
-          bridge.read32(playerBinding.actor.address + ACTOR_WPOS + 0x04),
-          bridge.read32(playerBinding.actor.address + ACTOR_WPOS + 0x08),
-        ])
-        const targetX = (playerWPosX + dx * TILE_FX32) >>> 0
-        const targetZ = (playerWPosZ + dy * TILE_FX32) >>> 0
-
         await Promise.all([
           bridge.write16(resolvedNpc.actor.address + ACTOR_FACE_DIR, FIELD_FACE_BY_DIRECTION[direction]),
-          bridge.write32(resolvedNpc.actor.address + ACTOR_WPOS + 0x00, targetX),
-          bridge.write32(resolvedNpc.actor.address + ACTOR_WPOS + 0x04, playerWPosY),
-          bridge.write32(resolvedNpc.actor.address + ACTOR_WPOS + 0x08, targetZ),
+          bridge.write32(resolvedNpc.actor.address + ACTOR_WPOS + 0x00, renderedX),
+          bridge.write32(resolvedNpc.actor.address + ACTOR_WPOS + 0x04, original.wposY),
+          bridge.write32(resolvedNpc.actor.address + ACTOR_WPOS + 0x08, renderedZ),
           bridge.write16(resolvedNpc.handleAddress + HANDLE_MAT_ENTRY, playerMatEntry),
           bridge.write16(resolvedNpc.blActAddress + BLACT_GEOM_FLAGS, profile.geomFlags),
           bridge.write16(resolvedNpc.blActAddress + BLACT_FACE_INDEX, profile.faceIndex),
@@ -502,8 +534,8 @@ export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: Melo
 
       await bridge.pause()
       const restored = await restoreNpc(resolvedNpc, original)
-      if (!restored) throw new Error('Original NPC state could not be restored after proxy v4.')
-      setStatus(`PASS • REMOTE TRAINER PROXY V4 • ${updates} UPDATES • LAST ${activeDirection.toUpperCase()} FACE ${lastProfile.faceIndex} GEOM 0x${hex(lastProfile.geomFlags)} MATFLAGS 0x${hex(lastProfile.matFlags)} • ORIGINAL NPC STATE RESTORED`)
+      if (!restored) throw new Error('Original NPC state could not be restored after proxy v5.')
+      setStatus(`PASS • REMOTE TRAINER PROXY V5 • ${updates} UPDATES • LAST ${activeDirection.toUpperCase()} FACE ${lastProfile.faceIndex} • SMOOTH TILE-CENTER MOTION • ORIGINAL NPC STATE RESTORED`)
     } catch (reason) {
       if (npcBinding && original) {
         try {
@@ -511,7 +543,7 @@ export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: Melo
           await restoreNpc(npcBinding, original)
         } catch { /* guarded best-effort restore */ }
       }
-      setStatus(reason instanceof Error ? `FAIL • ${reason.message.toUpperCase()}` : 'FAIL • REMOTE PROXY V4 FAILED.')
+      setStatus(reason instanceof Error ? `FAIL • ${reason.message.toUpperCase()}` : 'FAIL • REMOTE PROXY V5 FAILED.')
     } finally {
       if (wasRunning && bridge.status === 'paused') await bridge.resume()
       setBusy(null)
@@ -521,11 +553,11 @@ export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: Melo
   const remoteReady = !!presence.local && !!presence.remote && presence.local.location.mapId === presence.remote.location.mapId
 
   return <section className="white2-memory-research pixel-border">
-    <h2>WHITE 2 TRAINER WALK SEQUENCE</h2>
-    <p>Proxy v4 learns the real player's chronological billboard sequence instead of sorting frames by FaceIdx. For each direction it keeps the longest clean movement run, compresses only consecutive duplicate render states, and preserves the observed hold time for every state.</p>
+    <h2>WHITE 2 SMOOTH REMOTE TRAINER</h2>
+    <p>Proxy v5 keeps the chronological trainer animation from v4, but fixes the remaining visible tile snapping. White 2 standing WPos is centered at (tile + 0.5) × 16 × 4096, so the proxy now targets the remote player's absolute tile center and interpolates between centers instead of anchoring the partner to the local player's fractional WPos.</p>
     <div className="memory-compare">
       <PixelButton tone="ghost" disabled={!bridge || !supported || busy !== null} onClick={() => void learnPlayerRenderSequence()}>{busy === 'learn' ? 'LEARNING NATIVE WALK SEQUENCES 10S...' : 'LEARN NATIVE WALK SEQUENCES 10S'}</PixelButton>
-      <PixelButton tone="danger" disabled={!bridge || !supported || !remoteReady || !learnedComplete(learned) || busy !== null} onClick={() => void runProxyV4()}>{busy === 'proxy' ? 'RUNNING PROXY V4 + RESTORING...' : 'RUN REMOTE PROXY V4 10S + RESTORE'}</PixelButton>
+      <PixelButton tone="danger" disabled={!bridge || !supported || !remoteReady || !learnedComplete(learned) || busy !== null} onClick={() => void runProxyV5()}>{busy === 'proxy' ? 'RUNNING PROXY V5 + RESTORING...' : 'RUN REMOTE PROXY V5 10S + RESTORE'}</PixelButton>
     </div>
     {!supported && <span className="form-error">DISABLED FOR THIS ROM FINGERPRINT.</span>}
     {status && <span className={status.startsWith('FAIL') ? 'form-error' : 'memory-ok'}>{status}</span>}
@@ -537,10 +569,10 @@ export function White2TrainerRenderSequenceProbe({ bridge, rom }: { bridge: Melo
         const sequence = value.movingSequence.length
           ? value.movingSequence.map(step => `F${step.faceIndex}/G${hex(step.geomFlags)}/M${hex(step.matFlags)}@${step.holdMs}ms`).join(' → ')
           : 'NONE'
-        return <code key={direction}>{direction.toUpperCase()} • N {value.sampleCount} • RUNS {value.runCount} • IDLE {idle} • SEQ {sequence} • LOOP {sequenceDuration(value.movingSequence)}ms</code>
+        return <code key={direction}>{direction.toUpperCase()} • N {value.sampleCount} • RUNS {value.runCount} • IDLE {idle} • SEQ {sequence} • LOOP {sequenceDuration(value.movingSequence)}ms • TILE ~{tileTravelMs(value)}ms</code>
       })}
     </div>}
     <span>LEARN STEP: FOR 10 SECONDS, WALK CONTINUOUSLY FOR A FEW TILES NORTH, SOUTH, WEST AND EAST, WITH A SHORT PAUSE BETWEEN DIRECTIONS. DO NOT CROSS A MAP BOUNDARY.</span>
-    <span>PROXY V4 DOES NOT RESTART THE WALK CYCLE ON EVERY TILE. IT RESETS ONLY WHEN A MOVEMENT BURST STARTS OR THE REMOTE DIRECTION CHANGES. +08 AND +0C REMAIN UNTOUCHED.</span>
+    <span>PROXY V5 INTERPOLATES THE BORROWED ACTOR THROUGH WORLD-SPACE TILE CENTERS AND KEEPS THE NATIVE CHRONOLOGICAL FRAME SEQUENCE RUNNING ACROSS CONSECUTIVE TILES. +08 AND +0C REMAIN UNTOUCHED.</span>
   </section>
 }
