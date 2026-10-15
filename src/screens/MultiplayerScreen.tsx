@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { MelonDsPlayer } from '../components/MelonDsPlayer'
 import { MultiplayerPlayerPanel } from '../components/MultiplayerPlayerPanel'
+import { White2ActorLifecycleTrace } from '../components/White2ActorLifecycleTrace'
 import { White2MemoryResearchPanel } from '../components/White2MemoryResearchPanel'
 import { PixelButton } from '../components/PixelButton'
 import { loadRomFile } from '../core/rom/RomLoader'
@@ -198,7 +199,7 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
         <MultiplayerPlayerPanel playerLabel={remoteLabel} roleLabel={`PLAYER ${remoteIndex + 1} • PARTNER`} state={remoteState} relation={relation}/>
       </section>
 
-      {import.meta.env.DEV && <><White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/><section className="multiplayer-debug multiplayer-session-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></>}
+      {import.meta.env.DEV && <><White2ActorLifecycleTrace bridge={bridge} rom={localRomIdentity}/><White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/><section className="multiplayer-debug multiplayer-session-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></>}
     </div>
   </main>
 }
