@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v3'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v4'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B33
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B34
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
 type WasmEmulator = {
@@ -29,6 +29,10 @@ type WasmEmulator = {
   getArm9Sp(): number
   callArm9Thumb4(functionAddress: number, r0: number, r1: number, r2: number, r3: number, stackReserve: number): number
   arm9CallStatus(): number
+  arm9CallPc(): number
+  arm9CallLr(): number
+  arm9CallCpsr(): number
+  arm9CallInstructions(): number
   pokerunRuntimeVersion(): number
   delete?: () => void
 }
