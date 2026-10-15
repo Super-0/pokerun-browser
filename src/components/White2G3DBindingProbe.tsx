@@ -1,6 +1,7 @@
 import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
 import { White2BlActBindingProbe } from './White2BlActBindingProbe'
+import { White2TrainerBillboardFaceProbe } from './White2TrainerBillboardFaceProbe'
 
 /**
  * The first renderer probe established that the live trainer and standard NPC both
@@ -9,5 +10,8 @@ import { White2BlActBindingProbe } from './White2BlActBindingProbe'
  * BlAct renderer path now instead of exposing the dead G3D-object path again.
  */
 export function White2G3DBindingProbe({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
-  return <White2BlActBindingProbe bridge={bridge} rom={rom}/>
+  return <>
+    <White2BlActBindingProbe bridge={bridge} rom={rom}/>
+    <White2TrainerBillboardFaceProbe bridge={bridge} rom={rom}/>
+  </>
 }
