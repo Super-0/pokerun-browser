@@ -3,6 +3,7 @@ import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
 import { White2ActorSystemProbe, type White2ActorHeapEntry, type White2ActorHeapScan } from '../multiplayer/games/White2ActorSystem'
 import { PixelButton } from './PixelButton'
+import { White2G3DBindingProbe } from './White2G3DBindingProbe'
 import { White2NativeActorControlProbe } from './White2NativeActorControlProbe'
 
 const WHITE2_BASE_POINTER = 0x02000024
@@ -217,5 +218,6 @@ export function White2ActorLifecycleTrace({ bridge, rom }: { bridge: MelonDsBrid
       <span>BEST TEST: CAPTURE BASELINE JUST BEFORE A DOOR, WALK THROUGH IT, WAIT UNTIL THE NEW MAP IS FULLY VISIBLE, THEN CAPTURE AFTER + DIFF.</span>
     </section>
     <White2NativeActorControlProbe bridge={bridge} rom={rom}/>
+    <White2G3DBindingProbe bridge={bridge} rom={rom}/>
   </>
 }
