@@ -6,7 +6,14 @@ const buttonMasks = { a: 1 << 0, b: 1 << 1, select: 1 << 2, start: 1 << 3, right
 export type DsButton = keyof typeof buttonMasks
 export type DsSpeedMultiplier = 1 | 2 | 4
 export type Arm9NativeCallStatus = 1 | 2 | 3 | 4
-export type Arm9NativeCallResult = { result: number; status: Arm9NativeCallStatus }
+export type Arm9NativeCallResult = {
+  result: number
+  status: Arm9NativeCallStatus
+  pc: number
+  lr: number
+  cpsr: number
+  instructions: number
+}
 
 /** PokéRun's melonDS boundary. ARM9 methods access the emulated DS bus, never the WASM host heap. */
 export class MelonDsBridge implements EmulatorBridge {
@@ -63,7 +70,9 @@ export class MelonDsBridge implements EmulatorBridge {
     const candidate = emulator as Partial<RuntimeEmulator>
     const missing = [
       'readArm9U32', 'writeArm9U8', 'writeArm9U16', 'writeArm9U32',
-      'getArm9Sp', 'callArm9Thumb4', 'arm9CallStatus', 'pokerunRuntimeVersion',
+      'getArm9Sp', 'callArm9Thumb4', 'arm9CallStatus',
+      'arm9CallPc', 'arm9CallLr', 'arm9CallCpsr', 'arm9CallInstructions',
+      'pokerunRuntimeVersion',
     ].filter(name => typeof (candidate as Record<string, unknown>)[name] !== 'function')
     if (missing.length) {
       emulator.delete?.()
@@ -168,7 +177,14 @@ export class MelonDsBridge implements EmulatorBridge {
     const result = emulator.callArm9Thumb4(functionAddress >>> 0, r0 >>> 0, r1 >>> 0, r2 >>> 0, r3 >>> 0, stackReserve) >>> 0
     const status = emulator.arm9CallStatus() as Arm9NativeCallStatus
     if (status < 1 || status > 4) throw new Error(`ARM9 native call returned unknown status ${status}.`)
-    return { result, status }
+    return {
+      result,
+      status,
+      pc: emulator.arm9CallPc() >>> 0,
+      lr: emulator.arm9CallLr() >>> 0,
+      cpsr: emulator.arm9CallCpsr() >>> 0,
+      instructions: emulator.arm9CallInstructions() >>> 0,
+    }
   }
 
   private assertEmulator() { if (!this.emulator || this.status === 'idle' || this.status === 'stopped') throw new Error('melonDS is not running.'); return this.emulator }
