@@ -1,8 +1,44 @@
+diff --git a/wasmelonDS/src/ARM.cpp b/wasmelonDS/src/ARM.cpp
+--- a/wasmelonDS/src/ARM.cpp
++++ b/wasmelonDS/src/ARM.cpp
+@@ -713,6 +713,11 @@ template void ARMv5::Execute<CPUExecuteMode::InterpreterGDB>();
+ template void ARMv5::Execute<CPUExecuteMode::JIT>();
+ #endif
+ 
++void ARMv5::PokerunExecuteInterpreterStep()
++{
++    Execute<CPUExecuteMode::Interpreter>();
++}
++
+ template <CPUExecuteMode mode>
+ void ARMv4::Execute()
+ {
+diff --git a/wasmelonDS/src/ARM.h b/wasmelonDS/src/ARM.h
+--- a/wasmelonDS/src/ARM.h
++++ b/wasmelonDS/src/ARM.h
+@@ -251,6 +251,7 @@ public:
+ 
+     template <CPUExecuteMode mode>
+     void Execute();
++    void PokerunExecuteInterpreterStep();
+ 
+     // all code accesses are forced nonseq 32bit
+     u32 CodeRead32(u32 addr, bool branch);
 diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
-index 28334ab..6f5c9f0 100644
 --- a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
 +++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
-@@ -107,6 +107,7 @@ namespace wasmelon {
+@@ -1,8 +1,10 @@
+ 
+ #include <memory>
+ #include <ctime>
++#include <cstring>
+ #include <locale>
+ #include <codecvt>
++#include <vector>
+ 
+ #include "WasmEmulator.h"
+ #include "GPU.h"
+@@ -107,6 +109,7 @@ namespace wasmelon {
        saveData = std::make_unique<u8[]>(dataSize);
  
        Platform::FileRead(saveData.get(), dataSize, 1, fileHandle);
@@ -10,7 +46,7 @@ index 28334ab..6f5c9f0 100644
  
        nds->SetNDSSave(saveData.get(), static_cast<melonDS::u32>(dataSize));
        Platform::Log(Platform::LogLevel::Debug, "Successfully loaded save file!\n");
-@@ -144,6 +145,34 @@ namespace wasmelon {
+@@ -144,6 +147,148 @@ namespace wasmelon {
      return audioSamples;
    }
  
@@ -38,14 +74,137 @@ index 28334ab..6f5c9f0 100644
 +    nds->ARM9Write32(address, value);
 +  }
 +
++  u32 WasmEmulator::getArm9Sp() {
++    return nds->ARM9.R[13];
++  }
++
++  u32 WasmEmulator::arm9CallStatus() {
++    return pokerunArm9CallStatus;
++  }
++
++  u32 WasmEmulator::callArm9Thumb4(u32 function, u32 r0, u32 r1, u32 r2, u32 r3, u32 stackReserve) {
++    // This is deliberately a bounded development bridge, not a general code-execution API.
++    // PokéRun exact-ROM gates every caller. Status: 1=returned, 2=invalid args,
++    // 3=instruction limit, 4=callee halted the CPU.
++    pokerunArm9CallStatus = 0;
++    const u32 functionBase = function & ~1u;
++    if (functionBase < 0x02000000 || functionBase >= 0x02400000 ||
++        stackReserve < 0x100 || stackReserve > 0x4000 || (stackReserve & 0x7)) {
++      pokerunArm9CallStatus = 2;
++      return 0;
++    }
++
++    ARMv5& arm = nds->ARM9;
++    const u32 originalSp = arm.R[13];
++    if (originalSp < stackReserve) {
++      pokerunArm9CallStatus = 2;
++      return 0;
++    }
++    const u32 stackBase = originalSp - stackReserve;
++    std::vector<u8> stackBackup(stackReserve);
++    for (u32 i = 0; i < stackReserve; i++) stackBackup[i] = nds->ARM9Read8(stackBase + i);
++
++    u32 savedR[16];
++    u32 savedRFIQ[8];
++    u32 savedRSVC[3];
++    u32 savedRABT[3];
++    u32 savedRIRQ[3];
++    u32 savedRUND[3];
++    std::memcpy(savedR, arm.R, sizeof(savedR));
++    std::memcpy(savedRFIQ, arm.R_FIQ, sizeof(savedRFIQ));
++    std::memcpy(savedRSVC, arm.R_SVC, sizeof(savedRSVC));
++    std::memcpy(savedRABT, arm.R_ABT, sizeof(savedRABT));
++    std::memcpy(savedRIRQ, arm.R_IRQ, sizeof(savedRIRQ));
++    std::memcpy(savedRUND, arm.R_UND, sizeof(savedRUND));
++    const u32 savedCPSR = arm.CPSR;
++    const s32 savedCycles = arm.Cycles;
++    const u32 savedStopExecution = arm.StopExecution;
++    const u32 savedCodeRegion = arm.CodeRegion;
++    const s32 savedCodeCycles = arm.CodeCycles;
++    const u32 savedDataRegion = arm.DataRegion;
++    const s32 savedDataCycles = arm.DataCycles;
++    const u32 savedCurInstr = arm.CurInstr;
++    const u32 savedNextInstr0 = arm.NextInstr[0];
++    const u32 savedNextInstr1 = arm.NextInstr[1];
++    const MemRegion savedCodeMem = arm.CodeMem;
++    const s32 savedRegionCodeCycles = arm.RegionCodeCycles;
++    u8* const savedPUMap = arm.PU_Map;
++    const u64 savedTimestamp = nds->ARM9Timestamp;
++    const u64 savedTarget = nds->ARM9Target;
++    const int savedCurCPU = nds->CurCPU;
++
++    const bool returnThumb = (savedCPSR & 0x20) != 0;
++    const u32 returnAddress = (savedR[15] - (returnThumb ? 2u : 4u)) & (returnThumb ? ~1u : ~3u);
++
++    nds->CurCPU = 0;
++    arm.StopExecution = 0;
++    arm.Cycles = 0;
++    arm.R[0] = r0;
++    arm.R[1] = r1;
++    arm.R[2] = r2;
++    arm.R[3] = r3;
++    arm.R[13] = originalSp;
++    arm.R[14] = returnAddress | (returnThumb ? 1u : 0u);
++    arm.JumpTo(functionBase | 1u, false);
++
++    bool returned = false;
++    constexpr u32 maxInstructions = 200000;
++    for (u32 instruction = 0; instruction < maxInstructions; instruction++) {
++      const bool thumb = (arm.CPSR & 0x20) != 0;
++      const u32 currentAddress = (arm.R[15] - (thumb ? 2u : 4u)) & (thumb ? ~1u : ~3u);
++      if (currentAddress == returnAddress) {
++        returned = true;
++        break;
++      }
++      if (arm.Halted) {
++        pokerunArm9CallStatus = 4;
++        break;
++      }
++      nds->ARM9Target = nds->ARM9Timestamp + 1;
++      arm.PokerunExecuteInterpreterStep();
++    }
++
++    const u32 result = arm.R[0];
++    if (returned) pokerunArm9CallStatus = 1;
++    else if (pokerunArm9CallStatus == 0) pokerunArm9CallStatus = 3;
++
++    // The called game code is allowed to mutate game memory, but its temporary call stack
++    // and CPU execution context must not leak into the interrupted emulator frame.
++    for (u32 i = 0; i < stackReserve; i++) nds->ARM9Write8(stackBase + i, stackBackup[i]);
++    std::memcpy(arm.R, savedR, sizeof(savedR));
++    std::memcpy(arm.R_FIQ, savedRFIQ, sizeof(savedRFIQ));
++    std::memcpy(arm.R_SVC, savedRSVC, sizeof(savedRSVC));
++    std::memcpy(arm.R_ABT, savedRABT, sizeof(savedRABT));
++    std::memcpy(arm.R_IRQ, savedRIRQ, sizeof(savedRIRQ));
++    std::memcpy(arm.R_UND, savedRUND, sizeof(savedRUND));
++    arm.CPSR = savedCPSR;
++    arm.Cycles = savedCycles;
++    arm.StopExecution = savedStopExecution;
++    arm.CodeRegion = savedCodeRegion;
++    arm.CodeCycles = savedCodeCycles;
++    arm.DataRegion = savedDataRegion;
++    arm.DataCycles = savedDataCycles;
++    arm.CurInstr = savedCurInstr;
++    arm.NextInstr[0] = savedNextInstr0;
++    arm.NextInstr[1] = savedNextInstr1;
++    arm.CodeMem = savedCodeMem;
++    arm.RegionCodeCycles = savedRegionCodeCycles;
++    arm.PU_Map = savedPUMap;
++    nds->ARM9Timestamp = savedTimestamp;
++    nds->ARM9Target = savedTarget;
++    nds->CurCPU = savedCurCPU;
++
++    return returned ? result : 0;
++  }
++
 +  u32 WasmEmulator::pokerunRuntimeVersion() {
-+    return 0x50524B32;
++    return 0x50524B33;
 +  }
 +
    void WasmEmulator::touchScreen(int x, int y) {
      touchX = x;
      touchY = y;
-@@ -166,6 +195,8 @@ namespace wasmelon {
+@@ -166,6 +311,8 @@ namespace wasmelon {
      Platform::FileHandle* fileHandle = Platform::OpenFile(savePath, Platform::FileMode::Write);
  
      Platform::FileWrite(savedata, savelen, 1, fileHandle);
@@ -54,7 +213,7 @@ index 28334ab..6f5c9f0 100644
      EM_ASM(
        window.WebMelon._internal.events.onSaveWrite();
      );
-@@ -232,6 +263,13 @@ EMSCRIPTEN_BINDINGS(WasmEmulator) {
+@@ -232,6 +379,16 @@ EMSCRIPTEN_BINDINGS(WasmEmulator) {
      .function("getBottomScreen", &wasmelon::WasmEmulator::getBottomScreenFrameBuffer, emscripten::allow_raw_pointers())
      .function("getAudioBuffer", &wasmelon::WasmEmulator::getAudioBuffer, emscripten::allow_raw_pointers())
      .function("getAudioSamples", &wasmelon::WasmEmulator::getAudioSamples)
@@ -64,15 +223,25 @@ index 28334ab..6f5c9f0 100644
 +    .function("writeArm9U8", &wasmelon::WasmEmulator::writeArm9U8)
 +    .function("writeArm9U16", &wasmelon::WasmEmulator::writeArm9U16)
 +    .function("writeArm9U32", &wasmelon::WasmEmulator::writeArm9U32)
++    .function("getArm9Sp", &wasmelon::WasmEmulator::getArm9Sp)
++    .function("callArm9Thumb4", &wasmelon::WasmEmulator::callArm9Thumb4)
++    .function("arm9CallStatus", &wasmelon::WasmEmulator::arm9CallStatus)
 +    .function("pokerunRuntimeVersion", &wasmelon::WasmEmulator::pokerunRuntimeVersion)
      .function("touchScreen", &wasmelon::WasmEmulator::touchScreen)
      .function("releaseScreen", &wasmelon::WasmEmulator::releaseScreen)
      .function("setInput", &wasmelon::WasmEmulator::setInput)
 diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.h b/wasmelonDS/src/frontend/wasm/WasmEmulator.h
-index ea63aec..c8812ce 100644
 --- a/wasmelonDS/src/frontend/wasm/WasmEmulator.h
 +++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.h
-@@ -48,6 +48,14 @@ namespace wasmelon {
+@@ -19,6 +19,7 @@ namespace wasmelon {
+     WasmFirmwareSettings firmwareSettings;
+     melonDS::Firmware genFirmware();
+     WasmEmuThread* emuThread;
++    melonDS::u32 pokerunArm9CallStatus = 0;
+     melonDS::Platform::Thread* emuPlatformThread = nullptr;
+ 
+   public:
+@@ -48,6 +49,17 @@ namespace wasmelon {
      uintptr_t getAudioBuffer();
      int getAudioSamples();
  
@@ -82,6 +251,10 @@ index ea63aec..c8812ce 100644
 +    void writeArm9U8(melonDS::u32 address, melonDS::u8 value);
 +    void writeArm9U16(melonDS::u32 address, melonDS::u16 value);
 +    void writeArm9U32(melonDS::u32 address, melonDS::u32 value);
++    melonDS::u32 getArm9Sp();
++    melonDS::u32 callArm9Thumb4(melonDS::u32 function, melonDS::u32 r0, melonDS::u32 r1,
++                                melonDS::u32 r2, melonDS::u32 r3, melonDS::u32 stackReserve);
++    melonDS::u32 arm9CallStatus();
 +    melonDS::u32 pokerunRuntimeVersion();
 +
      void touchScreen(int x, int y);
