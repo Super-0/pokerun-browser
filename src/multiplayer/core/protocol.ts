@@ -7,7 +7,16 @@ export type MultiplayerRomStatus = 'missing' | 'loaded' | 'verified' | 'unsuppor
 export type MultiplayerRomIdentity = { gameId: GameId; fileName?: string; sha256?: string; gameCode?: string; title?: string; status: MultiplayerRomStatus }
 export type MultiplayerPlayer = { id: string; label: string; ready: boolean; rom: MultiplayerRomIdentity }
 export type MultiplayerGameStart = { startId: string; gameId: GameId; startedAt: number }
-export type MultiplayerPlayerState = { location: { mapId: number | string }; x: number; y: number; direction: 'north' | 'south' | 'east' | 'west'; movementState?: string }
+export type MultiplayerWorldPosition = { x: number; y: number; z: number }
+export type MultiplayerPlayerState = {
+  location: { mapId: number | string }
+  x: number
+  y: number
+  direction: 'north' | 'south' | 'east' | 'west'
+  movementState?: string
+  /** Optional game-native continuous world position. Only peers on the same verified game/revision should interpret it. */
+  worldPosition?: MultiplayerWorldPosition
+}
 export type MultiplayerRoom = { code: string; gameId: GameId; hostId: string; players: MultiplayerPlayer[]; gameStart?: MultiplayerGameStart }
 
 type BaseMessage = { version: typeof MULTIPLAYER_PROTOCOL_VERSION; roomCode?: string; senderId: string; sentAt: number }
