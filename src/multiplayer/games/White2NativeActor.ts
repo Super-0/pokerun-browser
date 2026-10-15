@@ -10,6 +10,13 @@ const NATIVE_STACK_RESERVE = 0x1000
 const ZONE_NPC_SIZE = 0x24
 const SCRATCH_ABOVE_SP = 0x100
 
+// White 2 does not create Union Room peers with the local player's ordinary
+// field model. It converts a Union View into one of the dedicated trainer-type
+// NPC models first. View 0 maps to trainer type/model 11, so use that known-good
+// game-native remote-trainer model for the lifecycle probe. Once creation is
+// proven, PokéRun can bind the remote player's actual appearance separately.
+const UNION_REMOTE_TRAINER_MODEL = 11
+
 // Temporary dev UID. Production will allocate a PokéRun-owned UID only after the
 // native create/delete lifecycle is validated across map transitions.
 export const POKERUN_NATIVE_TEST_UID = 0x7f01
@@ -53,7 +60,7 @@ function buildZoneNpc(player: White2ActorHeapEntry) {
   const z = Math.max(-32768, Math.min(32767, player.y))
 
   putU16(view, 0x00, POKERUN_NATIVE_TEST_UID)
-  putU16(view, 0x02, player.modelId)
+  putU16(view, 0x02, UNION_REMOTE_TRAINER_MODEL)
   putU16(view, 0x04, 2) // Same base move code used by White 2's Union Room parent actor.
   putU16(view, 0x06, 0) // event type
   putU16(view, 0x08, 0) // spawn flag
@@ -64,12 +71,12 @@ function buildZoneNpc(player: White2ActorHeapEntry) {
   putU16(view, 0x12, 0)
   putU16(view, 0x14, 0)
   putU16(view, 0x16, 0)
-  view.setUint32(0x18, 0, true) // grid position, not rail
+  view.setUint32(0x18, 0, true) // BOOL isRail = FALSE
   putU16(view, 0x1c, x)
   putU16(view, 0x1e, z)
   view.setInt32(0x20, 0, true)
 
-  return { bytes, x, z }
+  return { bytes, x, z, modelId: UNION_REMOTE_TRAINER_MODEL }
 }
 
 export class White2NativeActorBridge {
@@ -140,7 +147,7 @@ export class White2NativeActorBridge {
       assertMainRamPointer(actorAddress, 'Created actor')
       const found = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
       if (found !== actorAddress) throw new Error(`Created actor verification failed: returned 0x${actorAddress.toString(16).toUpperCase()}, FindFieldActor saw 0x${found.toString(16).toUpperCase()}.`)
-      return { actorAddress, uid: POKERUN_NATIVE_TEST_UID, modelId: player.modelId, zoneId: player.zoneId, x: npc.x, z: npc.z }
+      return { actorAddress, uid: POKERUN_NATIVE_TEST_UID, modelId: npc.modelId, zoneId: player.zoneId, x: npc.x, z: npc.z }
     } catch (error) {
       const partial = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID).catch(() => 0)
       if (partial) await this.deleteActorAddress(partial).catch(() => undefined)
