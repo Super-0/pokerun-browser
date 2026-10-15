@@ -3,6 +3,7 @@ import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
 import { White2ActorSystemProbe, type White2ActorHeapEntry, type White2ActorHeapScan } from '../multiplayer/games/White2ActorSystem'
 import { PixelButton } from './PixelButton'
+import { White2NativeActorControlProbe } from './White2NativeActorControlProbe'
 
 const WHITE2_BASE_POINTER = 0x02000024
 const WHITE2_POSITION_OFFSET = 0x36780
@@ -189,29 +190,32 @@ export function White2ActorLifecycleTrace({ bridge, rom }: { bridge: MelonDsBrid
 
   const importantSlots = diff?.slots.filter(slot => slot.interesting) ?? []
 
-  return <section className="white2-memory-research pixel-border">
-    <h2>WHITE 2 ACTOR LIFECYCLE TRACE</h2>
-    <p>Capture a coherent 64-slot baseline while standing still, cross a doorway or map transition normally, then capture again. Each capture pauses melonDS while reading every 0x100-byte FieldActor record as 32-bit words, then resumes. This tool performs no writes.</p>
-    <div className="memory-compare">
-      <PixelButton tone="ghost" disabled={!bridge || !supported || busy} onClick={() => void captureBaseline()}>{busy ? 'CAPTURING...' : baseline ? 'RECAPTURE BASELINE' : 'CAPTURE ACTOR BASELINE'}</PixelButton>
-      <PixelButton tone="ghost" disabled={!bridge || !supported || !baseline || busy} onClick={() => void captureAfter()}>CAPTURE AFTER + DIFF</PixelButton>
-      <PixelButton tone="ghost" disabled={!diff || busy} onClick={copyTrace}>COPY LIFECYCLE TRACE</PixelButton>
-      <PixelButton tone="danger" disabled={busy || (!baseline && !diff)} onClick={() => { setBaseline(null); setDiff(null); setStatus(null) }}>CLEAR TRACE</PixelButton>
-    </div>
-    {!supported && <span className="form-error">DISABLED FOR THIS ROM FINGERPRINT.</span>}
-    {status && <span className={status.startsWith('FAIL') ? 'form-error' : 'memory-ok'}>{status}</span>}
-    {baseline && <code>BASELINE • MAP {baseline.mapId} • ACTOR SYSTEM 0x{hex(baseline.scan.actorSystem)} • HEAP 0x{hex(baseline.scan.actorHeap)} • PLAYER {baseline.scan.playerSlots.join(', ') || 'NONE'} • ACTIVE {baseline.scan.activeSlots.join(', ') || 'NONE'}</code>}
-    {diff && <>
-      <code>AFTER • MAP {diff.after.mapId} • ACTOR SYSTEM 0x{hex(diff.after.scan.actorSystem)} • HEAP 0x{hex(diff.after.scan.actorHeap)}</code>
-      <code>CREATED: {diff.created.length ? diff.created.join(', ') : 'NONE'} • DESTROYED: {diff.destroyed.length ? diff.destroyed.join(', ') : 'NONE'} • REPLACED: {diff.replaced.length ? diff.replaced.join(', ') : 'NONE'}</code>
-      {importantSlots.length === 0 ? <span>NO ACTOR LIFECYCLE CHANGES FOUND. TRY A TRANSITION THAT LOADS OR UNLOADS NPCS.</span> : importantSlots.map(slot => <div className="memory-results" key={slot.index}>
-        <strong>SLOT {slot.index} • {slot.before.state.toUpperCase()} → {slot.after.state.toUpperCase()} • {slot.wordChanges.length} CHANGED WORDS</strong>
-        <code>BEFORE • {entrySummary(slot.before)}</code>
-        <code>AFTER • {entrySummary(slot.after)}</code>
-        {slot.wordChanges.slice(0, MAX_VISIBLE_WORD_CHANGES).map(change => <code key={change.offset}>+0x{hex(change.offset, 2)} • 0x{hex(change.before)} → 0x{hex(change.after)}</code>)}
-        {slot.wordChanges.length > MAX_VISIBLE_WORD_CHANGES && <span>DISPLAY LIMITED TO {MAX_VISIBLE_WORD_CHANGES} WORDS FOR THIS SLOT; COPY LIFECYCLE TRACE INCLUDES ALL CHANGES.</span>}
-      </div>)}
-    </>}
-    <span>BEST TEST: CAPTURE BASELINE JUST BEFORE A DOOR, WALK THROUGH IT, WAIT UNTIL THE NEW MAP IS FULLY VISIBLE, THEN CAPTURE AFTER + DIFF.</span>
-  </section>
+  return <>
+    <section className="white2-memory-research pixel-border">
+      <h2>WHITE 2 ACTOR LIFECYCLE TRACE</h2>
+      <p>Capture a coherent 64-slot baseline while standing still, cross a doorway or map transition normally, then capture again. Each capture pauses melonDS while reading every 0x100-byte FieldActor record as 32-bit words, then resumes. This tool performs no writes.</p>
+      <div className="memory-compare">
+        <PixelButton tone="ghost" disabled={!bridge || !supported || busy} onClick={() => void captureBaseline()}>{busy ? 'CAPTURING...' : baseline ? 'RECAPTURE BASELINE' : 'CAPTURE ACTOR BASELINE'}</PixelButton>
+        <PixelButton tone="ghost" disabled={!bridge || !supported || !baseline || busy} onClick={() => void captureAfter()}>CAPTURE AFTER + DIFF</PixelButton>
+        <PixelButton tone="ghost" disabled={!diff || busy} onClick={copyTrace}>COPY LIFECYCLE TRACE</PixelButton>
+        <PixelButton tone="danger" disabled={busy || (!baseline && !diff)} onClick={() => { setBaseline(null); setDiff(null); setStatus(null) }}>CLEAR TRACE</PixelButton>
+      </div>
+      {!supported && <span className="form-error">DISABLED FOR THIS ROM FINGERPRINT.</span>}
+      {status && <span className={status.startsWith('FAIL') ? 'form-error' : 'memory-ok'}>{status}</span>}
+      {baseline && <code>BASELINE • MAP {baseline.mapId} • ACTOR SYSTEM 0x{hex(baseline.scan.actorSystem)} • HEAP 0x{hex(baseline.scan.actorHeap)} • PLAYER {baseline.scan.playerSlots.join(', ') || 'NONE'} • ACTIVE {baseline.scan.activeSlots.join(', ') || 'NONE'}</code>}
+      {diff && <>
+        <code>AFTER • MAP {diff.after.mapId} • ACTOR SYSTEM 0x{hex(diff.after.scan.actorSystem)} • HEAP 0x{hex(diff.after.scan.actorHeap)}</code>
+        <code>CREATED: {diff.created.length ? diff.created.join(', ') : 'NONE'} • DESTROYED: {diff.destroyed.length ? diff.destroyed.join(', ') : 'NONE'} • REPLACED: {diff.replaced.length ? diff.replaced.join(', ') : 'NONE'}</code>
+        {importantSlots.length === 0 ? <span>NO ACTOR LIFECYCLE CHANGES FOUND. TRY A TRANSITION THAT LOADS OR UNLOADS NPCS.</span> : importantSlots.map(slot => <div className="memory-results" key={slot.index}>
+          <strong>SLOT {slot.index} • {slot.before.state.toUpperCase()} → {slot.after.state.toUpperCase()} • {slot.wordChanges.length} CHANGED WORDS</strong>
+          <code>BEFORE • {entrySummary(slot.before)}</code>
+          <code>AFTER • {entrySummary(slot.after)}</code>
+          {slot.wordChanges.slice(0, MAX_VISIBLE_WORD_CHANGES).map(change => <code key={change.offset}>+0x{hex(change.offset, 2)} • 0x{hex(change.before)} → 0x{hex(change.after)}</code>)}
+          {slot.wordChanges.length > MAX_VISIBLE_WORD_CHANGES && <span>DISPLAY LIMITED TO {MAX_VISIBLE_WORD_CHANGES} WORDS FOR THIS SLOT; COPY LIFECYCLE TRACE INCLUDES ALL CHANGES.</span>}
+        </div>)}
+      </>}
+      <span>BEST TEST: CAPTURE BASELINE JUST BEFORE A DOOR, WALK THROUGH IT, WAIT UNTIL THE NEW MAP IS FULLY VISIBLE, THEN CAPTURE AFTER + DIFF.</span>
+    </section>
+    <White2NativeActorControlProbe bridge={bridge} rom={rom}/>
+  </>
 }
