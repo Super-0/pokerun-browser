@@ -94,6 +94,14 @@ export class White2NativeActorBridge {
     return call.result >>> 0
   }
 
+  private async deleteActorAddress(actorAddress: number) {
+    assertMainRamPointer(actorAddress, 'Actor to delete')
+    const deleteOpcode = await this.bridge.read16(DELETE_ACTOR)
+    if (deleteOpcode === 0 || deleteOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-delete address.')
+    const call = await this.bridge.callArm9Thumb4(DELETE_ACTOR, actorAddress, 0, 0, 0, NATIVE_STACK_RESERVE)
+    assertCallReturned(call.status, 'DeleteActor')
+  }
+
   async validateCallGate(): Promise<White2NativeCallValidation> {
     const { scan, player } = await this.currentPlayer()
     const [stackPointer, firstOpcode] = await Promise.all([
@@ -111,6 +119,7 @@ export class White2NativeActorBridge {
 
   async spawnTestActor(): Promise<White2NativeSpawn> {
     const { scan, player } = await this.currentPlayer()
+    if (!scan.zeroedSlots.length) throw new Error('Native actor test blocked because the FieldActor heap has no fully zeroed slot.')
     const existing = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
     if (existing !== 0) throw new Error(`Test UID 0x${POKERUN_NATIVE_TEST_UID.toString(16).toUpperCase()} is already in use at 0x${existing.toString(16).toUpperCase()}.`)
 
@@ -118,20 +127,24 @@ export class White2NativeActorBridge {
     if (createOpcode === 0 || createOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-create address.')
 
     const sp = await this.bridge.getArm9Sp()
+    if (sp > 0xfffff000) throw new Error('ARM9 stack pointer is too close to the end of the address space for temporary native-call scratch data.')
     const scratch = (sp + SCRATCH_ABOVE_SP + 3) & ~3
     const originalScratch = await this.bridge.readBytes(scratch, ZONE_NPC_SIZE)
     const npc = buildZoneNpc(player)
 
-    let actorAddress = 0
     try {
       await this.bridge.writeBytes(scratch, npc.bytes)
       const call = await this.bridge.callArm9Thumb4(CREATE_ACTOR, scan.actorSystem, scratch, player.zoneId, 0, NATIVE_STACK_RESERVE)
       assertCallReturned(call.status, 'CreateNewActorByEntityNoWKOBJCODE')
-      actorAddress = call.result >>> 0
+      const actorAddress = call.result >>> 0
       assertMainRamPointer(actorAddress, 'Created actor')
       const found = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
       if (found !== actorAddress) throw new Error(`Created actor verification failed: returned 0x${actorAddress.toString(16).toUpperCase()}, FindFieldActor saw 0x${found.toString(16).toUpperCase()}.`)
       return { actorAddress, uid: POKERUN_NATIVE_TEST_UID, modelId: player.modelId, zoneId: player.zoneId, x: npc.x, z: npc.z }
+    } catch (error) {
+      const partial = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID).catch(() => 0)
+      if (partial) await this.deleteActorAddress(partial).catch(() => undefined)
+      throw error
     } finally {
       await this.bridge.writeBytes(scratch, originalScratch)
     }
@@ -139,16 +152,11 @@ export class White2NativeActorBridge {
 
   async deleteTestActor(actorAddress?: number) {
     const { scan } = await this.currentPlayer()
-    let address = actorAddress ?? await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
+    const address = actorAddress ?? await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
     if (address === 0) return false
-    assertMainRamPointer(address, 'Actor to delete')
-
-    const deleteOpcode = await this.bridge.read16(DELETE_ACTOR)
-    if (deleteOpcode === 0 || deleteOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-delete address.')
-    const call = await this.bridge.callArm9Thumb4(DELETE_ACTOR, address, 0, 0, 0, NATIVE_STACK_RESERVE)
-    assertCallReturned(call.status, 'DeleteActor')
-    address = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
-    if (address !== 0) throw new Error(`DeleteActor returned, but test UID still resolves to 0x${address.toString(16).toUpperCase()}.`)
+    await this.deleteActorAddress(address)
+    const remaining = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
+    if (remaining !== 0) throw new Error(`DeleteActor returned, but test UID still resolves to 0x${remaining.toString(16).toUpperCase()}.`)
     return true
   }
 }
