@@ -34,7 +34,8 @@ const PLAYER_UID = 0x00ff
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
 
-const UPDATE_MS = 40
+const UPDATE_MS = 20
+const LEARN_SAMPLE_MS = 40
 const MOVING_HOLD_MS = 120
 const ENTER_REMOTE_DX = 6
 const ENTER_REMOTE_DY = 4
@@ -45,6 +46,9 @@ const MISSING_STATE_GRACE_MS = 160
 const REACQUIRE_COOLDOWN_MS = 250
 const TURN_CAPTURE_MS = 240
 const MAX_STEP_HOLD_MS = 250
+const SMOOTHING_ALPHA = 0.72
+const SMOOTHING_SNAP_FX32 = 16 * 4096
+const SMOOTHING_EPSILON_FX32 = 64
 const CACHE_VERSION = 1
 
 const FIELD_FACE_BY_DIRECTION = { north: 0, south: 1, west: 2, east: 3 } as const
@@ -132,6 +136,14 @@ function signed32(value: number) {
   return value | 0
 }
 
+function smoothFx32(current: number, target: number) {
+  const currentSigned = signed32(current)
+  const targetSigned = signed32(target)
+  const delta = targetSigned - currentSigned
+  if (Math.abs(delta) >= SMOOTHING_SNAP_FX32 || Math.abs(delta) <= SMOOTHING_EPSILON_FX32) return target >>> 0
+  return Math.round(currentSigned + delta * SMOOTHING_ALPHA) >>> 0
+}
+
 function isMainRamPointer(value: number) {
   return Number.isInteger(value) && value >= MAIN_RAM_START && value < MAIN_RAM_END && (value & 0x3) === 0
 }
@@ -162,9 +174,9 @@ function emptyKnowledge(): Record<Direction, DirectionKnowledge> {
 function appendStep(sequence: RenderSequenceStep[], profile: RenderProfile) {
   const previous = sequence[sequence.length - 1]
   if (previous && profileKey(previous) === profileKey(profile)) {
-    previous.holdMs = Math.min(MAX_STEP_HOLD_MS, previous.holdMs + UPDATE_MS)
+    previous.holdMs = Math.min(MAX_STEP_HOLD_MS, previous.holdMs + LEARN_SAMPLE_MS)
   } else {
-    sequence.push({ ...profile, holdMs: UPDATE_MS })
+    sequence.push({ ...profile, holdMs: LEARN_SAMPLE_MS })
   }
 }
 
@@ -341,12 +353,13 @@ async function restoreNpc(bridge: MelonDsBridge, borrowed: BorrowedNpc) {
 /**
  * Production White 2 multiplayer avatar bridge.
  *
- * V6.1 keeps the validated continuous WPos path, synchronizes FieldActor and
+ * V6.2 keeps the validated continuous WPos path, synchronizes FieldActor and
  * billboard horizontal position, learns turning-in-place render transitions, and
- * debounces map/range lifecycle churn. BlAct Y remains game-owned so native
- * vertical sprite/shadow animation is not flattened or re-applied every tick.
- * It still borrows one ordinary NPC as the renderer; a dedicated native actor
- * remains the next architecture milestone.
+ * debounces map/range lifecycle churn. Remote X/Z are gently smoothed at 50 Hz
+ * between 25 Hz presence samples, while large jumps still snap immediately.
+ * BlAct Y remains game-owned so native vertical sprite/shadow animation is not
+ * flattened or re-applied every tick. It still borrows one ordinary NPC as the
+ * renderer; a dedicated native actor remains the next architecture milestone.
  */
 export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -365,6 +378,7 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
     let playerMatEntry: number | null = null
     let cacheStorageKey: string | null = null
     let lastCacheSave = 0
+    let lastLearnAt = 0
 
     let lastPlayerX: number | null = null
     let lastPlayerZ: number | null = null
@@ -375,6 +389,7 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
     let activeTurnCapture: TurnCapture | null = null
 
     let lastRemoteWorld: MultiplayerWorldPosition | null = null
+    let renderedWorld: MultiplayerWorldPosition | null = null
     let remoteMovingUntil = 0
     let activeRemoteDirection: Direction | null = null
     let remoteSequenceIndex = 0
@@ -430,6 +445,7 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
 
     function resetRemoteAnimation() {
       lastRemoteWorld = null
+      renderedWorld = null
       remoteMovingUntil = 0
       activeRemoteDirection = null
       remoteSequenceIndex = 0
@@ -593,7 +609,10 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
 
     async function tick() {
       const now = Date.now()
-      await learnLocalRender(now)
+      if (now - lastLearnAt >= LEARN_SAMPLE_MS) {
+        lastLearnAt = now
+        await learnLocalRender(now)
+      }
 
       const presence = presenceRef.current
       const local = presence.local
@@ -660,14 +679,20 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
       const proxy = await ensureBorrowed()
       if (!proxy) return
       const binding = proxy.binding
-      const world = remote.worldPosition
+      const targetWorld = remote.worldPosition
+      renderedWorld = renderedWorld ? {
+        x: smoothFx32(renderedWorld.x, targetWorld.x),
+        y: targetWorld.y,
+        z: smoothFx32(renderedWorld.z, targetWorld.z),
+      } : { ...targetWorld }
+      const world = renderedWorld
 
       await Promise.all([
         bridge.write16(binding.actor.address + ACTOR_FACE_DIR, FIELD_FACE_BY_DIRECTION[remote.direction]),
         bridge.write32(binding.actor.address + ACTOR_WPOS + 0x00, world.x >>> 0),
         bridge.write32(binding.actor.address + ACTOR_WPOS + 0x04, world.y >>> 0),
         bridge.write32(binding.actor.address + ACTOR_WPOS + 0x08, world.z >>> 0),
-        // Keep billboard X/Z in lock-step with WPos to prevent sprite/shadow lag.
+        // Keep billboard X/Z in lock-step with the smoothed WPos to prevent sprite/shadow lag.
         // BlAct Y is intentionally left to White 2's renderer/animation system.
         bridge.write32(binding.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
         bridge.write32(binding.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
