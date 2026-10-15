@@ -3,6 +3,7 @@ import { MelonDsBridge, type DsButton, type DsSpeedMultiplier } from '../core/em
 import { romSessionStore } from '../core/rom/RomSessionStore'
 import type { LoadedRom } from '../core/rom/RomLoader'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../multiplayer/core/MultiplayerPresence'
+import { TESTED_WHITE2_SHA256 } from '../multiplayer/games/White2LiveStateAdapter'
 import { White2RemoteTrainerRuntime } from '../multiplayer/games/White2RemoteTrainerRuntime'
 import type { GameDefinition, RunState } from '../types'
 
@@ -57,6 +58,17 @@ function markerFromPresence(presence: MultiplayerPresenceSnapshot): DsPartnerMar
   return { dx, dy, direction: remote.direction, label: 'P2' }
 }
 
+function sameMarkerPresence(a: MultiplayerPresenceSnapshot, b: MultiplayerPresenceSnapshot) {
+  const sameState = (left: MultiplayerPresenceSnapshot['local'], right: MultiplayerPresenceSnapshot['local']) => {
+    if (!left || !right) return left === right
+    return left.location.mapId === right.location.mapId
+      && left.x === right.x
+      && left.y === right.y
+      && left.direction === right.direction
+  }
+  return sameState(a.local, b.local) && sameState(a.remote, b.remote)
+}
+
 /** React shell only: frame rendering and emulated-memory access stay inside MelonDsBridge. */
 export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave, partnerMarker }: Props) {
   const topRef = useRef<HTMLCanvasElement>(null)
@@ -70,7 +82,9 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const speedRef = useRef<DsSpeedMultiplier>(speed)
 
-  useEffect(() => multiplayerPresence.subscribe(setPresence), [])
+  useEffect(() => multiplayerPresence.subscribe(snapshot => {
+    setPresence(previous => sameMarkerPresence(previous, snapshot) ? previous : snapshot)
+  }), [])
 
   useEffect(() => {
     const top = topRef.current
@@ -162,7 +176,8 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   }
 
   const automaticPartnerMarker = markerFromPresence(presence)
-  const visiblePartnerMarker = partnerMarker === undefined ? automaticPartnerMarker : partnerMarker
+  const nativeWhite2Trainer = game.id === 'white2' && suppliedRom?.sha256.toLowerCase() === TESTED_WHITE2_SHA256
+  const visiblePartnerMarker = nativeWhite2Trainer ? null : partnerMarker === undefined ? automaticPartnerMarker : partnerMarker
   const partnerStyle = visiblePartnerMarker ? {
     '--partner-x': `${50 + visiblePartnerMarker.dx * 6.25}%`,
     '--partner-y': `${52 + visiblePartnerMarker.dy * (100 / 12)}%`,
