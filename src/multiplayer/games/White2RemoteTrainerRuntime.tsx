@@ -33,10 +33,17 @@ const SPECIAL_PLAYER_COMPANION_UID = 0x00fe
 const PLAYER_UID = 0x00ff
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
+
 const UPDATE_MS = 40
 const MOVING_HOLD_MS = 120
-const MAX_REMOTE_DX = 7
-const MAX_REMOTE_DY = 5
+const ENTER_REMOTE_DX = 6
+const ENTER_REMOTE_DY = 4
+const EXIT_REMOTE_DX = 7
+const EXIT_REMOTE_DY = 5
+const MAP_STABLE_MS = 280
+const MISSING_STATE_GRACE_MS = 160
+const REACQUIRE_COOLDOWN_MS = 250
+const TURN_CAPTURE_MS = 240
 const MAX_STEP_HOLD_MS = 250
 const CACHE_VERSION = 1
 
@@ -50,6 +57,7 @@ const DIRECTION_BY_FIELD_FACE: Partial<Record<number, MultiplayerPlayerState['di
 const DIRECTIONS: MultiplayerPlayerState['direction'][] = ['north', 'south', 'west', 'east']
 
 type Direction = MultiplayerPlayerState['direction']
+type TurnKey = `${Direction}->${Direction}`
 
 type Binding = {
   actor: White2ActorHeapEntry
@@ -76,6 +84,18 @@ type DirectionKnowledge = {
   currentRun: RenderSequenceStep[]
 }
 
+type TurnCapture = {
+  key: TurnKey
+  startedAt: number
+  sequence: RenderSequenceStep[]
+}
+
+type RemoteTurnPlayback = {
+  sequence: RenderSequenceStep[]
+  index: number
+  stepStartedAt: number
+}
+
 type OriginalNpcState = {
   uid: number
   modelId: number
@@ -84,6 +104,9 @@ type OriginalNpcState = {
   wposX: number
   wposY: number
   wposZ: number
+  blActX: number
+  blActY: number
+  blActZ: number
   matEntry: number
   geomFlags: number
   faceIndex: number
@@ -98,6 +121,7 @@ type BorrowedNpc = {
 type CachedRenderProfile = {
   version: number
   directions: Record<Direction, { idle: RenderProfile | null; movingSequence: RenderSequenceStep[] }>
+  turns?: Record<string, RenderSequenceStep[]>
 }
 
 function delay(ms: number) {
@@ -122,6 +146,10 @@ function profileKey(profile: RenderProfile) {
   return `${profile.faceIndex}:${profile.geomFlags}:${profile.matFlags}`
 }
 
+function turnKey(from: Direction, to: Direction): TurnKey {
+  return `${from}->${to}`
+}
+
 function emptyKnowledge(): Record<Direction, DirectionKnowledge> {
   return Object.fromEntries(DIRECTIONS.map(direction => [direction, {
     idle: null,
@@ -138,6 +166,10 @@ function appendStep(sequence: RenderSequenceStep[], profile: RenderProfile) {
   } else {
     sequence.push({ ...profile, holdMs: UPDATE_MS })
   }
+}
+
+function sequenceDuration(sequence: RenderSequenceStep[]) {
+  return sequence.reduce((total, step) => total + step.holdMs, 0)
 }
 
 function finalizeRun(knowledge: DirectionKnowledge) {
@@ -163,7 +195,7 @@ function cacheKey(rom: MultiplayerRomIdentity, modelId: number) {
   return `pokerun-white2-trainer-render-v${CACHE_VERSION}:${rom.sha256 ?? 'unknown'}:${modelId}`
 }
 
-function loadCachedKnowledge(key: string, knowledge: Record<Direction, DirectionKnowledge>) {
+function loadCachedKnowledge(key: string, knowledge: Record<Direction, DirectionKnowledge>, turns: Map<TurnKey, RenderSequenceStep[]>) {
   try {
     const raw = localStorage.getItem(key)
     if (!raw) return
@@ -176,18 +208,22 @@ function loadCachedKnowledge(key: string, knowledge: Record<Direction, Direction
       knowledge[direction].movingSequence = Array.isArray(saved.movingSequence) ? saved.movingSequence : []
       if (saved.idle) knowledge[direction].idleCounts.set(profileKey(saved.idle), { count: 1, profile: saved.idle })
     }
+    for (const [keyValue, sequence] of Object.entries(cached.turns ?? {})) {
+      if (Array.isArray(sequence)) turns.set(keyValue as TurnKey, sequence)
+    }
   } catch {
     // Cache is an optimization only; ignore stale or malformed data.
   }
 }
 
-function saveCachedKnowledge(key: string, knowledge: Record<Direction, DirectionKnowledge>) {
+function saveCachedKnowledge(key: string, knowledge: Record<Direction, DirectionKnowledge>, turns: Map<TurnKey, RenderSequenceStep[]>) {
   try {
     const directions = Object.fromEntries(DIRECTIONS.map(direction => [direction, {
       idle: knowledge[direction].idle,
       movingSequence: knowledge[direction].movingSequence,
     }])) as CachedRenderProfile['directions']
-    localStorage.setItem(key, JSON.stringify({ version: CACHE_VERSION, directions } satisfies CachedRenderProfile))
+    const savedTurns = Object.fromEntries([...turns.entries()].map(([keyValue, sequence]) => [keyValue, sequence.map(step => ({ ...step }))]))
+    localStorage.setItem(key, JSON.stringify({ version: CACHE_VERSION, directions, turns: savedTurns } satisfies CachedRenderProfile))
   } catch {
     // Multiplayer keeps running even if localStorage is unavailable.
   }
@@ -267,17 +303,20 @@ async function bindingIdentityMatches(bridge: MelonDsBridge, binding: Binding, u
 }
 
 async function captureOriginalNpc(bridge: MelonDsBridge, binding: Binding): Promise<OriginalNpcState> {
-  const [faceDir, wposX, wposY, wposZ, matEntry, geomFlags, faceIndex, matFlags] = await Promise.all([
+  const [faceDir, wposX, wposY, wposZ, blActX, blActY, blActZ, matEntry, geomFlags, faceIndex, matFlags] = await Promise.all([
     bridge.read16(binding.actor.address + ACTOR_FACE_DIR),
     bridge.read32(binding.actor.address + ACTOR_WPOS + 0x00),
     bridge.read32(binding.actor.address + ACTOR_WPOS + 0x04),
     bridge.read32(binding.actor.address + ACTOR_WPOS + 0x08),
+    bridge.read32(binding.blActAddress + BLACT_POSITION + 0x00),
+    bridge.read32(binding.blActAddress + BLACT_POSITION + 0x04),
+    bridge.read32(binding.blActAddress + BLACT_POSITION + 0x08),
     bridge.read16(binding.handleAddress + HANDLE_MAT_ENTRY),
     bridge.read16(binding.blActAddress + BLACT_GEOM_FLAGS),
     bridge.read16(binding.blActAddress + BLACT_FACE_INDEX),
     bridge.read16(binding.blActAddress + BLACT_MAT_FLAGS),
   ])
-  return { uid: binding.actor.uid, modelId: binding.actor.modelId, tcb: binding.actor.tcb, faceDir, wposX, wposY, wposZ, matEntry, geomFlags, faceIndex, matFlags }
+  return { uid: binding.actor.uid, modelId: binding.actor.modelId, tcb: binding.actor.tcb, faceDir, wposX, wposY, wposZ, blActX, blActY, blActZ, matEntry, geomFlags, faceIndex, matFlags }
 }
 
 async function restoreNpc(bridge: MelonDsBridge, borrowed: BorrowedNpc) {
@@ -288,6 +327,9 @@ async function restoreNpc(bridge: MelonDsBridge, borrowed: BorrowedNpc) {
     bridge.write32(binding.actor.address + ACTOR_WPOS + 0x00, original.wposX),
     bridge.write32(binding.actor.address + ACTOR_WPOS + 0x04, original.wposY),
     bridge.write32(binding.actor.address + ACTOR_WPOS + 0x08, original.wposZ),
+    bridge.write32(binding.blActAddress + BLACT_POSITION + 0x00, original.blActX),
+    bridge.write32(binding.blActAddress + BLACT_POSITION + 0x04, original.blActY),
+    bridge.write32(binding.blActAddress + BLACT_POSITION + 0x08, original.blActZ),
     bridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, original.matEntry),
     bridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, original.geomFlags),
     bridge.write16(binding.blActAddress + BLACT_FACE_INDEX, original.faceIndex),
@@ -299,9 +341,10 @@ async function restoreNpc(bridge: MelonDsBridge, borrowed: BorrowedNpc) {
 /**
  * Production White 2 multiplayer avatar bridge.
  *
- * This promotes the validated V6 path: continuous networked FieldActor.WPos plus
- * the game's own learned billboard frames. It still borrows one ordinary NPC as
- * the renderer; a dedicated native actor remains the next architecture milestone.
+ * V6.1 keeps the validated continuous WPos path, synchronizes FieldActor and
+ * billboard positions, learns turning-in-place render transitions, and debounces
+ * map/range lifecycle churn. It still borrows one ordinary NPC as the renderer;
+ * a dedicated native actor remains the next architecture milestone.
  */
 export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -320,27 +363,54 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
     let playerMatEntry: number | null = null
     let cacheStorageKey: string | null = null
     let lastCacheSave = 0
+
     let lastPlayerX: number | null = null
     let lastPlayerZ: number | null = null
     let playerMovingUntil = 0
     let activePlayerRunDirection: Direction | null = null
+    let lastPlayerDirection: Direction | null = null
+    let lastPlayerMoving = false
+    let activeTurnCapture: TurnCapture | null = null
+
     let lastRemoteWorld: MultiplayerWorldPosition | null = null
     let remoteMovingUntil = 0
     let activeRemoteDirection: Direction | null = null
     let remoteSequenceIndex = 0
     let remoteStepStartedAt = 0
     let remoteWasMoving = false
-    let lastError = ''
-    const knowledge = emptyKnowledge()
+    let remoteTurn: RemoteTurnPlayback | null = null
 
-    async function releaseBorrowed() {
+    let stableMapId: MultiplayerPlayerState['location']['mapId'] | null = null
+    let stableMapSince = 0
+    let lastCompletePresenceAt = 0
+    let rangeLatched = false
+    let reacquireAfter = 0
+    let lastError = ''
+
+    const knowledge = emptyKnowledge()
+    const turns = new Map<TurnKey, RenderSequenceStep[]>()
+
+    async function releaseBorrowed(cooldown = true) {
       const current = borrowed
       borrowed = null
       if (!current) return
+      if (cooldown) reacquireAfter = Math.max(reacquireAfter, Date.now() + REACQUIRE_COOLDOWN_MS)
       try {
         await restoreNpc(bridge, current)
       } catch {
         // Map lifecycle may already have destroyed/replaced the borrowed actor.
+      }
+    }
+
+    function finishTurnCapture() {
+      const capture = activeTurnCapture
+      activeTurnCapture = null
+      if (!capture || capture.sequence.length === 0) return
+      const distinctProfiles = new Set(capture.sequence.map(profileKey)).size
+      if (distinctProfiles < 2) return
+      const existing = turns.get(capture.key)
+      if (!existing || sequenceDuration(capture.sequence) > sequenceDuration(existing)) {
+        turns.set(capture.key, capture.sequence.map(step => ({ ...step })))
       }
     }
 
@@ -350,7 +420,20 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
       lastPlayerZ = null
       playerMovingUntil = 0
       activePlayerRunDirection = null
+      lastPlayerDirection = null
+      lastPlayerMoving = false
+      finishTurnCapture()
       for (const direction of DIRECTIONS) finalizeRun(knowledge[direction])
+    }
+
+    function resetRemoteAnimation() {
+      lastRemoteWorld = null
+      remoteMovingUntil = 0
+      activeRemoteDirection = null
+      remoteSequenceIndex = 0
+      remoteStepStartedAt = 0
+      remoteWasMoving = false
+      remoteTurn = null
     }
 
     async function ensurePlayerBinding() {
@@ -361,7 +444,7 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
       if (playerModelId !== playerBinding.actor.modelId) {
         playerModelId = playerBinding.actor.modelId
         cacheStorageKey = cacheKey(rom, playerModelId)
-        loadCachedKnowledge(cacheStorageKey, knowledge)
+        loadCachedKnowledge(cacheStorageKey, knowledge, turns)
       }
       return playerBinding
     }
@@ -393,8 +476,28 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
       if (!direction) return
       const moving = now < playerMovingUntil
       const profile: RenderProfile = { faceIndex, geomFlags, matFlags }
-      const directionKnowledge = knowledge[direction]
 
+      if (activeTurnCapture) {
+        if (moving || now - activeTurnCapture.startedAt >= TURN_CAPTURE_MS) {
+          finishTurnCapture()
+        } else {
+          appendStep(activeTurnCapture.sequence, profile)
+          lastPlayerDirection = direction
+          lastPlayerMoving = moving
+          return
+        }
+      }
+
+      if (lastPlayerDirection && direction !== lastPlayerDirection && !moving && !lastPlayerMoving) {
+        finalizeActivePlayerRun()
+        activeTurnCapture = { key: turnKey(lastPlayerDirection, direction), startedAt: now, sequence: [] }
+        appendStep(activeTurnCapture.sequence, profile)
+        lastPlayerDirection = direction
+        lastPlayerMoving = moving
+        return
+      }
+
+      const directionKnowledge = knowledge[direction]
       if (moving) {
         if (activePlayerRunDirection !== direction) {
           finalizeActivePlayerRun()
@@ -406,29 +509,56 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
         observeIdle(directionKnowledge, profile)
       }
 
+      lastPlayerDirection = direction
+      lastPlayerMoving = moving
+
       if (cacheStorageKey && now - lastCacheSave >= 2000) {
         lastCacheSave = now
-        saveCachedKnowledge(cacheStorageKey, knowledge)
+        saveCachedKnowledge(cacheStorageKey, knowledge, turns)
       }
     }
 
     function remoteProfile(now: number, remote: MultiplayerPlayerState) {
       const remoteWorld = remote.worldPosition
       if (!remoteWorld) return null
+
       if (worldChanged(lastRemoteWorld, remoteWorld)) {
         lastRemoteWorld = { ...remoteWorld }
         remoteMovingUntil = now + MOVING_HOLD_MS
       }
       const moving = now < remoteMovingUntil
-      const directionKnowledge = knowledge[remote.direction]
 
-      if (activeRemoteDirection !== remote.direction) {
+      if (activeRemoteDirection === null) {
+        activeRemoteDirection = remote.direction
+        remoteSequenceIndex = 0
+        remoteStepStartedAt = now
+      } else if (activeRemoteDirection !== remote.direction) {
+        const previousDirection = activeRemoteDirection
         activeRemoteDirection = remote.direction
         remoteSequenceIndex = 0
         remoteStepStartedAt = now
         remoteWasMoving = false
+        const sequence = !moving ? turns.get(turnKey(previousDirection, remote.direction)) : null
+        remoteTurn = sequence?.length ? { sequence, index: 0, stepStartedAt: now } : null
       }
 
+      if (moving) remoteTurn = null
+
+      if (remoteTurn) {
+        let safety = remoteTurn.sequence.length + 1
+        while (safety > 0 && now - remoteTurn.stepStartedAt >= remoteTurn.sequence[remoteTurn.index].holdMs) {
+          remoteTurn.stepStartedAt += remoteTurn.sequence[remoteTurn.index].holdMs
+          if (remoteTurn.index >= remoteTurn.sequence.length - 1) {
+            remoteTurn = null
+            break
+          }
+          remoteTurn.index += 1
+          safety -= 1
+        }
+        if (remoteTurn) return remoteTurn.sequence[remoteTurn.index]
+      }
+
+      const directionKnowledge = knowledge[remote.direction]
       if (moving && directionKnowledge.movingSequence.length) {
         if (!remoteWasMoving) {
           remoteSequenceIndex = 0
@@ -466,15 +596,64 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
       const presence = presenceRef.current
       const local = presence.local
       const remote = presence.remote
-      const sameMap = Boolean(local && remote && local.location.mapId === remote.location.mapId)
-      const inRange = Boolean(local && remote && Math.abs(remote.x - local.x) <= MAX_REMOTE_DX && Math.abs(remote.y - local.y) <= MAX_REMOTE_DY)
-      const profile = remote ? remoteProfile(now, remote) : null
-      const eligible = Boolean(local?.worldPosition && remote?.worldPosition && sameMap && inRange && profile && playerMatEntry !== null)
 
-      if (!eligible || !remote?.worldPosition || !profile || playerMatEntry === null) {
+      if (!local?.worldPosition || !remote?.worldPosition) {
+        if (borrowed && now - lastCompletePresenceAt > MISSING_STATE_GRACE_MS) {
+          rangeLatched = false
+          stableMapId = null
+          stableMapSince = 0
+          resetRemoteAnimation()
+          await releaseBorrowed()
+        }
+        return
+      }
+      lastCompletePresenceAt = now
+
+      if (local.location.mapId !== remote.location.mapId) {
+        rangeLatched = false
+        stableMapId = null
+        stableMapSince = 0
+        resetRemoteAnimation()
         await releaseBorrowed()
         return
       }
+
+      const currentMapId = local.location.mapId
+      if (stableMapId !== currentMapId) {
+        stableMapId = currentMapId
+        stableMapSince = now
+        rangeLatched = false
+        resetRemoteAnimation()
+        await releaseBorrowed()
+        return
+      }
+
+      if (now - stableMapSince < MAP_STABLE_MS) {
+        await releaseBorrowed()
+        return
+      }
+
+      const dx = Math.abs(remote.x - local.x)
+      const dy = Math.abs(remote.y - local.y)
+      if (rangeLatched) {
+        if (dx > EXIT_REMOTE_DX || dy > EXIT_REMOTE_DY) rangeLatched = false
+      } else if (dx <= ENTER_REMOTE_DX && dy <= ENTER_REMOTE_DY) {
+        rangeLatched = true
+      }
+
+      if (!rangeLatched) {
+        resetRemoteAnimation()
+        await releaseBorrowed()
+        return
+      }
+
+      const profile = remoteProfile(now, remote)
+      if (!profile || playerMatEntry === null) {
+        await releaseBorrowed()
+        return
+      }
+
+      if (!borrowed && now < reacquireAfter) return
 
       const proxy = await ensureBorrowed()
       if (!proxy) return
@@ -486,6 +665,9 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
         bridge.write32(binding.actor.address + ACTOR_WPOS + 0x00, world.x >>> 0),
         bridge.write32(binding.actor.address + ACTOR_WPOS + 0x04, world.y >>> 0),
         bridge.write32(binding.actor.address + ACTOR_WPOS + 0x08, world.z >>> 0),
+        bridge.write32(binding.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
+        bridge.write32(binding.blActAddress + BLACT_POSITION + 0x04, world.y >>> 0),
+        bridge.write32(binding.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
         bridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, playerMatEntry),
         bridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, profile.geomFlags),
         bridge.write16(binding.blActAddress + BLACT_FACE_INDEX, profile.faceIndex),
@@ -500,9 +682,15 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
             await tick()
             lastError = ''
           } else if (borrowed) {
+            rangeLatched = false
+            resetRemoteAnimation()
             await releaseBorrowed()
           }
         } catch (reason) {
+          rangeLatched = false
+          stableMapId = null
+          stableMapSince = 0
+          resetRemoteAnimation()
           await releaseBorrowed()
           resetPlayerBinding()
           const message = reason instanceof Error ? reason.message : String(reason)
@@ -519,8 +707,9 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
     void run()
     return () => {
       cancelled = true
-      if (cacheStorageKey) saveCachedKnowledge(cacheStorageKey, knowledge)
-      void releaseBorrowed()
+      finishTurnCapture()
+      if (cacheStorageKey) saveCachedKnowledge(cacheStorageKey, knowledge, turns)
+      void releaseBorrowed(false)
     }
   }, [bridge, rom.gameId, rom.sha256])
 
