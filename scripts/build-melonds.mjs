@@ -34,10 +34,10 @@ for (const symbol of requiredRuntimeSymbols) {
   if (!patchedCpp.includes(`.function("${symbol}"`)) throw new Error(`PokéRun melonDS patch did not expose ${symbol} through Embind.`)
 }
 
-// Rebuild from scratch. We intentionally delete both the CMake directory and served output so
-// an older JS/WASM pair cannot survive a patch/API change.
+// Rebuild from scratch, but keep the last served runtime in place until the new
+// JS/WASM pair has compiled and passed export verification. A compiler failure
+// should not turn into a confusing browser-side 404 on the next launch.
 rmSync(build, { recursive: true, force: true })
-rmSync(output, { recursive: true, force: true })
 run('emcmake', ['cmake', '-S', 'wasmelonDS', '-B', build, '-DBUILD_QT_SDL=OFF', '-DENABLE_OGLRENDERER=OFF', '-DENABLE_GDBSTUB=OFF'], source)
 run('cmake', ['--build', build, '--target', 'wasmemulator', '-j2'], source)
 
@@ -51,6 +51,9 @@ for (const symbol of requiredRuntimeSymbols) {
   }
 }
 
+// Publish only after the candidate runtime is known-good so wasmemulator.js and
+// wasmemulator.wasm are always replaced as a verified pair.
+rmSync(output, { recursive: true, force: true })
 mkdirSync(output, { recursive: true })
 copyFileSync(builtJsPath, resolve(output, 'wasmemulator.js'))
 copyFileSync(builtWasmPath, resolve(output, 'wasmemulator.wasm'))
