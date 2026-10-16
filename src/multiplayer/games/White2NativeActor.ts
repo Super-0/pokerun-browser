@@ -1,24 +1,58 @@
 import type { Arm9NativeCallResult, MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../core/protocol'
-import { White2ActorSystemProbe, type White2ActorHeapEntry } from './White2ActorSystem'
+import {
+  White2ActorSystemProbe,
+  type White2ActorHeapEntry,
+  type White2ActorHeapScan,
+} from './White2ActorSystem'
 
-// Exact Pokémon White 2 US (IRDO) overlay 12 symbols, exact-SHA gated below.
+// Exact Pokémon White 2 US (IRDO) symbols, exact-SHA gated below.
 const FIND_FIELD_ACTOR = 0x02167a54
 const CREATE_ACTOR = 0x021668b4
 const DELETE_ACTOR = 0x02166980
+const GFL_TCB_MGR_ADD_TASK = 0x0203a640
 const NATIVE_STACK_RESERVE = 0x1000
+const MMSYS_TCB_MGR = 0x24
 const ZONE_NPC_SIZE = 0x24
-// The create routine copies ZoneNPC into its own local stack frame before its
-// first helper call. Keep our temporary input inside the already-backed native
-// call stack region, but far below that shallow prologue, instead of writing
-// above the interrupted SP into the live caller's stack frames.
-const SCRATCH_BELOW_SP = 0x200
 
-// White 2 does not create Union Room peers with the local player's ordinary
-// field model. It converts a Union View into one of the dedicated trainer-type
-// NPC models first. View 0 maps to trainer type/model 11, so use that known-good
-// game-native remote-trainer model for the lifecycle probe. Once creation is
-// proven, PokéRun can bind the remote player's actual appearance separately.
+// A long White 2 actor create can yield through Nitro's scheduler while loading
+// resources. The bounded direct ARM9 call gate intentionally cannot follow that
+// cooperative thread switch. For create/delete we therefore enqueue a tiny
+// one-shot callback onto the field actor system's own TCB manager. White 2 then
+// invokes the target during its normal field update, with its ordinary thread,
+// IRQ, file-loader, and scheduler machinery all running normally.
+//
+// The callback is 36 bytes of ARMv5TE Thumb code assembled from:
+//   result = fn(r0, r1, r2, r3); GFL_TCBRemove(tcb); status = 1;
+// It lives only in the high, non-runtime portion of the highest free FieldActor
+// slot and is restored byte-for-byte after the task removes itself. Actor flags,
+// runtime pointers, and every field used to decide whether that slot is active
+// remain untouched at zero.
+const FIELD_ACTOR_SIZE = 0x100
+const TASK_DATA_OFFSET = 0x94
+const TASK_PAYLOAD_OFFSET = 0x1c
+const TASK_CODE_OFFSET = 0xdc
+const TASK_STATUS_OFFSET = 0x18
+const TASK_RESULT_OFFSET = 0x14
+const TASK_SCRATCH_SIZE = FIELD_ACTOR_SIZE - TASK_DATA_OFFSET
+const TASK_TIMEOUT_MS = 8000
+
+const FIELD_TASK_TRAMPOLINE = Uint8Array.from([
+  0xf0, 0xb5, 0x04, 0x00, 0x0d, 0x00, 0x2e, 0x68,
+  0x68, 0x68, 0xa9, 0x68, 0xea, 0x68, 0x2b, 0x69,
+  0xb0, 0x47, 0x68, 0x61, 0x20, 0x00, 0x02, 0x4e,
+  0xb0, 0x47, 0x01, 0x27, 0xaf, 0x61, 0xf0, 0xbd,
+  0xd5, 0xa6, 0x03, 0x02,
+])
+
+if (TASK_CODE_OFFSET + FIELD_TASK_TRAMPOLINE.length > FIELD_ACTOR_SIZE) {
+  throw new Error('White 2 field-task trampoline no longer fits in the reserved scratch area.')
+}
+
+// White 2 converts a Union Room player view into one of its dedicated remote
+// trainer NPC models. View 0 maps to model 11, so use that game-native remote
+// trainer model for the lifecycle probe. Once creation is proven, PokéRun can
+// bind the remote player's actual appearance separately.
 const UNION_REMOTE_TRAINER_MODEL = 11
 
 // Temporary dev UID. Production will allocate a PokéRun-owned UID only after the
@@ -85,21 +119,25 @@ function buildZoneNpc(player: White2ActorHeapEntry) {
   putU16(view, 0x00, POKERUN_NATIVE_TEST_UID)
   putU16(view, 0x02, UNION_REMOTE_TRAINER_MODEL)
   putU16(view, 0x04, 2) // Same base move code used by White 2's Union Room parent actor.
-  putU16(view, 0x06, 0) // event type
-  putU16(view, 0x08, 0) // spawn flag
-  putU16(view, 0x0a, 0) // script id
+  putU16(view, 0x06, 0)
+  putU16(view, 0x08, 0)
+  putU16(view, 0x0a, 0)
   putU16(view, 0x0c, 1) // down
   putU16(view, 0x0e, 0)
   putU16(view, 0x10, 0)
   putU16(view, 0x12, 0)
   putU16(view, 0x14, 0)
   putU16(view, 0x16, 0)
-  view.setUint32(0x18, 0, true) // BOOL isRail = FALSE
+  view.setUint32(0x18, 0, true)
   putU16(view, 0x1c, x)
   putU16(view, 0x1e, z)
   view.setInt32(0x20, 0, true)
 
   return { bytes, x, z, modelId: UNION_REMOTE_TRAINER_MODEL }
+}
+
+function delay(ms: number) {
+  return new Promise<void>(resolve => window.setTimeout(resolve, ms))
 }
 
 export class White2NativeActorBridge {
@@ -124,12 +162,84 @@ export class White2NativeActorBridge {
     return call.result >>> 0
   }
 
-  private async deleteActorAddress(actorAddress: number) {
+  private async runFieldTask(
+    scan: White2ActorHeapScan,
+    functionAddress: number,
+    args: (payloadAddress: number) => readonly [number, number, number, number],
+    payload?: Uint8Array,
+  ) {
+    const zeroed = scan.entries.filter(entry => entry.state === 'zeroed').sort((a, b) => a.index - b.index)
+    if (zeroed.length < 2) throw new Error('Native field task needs at least two free FieldActor slots so its scratch slot cannot be selected by actor creation.')
+
+    // GetPtrToFirstFreeActorSlot starts at index 0. Reserve the highest free slot
+    // for temporary callback/data so creation consumes an earlier free slot.
+    const scratchSlot = zeroed[zeroed.length - 1]
+    const dataAddress = scratchSlot.address + TASK_DATA_OFFSET
+    const payloadAddress = dataAddress + TASK_PAYLOAD_OFFSET
+    const codeAddress = scratchSlot.address + TASK_CODE_OFFSET
+    const originalScratch = await this.bridge.readBytes(dataAddress, TASK_SCRATCH_SIZE)
+
+    const tcbManager = await this.bridge.read32(scan.actorSystem + MMSYS_TCB_MGR)
+    assertMainRamPointer(tcbManager, 'Field actor TCB manager')
+
+    const scratch = new Uint8Array(TASK_SCRATCH_SIZE)
+    const view = new DataView(scratch.buffer)
+    const [r0, r1, r2, r3] = args(payloadAddress)
+    view.setUint32(0x00, (functionAddress | 1) >>> 0, true)
+    view.setUint32(0x04, r0 >>> 0, true)
+    view.setUint32(0x08, r1 >>> 0, true)
+    view.setUint32(0x0c, r2 >>> 0, true)
+    view.setUint32(0x10, r3 >>> 0, true)
+    view.setUint32(TASK_RESULT_OFFSET, 0, true)
+    view.setUint32(TASK_STATUS_OFFSET, 0, true)
+    if (payload) {
+      if (TASK_PAYLOAD_OFFSET + payload.length > TASK_CODE_OFFSET - TASK_DATA_OFFSET) throw new Error('Native field-task payload is too large for the reserved scratch area.')
+      scratch.set(payload, TASK_PAYLOAD_OFFSET)
+    }
+    scratch.set(FIELD_TASK_TRAMPOLINE, TASK_CODE_OFFSET - TASK_DATA_OFFSET)
+
+    let scheduled = false
+    let completed = false
+    try {
+      await this.bridge.writeBytes(dataAddress, scratch)
+      const addTask = await this.bridge.callArm9Thumb4(
+        GFL_TCB_MGR_ADD_TASK,
+        tcbManager,
+        (codeAddress | 1) >>> 0,
+        dataAddress,
+        0,
+        NATIVE_STACK_RESERVE,
+      )
+      assertCallReturned(addTask, 'GFL_TCBMgrAddTask')
+      if (addTask.result === 0) throw new Error('White 2 field actor TCB manager has no free task entry.')
+      assertMainRamPointer(addTask.result, 'Scheduled field task')
+      scheduled = true
+
+      const deadline = performance.now() + TASK_TIMEOUT_MS
+      while (performance.now() < deadline) {
+        const status = await this.bridge.read32(dataAddress + TASK_STATUS_OFFSET)
+        if (status === 1) {
+          const result = await this.bridge.read32(dataAddress + TASK_RESULT_OFFSET)
+          completed = true
+          return result >>> 0
+        }
+        await delay(16)
+      }
+
+      throw new Error('Scheduled White 2 field task did not finish within 8 seconds. Reload the tab before retrying so a late callback cannot reuse restored scratch memory.')
+    } finally {
+      // Once the callback reports status=1 it has already removed its own TCB,
+      // so nothing in the game can execute or reference this scratch again.
+      if (!scheduled || completed) await this.bridge.writeBytes(dataAddress, originalScratch)
+    }
+  }
+
+  private async deleteActorAddress(actorAddress: number, scan?: White2ActorHeapScan) {
     assertMainRamPointer(actorAddress, 'Actor to delete')
     const deleteOpcode = await this.bridge.read16(DELETE_ACTOR)
     if (deleteOpcode === 0 || deleteOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-delete address.')
-    const call = await this.bridge.callArm9Thumb4(DELETE_ACTOR, actorAddress, 0, 0, 0, NATIVE_STACK_RESERVE)
-    assertCallReturned(call, 'DeleteActor')
+    const actorScan = scan ?? await new White2ActorSystemProbe(this.bridge).scanHeap()
+    await this.runFieldTask(actorScan, DELETE_ACTOR, () => [actorAddress, 0, 0, 0])
   }
 
   async validateCallGate(): Promise<White2NativeCallValidation> {
@@ -149,44 +259,36 @@ export class White2NativeActorBridge {
 
   async spawnTestActor(): Promise<White2NativeSpawn> {
     const { scan, player } = await this.currentPlayer()
-    if (!scan.zeroedSlots.length) throw new Error('Native actor test blocked because the FieldActor heap has no fully zeroed slot.')
     const existing = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
-    if (existing !== 0) throw new Error(`Test UID ${hex(POKERUN_NATIVE_TEST_UID)} is already in use at ${hex(existing)}.`)
+    if (existing !== 0) throw new Error(`Test UID ${hex(POKERUN_NATIVE_TEST_UID)} is already in use at ${hex(existing)}. Reload the tab before retrying the native lifecycle probe.`)
 
     const createOpcode = await this.bridge.read16(CREATE_ACTOR)
     if (createOpcode === 0 || createOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-create address.')
 
-    const sp = await this.bridge.getArm9Sp()
-    if (sp < NATIVE_STACK_RESERVE) throw new Error('ARM9 stack pointer is too low for the reserved native-call stack region.')
-    const scratch = (sp - SCRATCH_BELOW_SP) & ~3
-    const stackBase = sp - NATIVE_STACK_RESERVE
-    if (scratch < stackBase || scratch + ZONE_NPC_SIZE >= sp) throw new Error('Temporary ZoneNPC scratch does not fit inside the reserved native-call stack region.')
-    const originalScratch = await this.bridge.readBytes(scratch, ZONE_NPC_SIZE)
     const npc = buildZoneNpc(player)
+    const actorAddress = await this.runFieldTask(
+      scan,
+      CREATE_ACTOR,
+      payloadAddress => [scan.actorSystem, payloadAddress, player.zoneId, 0],
+      npc.bytes,
+    )
+    assertMainRamPointer(actorAddress, 'Created actor')
 
-    try {
-      await this.bridge.writeBytes(scratch, npc.bytes)
-      const call = await this.bridge.callArm9Thumb4(CREATE_ACTOR, scan.actorSystem, scratch, player.zoneId, 0, NATIVE_STACK_RESERVE)
-      assertCallReturned(call, 'CreateNewActorByEntityNoWKOBJCODE')
-      const actorAddress = call.result >>> 0
-      assertMainRamPointer(actorAddress, 'Created actor')
-      const found = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
-      if (found !== actorAddress) throw new Error(`Created actor verification failed: returned ${hex(actorAddress)}, FindFieldActor saw ${hex(found)}.`)
-      return { actorAddress, uid: POKERUN_NATIVE_TEST_UID, modelId: npc.modelId, zoneId: player.zoneId, x: npc.x, z: npc.z }
-    } catch (error) {
-      const partial = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID).catch(() => 0)
-      if (partial) await this.deleteActorAddress(partial).catch(() => undefined)
-      throw error
-    } finally {
-      await this.bridge.writeBytes(scratch, originalScratch)
+    const found = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
+    if (found !== actorAddress) {
+      const cleanupScan = await new White2ActorSystemProbe(this.bridge).scanHeap()
+      if (found) await this.deleteActorAddress(found, cleanupScan).catch(() => undefined)
+      throw new Error(`Created actor verification failed: returned ${hex(actorAddress)}, FindFieldActor saw ${hex(found)}.`)
     }
+
+    return { actorAddress, uid: POKERUN_NATIVE_TEST_UID, modelId: npc.modelId, zoneId: player.zoneId, x: npc.x, z: npc.z }
   }
 
   async deleteTestActor(actorAddress?: number) {
     const { scan } = await this.currentPlayer()
     const address = actorAddress ?? await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
     if (address === 0) return false
-    await this.deleteActorAddress(address)
+    await this.deleteActorAddress(address, scan)
     const remaining = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
     if (remaining !== 0) throw new Error(`DeleteActor returned, but test UID still resolves to ${hex(remaining)}.`)
     return true
