@@ -8,7 +8,11 @@ const CREATE_ACTOR = 0x021668b4
 const DELETE_ACTOR = 0x02166980
 const NATIVE_STACK_RESERVE = 0x1000
 const ZONE_NPC_SIZE = 0x24
-const SCRATCH_ABOVE_SP = 0x100
+// The create routine copies ZoneNPC into its own local stack frame before its
+// first helper call. Keep our temporary input inside the already-backed native
+// call stack region, but far below that shallow prologue, instead of writing
+// above the interrupted SP into the live caller's stack frames.
+const SCRATCH_BELOW_SP = 0x200
 
 // White 2 does not create Union Room peers with the local player's ordinary
 // field model. It converts a Union View into one of the dedicated trainer-type
@@ -153,8 +157,10 @@ export class White2NativeActorBridge {
     if (createOpcode === 0 || createOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-create address.')
 
     const sp = await this.bridge.getArm9Sp()
-    if (sp > 0xfffff000) throw new Error('ARM9 stack pointer is too close to the end of the address space for temporary native-call scratch data.')
-    const scratch = (sp + SCRATCH_ABOVE_SP + 3) & ~3
+    if (sp < NATIVE_STACK_RESERVE) throw new Error('ARM9 stack pointer is too low for the reserved native-call stack region.')
+    const scratch = (sp - SCRATCH_BELOW_SP) & ~3
+    const stackBase = sp - NATIVE_STACK_RESERVE
+    if (scratch < stackBase || scratch + ZONE_NPC_SIZE >= sp) throw new Error('Temporary ZoneNPC scratch does not fit inside the reserved native-call stack region.')
     const originalScratch = await this.bridge.readBytes(scratch, ZONE_NPC_SIZE)
     const npc = buildZoneNpc(player)
 
