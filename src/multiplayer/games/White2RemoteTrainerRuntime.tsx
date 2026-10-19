@@ -49,7 +49,7 @@ const MAX_STEP_HOLD_MS = 250
 const SMOOTHING_ALPHA = 0.72
 const SMOOTHING_SNAP_FX32 = 16 * 4096
 const SMOOTHING_EPSILON_FX32 = 64
-const CACHE_VERSION = 1
+const CACHE_VERSION = 2
 
 const FIELD_FACE_BY_DIRECTION = { north: 0, south: 1, west: 2, east: 3 } as const
 const DIRECTION_BY_FIELD_FACE: Partial<Record<number, MultiplayerPlayerState['direction']>> = {
@@ -72,6 +72,7 @@ type Binding = {
 }
 
 type RenderProfile = {
+  matEntry: number
   faceIndex: number
   geomFlags: number
   matFlags: number
@@ -155,7 +156,7 @@ function chooseStandardNpc(entries: White2ActorHeapEntry[], player: White2ActorH
 }
 
 function profileKey(profile: RenderProfile) {
-  return `${profile.faceIndex}:${profile.geomFlags}:${profile.matFlags}`
+  return `${profile.matEntry}:${profile.faceIndex}:${profile.geomFlags}:${profile.matFlags}`
 }
 
 function turnKey(from: Direction, to: Direction): TurnKey {
@@ -367,8 +368,11 @@ async function restoreNpc(bridge: MelonDsBridge, borrowed: BorrowedNpc) {
  * debounces map/range lifecycle churn. Remote X/Z are gently smoothed at 50 Hz
  * between 25 Hz presence samples, while large jumps still snap immediately.
  * BlAct Y remains game-owned so native vertical sprite/shadow animation is not
- * flattened or re-applied every tick. It still borrows one ordinary NPC as the
- * renderer; a dedicated native actor remains the next architecture milestone.
+ * flattened or re-applied every tick. Renderer profiles keep material entry,
+ * frame, geometry flags, and material flags together as one atomic learned state
+ * so a facing/turn frame can never be replayed against the wrong texture atlas.
+ * It still borrows one ordinary NPC as the renderer; a dedicated native actor
+ * remains the next architecture milestone.
  */
 export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -385,7 +389,6 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
     let playerBinding: Binding | null = null
     let borrowed: BorrowedNpc | null = null
     let playerModelId: number | null = null
-    let playerMatEntry: number | null = null
     let cacheStorageKey: string | null = null
     let lastCacheSave = 0
     let lastLearnAt = 0
@@ -494,7 +497,6 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
         runtimeBridge.read16(binding.blActAddress + BLACT_MAT_FLAGS),
         runtimeBridge.read16(binding.handleAddress + HANDLE_MAT_ENTRY),
       ])
-      playerMatEntry = matEntry
 
       if (lastPlayerX !== null && (x !== lastPlayerX || z !== lastPlayerZ)) playerMovingUntil = now + MOVING_HOLD_MS
       lastPlayerX = x
@@ -503,7 +505,7 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
       const direction = DIRECTION_BY_FIELD_FACE[faceDir]
       if (!direction) return
       const moving = now < playerMovingUntil
-      const profile: RenderProfile = { faceIndex, geomFlags, matFlags }
+      const profile: RenderProfile = { matEntry, faceIndex, geomFlags, matFlags }
 
       if (activeTurnCapture) {
         if (moving || now - activeTurnCapture.startedAt >= TURN_CAPTURE_MS) {
@@ -679,7 +681,7 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
       }
 
       const profile = remoteProfile(now, remote)
-      if (!profile || playerMatEntry === null) {
+      if (!profile) {
         await releaseBorrowed()
         return
       }
@@ -706,7 +708,10 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
         // BlAct Y is intentionally left to White 2's renderer/animation system.
         runtimeBridge.write32(binding.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
         runtimeBridge.write32(binding.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
-        runtimeBridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, playerMatEntry),
+        // These four values are one learned renderer state. In particular,
+        // matEntry must always travel with faceIndex so the frame is interpreted
+        // against the same texture atlas it came from.
+        runtimeBridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, profile.matEntry),
         runtimeBridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, profile.geomFlags),
         runtimeBridge.write16(binding.blActAddress + BLACT_FACE_INDEX, profile.faceIndex),
         runtimeBridge.write16(binding.blActAddress + BLACT_MAT_FLAGS, profile.matFlags),
