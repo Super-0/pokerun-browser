@@ -120,7 +120,11 @@ export class White2ActorSystemProbe {
     ])
 
     if (capacity < 1 || capacity > 64) throw new Error(`White 2 actor capacity is outside the expected range (${capacity}).`)
-    if (count > capacity) throw new Error(`White 2 actor count ${count} exceeds capacity ${capacity}.`)
+    // White 2's ActorSave_Load sets actorCount to the number of save entries it
+    // iterates (64) rather than the number of live heap slots. Native actor
+    // creation then increments that bookkeeping value to 65 and DeleteActor
+    // returns it to 64. Heap occupancy must therefore be validated from the
+    // actual FieldActor slots below, not by requiring count <= capacity.
     if (!isMainRamPointer(actorHeap)) throw new Error(`White 2 actor-heap pointer is invalid (${hex(actorHeap)}).`)
     if (actorHeap + capacity * FIELD_ACTOR_SIZE > MAIN_RAM_END) throw new Error('White 2 actor heap extends outside main RAM.')
 
