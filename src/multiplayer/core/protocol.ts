@@ -8,14 +8,32 @@ export type MultiplayerRomIdentity = { gameId: GameId; fileName?: string; sha256
 export type MultiplayerPlayer = { id: string; label: string; ready: boolean; rom: MultiplayerRomIdentity }
 export type MultiplayerGameStart = { startId: string; gameId: GameId; startedAt: number }
 export type MultiplayerWorldPosition = { x: number; y: number; z: number }
+export type MultiplayerDirection = 'north' | 'south' | 'east' | 'west'
+export type MultiplayerMapTransition = {
+  /** Unique within one player session so peers only replay a transition once. */
+  id: string
+  detectedAt: number
+  fromMapId: number | string
+  toMapId: number | string
+  fromX: number
+  fromY: number
+  fromDirection: MultiplayerDirection
+  fromWorldPosition?: MultiplayerWorldPosition
+  toX: number
+  toY: number
+  toDirection: MultiplayerDirection
+  toWorldPosition?: MultiplayerWorldPosition
+}
 export type MultiplayerPlayerState = {
   location: { mapId: number | string }
   x: number
   y: number
-  direction: 'north' | 'south' | 'east' | 'west'
+  direction: MultiplayerDirection
   movementState?: string
   /** Optional game-native continuous world position. Only peers on the same verified game/revision should interpret it. */
   worldPosition?: MultiplayerWorldPosition
+  /** Briefly repeated after a map change so the peer can replay the matching local-world entrance/door effect. */
+  transition?: MultiplayerMapTransition
 }
 export type MultiplayerRoom = { code: string; gameId: GameId; hostId: string; players: MultiplayerPlayer[]; gameStart?: MultiplayerGameStart }
 
