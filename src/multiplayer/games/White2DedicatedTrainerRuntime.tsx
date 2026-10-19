@@ -52,8 +52,8 @@ const MAX_STEP_HOLD_MS = 250
 const SMOOTHING_ALPHA = 0.72
 const SMOOTHING_SNAP_FX32 = 16 * 4096
 const SMOOTHING_EPSILON_FX32 = 64
-// Reuse the material-safe v2 knowledge learned by the former borrowed-NPC path.
-const CACHE_VERSION = 2
+// V3 rejects doorway/clipping-only renderer geometry from reusable walk/turn animation knowledge.
+const CACHE_VERSION = 3
 
 const FIELD_FACE_BY_DIRECTION = { north: 0, south: 1, west: 2, east: 3 } as const
 const DIRECTION_BY_FIELD_FACE: Partial<Record<number, MultiplayerPlayerState['direction']>> = {
@@ -192,6 +192,12 @@ function observeIdle(knowledge: DirectionKnowledge, profile: RenderProfile) {
   if (current) current.count += 1
   else knowledge.idleCounts.set(key, { count: 1, profile: { ...profile } })
   knowledge.idle = [...knowledge.idleCounts.values()].sort((a, b) => b.count - a.count)[0]?.profile ?? knowledge.idle
+}
+
+function hasStableGeometry(knowledge: DirectionKnowledge, profile: RenderProfile) {
+  const idle = knowledge.idle
+  if (!idle) return true
+  return profile.geomFlags === idle.geomFlags && profile.matFlags === idle.matFlags
 }
 
 function worldChanged(a: MultiplayerWorldPosition | null, b: MultiplayerWorldPosition) {
@@ -459,7 +465,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         if (moving || now - activeTurnCapture.startedAt >= TURN_CAPTURE_MS) {
           finishTurnCapture()
         } else {
-          appendStep(activeTurnCapture.sequence, profile)
+          if (hasStableGeometry(knowledge[direction], profile)) appendStep(activeTurnCapture.sequence, profile)
           lastPlayerDirection = direction
           lastPlayerMoving = moving
           return
@@ -469,7 +475,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       if (lastPlayerDirection && direction !== lastPlayerDirection && !moving && !lastPlayerMoving) {
         finalizeActivePlayerRun()
         activeTurnCapture = { key: turnKey(lastPlayerDirection, direction), startedAt: now, sequence: [] }
-        appendStep(activeTurnCapture.sequence, profile)
+        if (hasStableGeometry(knowledge[direction], profile)) appendStep(activeTurnCapture.sequence, profile)
         lastPlayerDirection = direction
         lastPlayerMoving = moving
         return
@@ -481,7 +487,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
           finalizeActivePlayerRun()
           activePlayerRunDirection = direction
         }
-        appendStep(directionKnowledge.currentRun, profile)
+        if (hasStableGeometry(directionKnowledge, profile)) appendStep(directionKnowledge.currentRun, profile)
       } else {
         finalizeActivePlayerRun()
         observeIdle(directionKnowledge, profile)
