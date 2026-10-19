@@ -163,6 +163,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     const nativeActors = new White2NativeActorBridge(runtimeBridge, rom)
 
     let cancelled = false
+    let ownsActor = false
     let binding: DedicatedBinding | null = null
     let renderedWorld: MultiplayerWorldPosition | null = null
     let stableMapId: MultiplayerPlayerState['location']['mapId'] | null = null
@@ -177,8 +178,9 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     }
 
     async function releaseActor(cooldown = true) {
-      const hadActor = binding !== null
+      const hadActor = ownsActor || binding !== null
       binding = null
+      ownsActor = false
       resetMotion()
       if (!hadActor) return
       if (cooldown) reacquireAfter = Math.max(reacquireAfter, Date.now() + REACQUIRE_COOLDOWN_MS)
@@ -192,8 +194,15 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     }
 
     async function ensureActor(remote: MultiplayerPlayerState) {
-      if (binding && await bindingStillValid(runtimeBridge, binding)) return binding
-      binding = null
+      if (binding) {
+        if (await bindingStillValid(runtimeBridge, binding)) return binding
+        await releaseActor()
+        return null
+      }
+      if (ownsActor) {
+        await releaseActor()
+        return null
+      }
       resetMotion()
       if (Date.now() < reacquireAfter) return null
 
@@ -201,25 +210,31 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       // tile from the local player. We immediately move it to the remote WPos
       // before exposing the binding to the steady-state loop.
       const spawned = await nativeActors.spawnTestActor()
-      const next = await resolveDedicatedBinding(runtimeBridge, spawned.actorAddress)
-      const world = remote.worldPosition
-      if (!world) {
-        await nativeActors.deleteTestActor().catch(() => undefined)
-        return null
+      ownsActor = true
+      try {
+        const next = await resolveDedicatedBinding(runtimeBridge, spawned.actorAddress)
+        const world = remote.worldPosition
+        if (!world) {
+          await releaseActor()
+          return null
+        }
+        await Promise.all([
+          runtimeBridge.write16(next.actorAddress + ACTOR_FACE_DIR, FIELD_FACE_BY_DIRECTION[remote.direction]),
+          runtimeBridge.write16(next.actorAddress + ACTOR_GPOS + 0x00, remote.x),
+          runtimeBridge.write16(next.actorAddress + ACTOR_GPOS + 0x04, remote.y),
+          runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x00, world.x >>> 0),
+          runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x04, world.y >>> 0),
+          runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x08, world.z >>> 0),
+          runtimeBridge.write32(next.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
+          runtimeBridge.write32(next.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
+        ])
+        renderedWorld = { ...world }
+        binding = next
+        return next
+      } catch (error) {
+        await releaseActor().catch(() => undefined)
+        throw error
       }
-      await Promise.all([
-        runtimeBridge.write16(next.actorAddress + ACTOR_FACE_DIR, FIELD_FACE_BY_DIRECTION[remote.direction]),
-        runtimeBridge.write16(next.actorAddress + ACTOR_GPOS + 0x00, remote.x),
-        runtimeBridge.write16(next.actorAddress + ACTOR_GPOS + 0x04, remote.y),
-        runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x00, world.x >>> 0),
-        runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x04, world.y >>> 0),
-        runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x08, world.z >>> 0),
-        runtimeBridge.write32(next.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
-        runtimeBridge.write32(next.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
-      ])
-      renderedWorld = { ...world }
-      binding = next
-      return next
     }
 
     async function tick() {
@@ -229,7 +244,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       const remote = presence.remote
 
       if (!local?.worldPosition || !remote?.worldPosition) {
-        if (binding && now - lastCompletePresenceAt > MISSING_STATE_GRACE_MS) {
+        if (ownsActor && now - lastCompletePresenceAt > MISSING_STATE_GRACE_MS) {
           rangeLatched = false
           stableMapId = null
           stableMapSince = 0
