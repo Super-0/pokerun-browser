@@ -8,9 +8,17 @@ import { White2ActorSystemProbe } from './White2ActorSystem'
 
 const UPDATE_MS = 20
 const HANDLE_TIMEOUT_MS = 1400
+const PREOPEN_PROBE_MS = 100
+const PREOPEN_REUSE_MS = 1600
+const PREOPEN_COOLDOWN_MS = 1800
 
 type ActiveDoor = {
   handle: number
+  mapId: number | string
+  startedAt: number
+}
+
+type PreopenedDoor = {
   mapId: number | string
   startedAt: number
 }
@@ -21,6 +29,10 @@ function delay(ms: number) {
 
 function sameMap(a: number | string | undefined, b: number | string | undefined) {
   return a !== undefined && b !== undefined && a === b
+}
+
+function worldMoved(previous: MultiplayerWorldPosition | undefined, current: MultiplayerWorldPosition | undefined) {
+  return Boolean(previous && current && (previous.x !== current.x || previous.y !== current.y || previous.z !== current.z))
 }
 
 function inferredTransition(previous: MultiplayerPlayerState, current: MultiplayerPlayerState, now: number): MultiplayerMapTransition | null {
@@ -64,6 +76,9 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
     let previousRemote: MultiplayerPlayerState | null = null
     let lastHandledTransitionId = ''
     let activeDoor: ActiveDoor | null = null
+    let preopenedDoor: PreopenedDoor | null = null
+    let lastPreopenProbeAt = 0
+    let preopenCooldownUntil = 0
     let lastWarning = ''
 
     async function dropActiveDoor(localMapId: number | string | undefined, force = false) {
@@ -99,29 +114,54 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
     }
 
     async function playDoor(world: MultiplayerWorldPosition | undefined, localMapId: number | string, now: number) {
-      if (!world) return
+      if (!world) return false
       await dropActiveDoor(localMapId, true)
       try {
         const animation = await doors.playNearestDoor(world)
         if (animation.handle) activeDoor = { handle: animation.handle, mapId: localMapId, startedAt: now }
         lastWarning = ''
+        return animation.matched
       } catch (reason) {
         const message = reason instanceof Error ? reason.message : String(reason)
         if (message !== lastWarning) {
           lastWarning = message
           console.warn('White 2 remote door transition skipped:', reason)
         }
+        return false
       }
+    }
+
+    async function maybePreopenDoor(previous: MultiplayerPlayerState | null, remote: MultiplayerPlayerState, local: MultiplayerPlayerState, now: number) {
+      if (!previous?.worldPosition || !remote.worldPosition) return
+      if (!sameMap(local.location.mapId, remote.location.mapId) || !sameMap(previous.location.mapId, remote.location.mapId)) return
+      if (remote.direction !== 'north') return
+      if (!worldMoved(previous.worldPosition, remote.worldPosition)) return
+      // A north-facing approach must not simultaneously be moving south in the
+      // normalized tile coordinates. Keeping same-Y is allowed because White 2's
+      // scripted doorway walk can move WPos before the logical tile changes.
+      if (remote.y > previous.y) return
+      if (activeDoor || now < preopenCooldownUntil || now - lastPreopenProbeAt < PREOPEN_PROBE_MS) return
+      lastPreopenProbeAt = now
+
+      const matched = await playDoor(remote.worldPosition, local.location.mapId, now)
+      if (!matched) return
+      preopenedDoor = { mapId: local.location.mapId, startedAt: now }
+      preopenCooldownUntil = now + PREOPEN_COOLDOWN_MS
     }
 
     async function handleTransition(transition: MultiplayerMapTransition, local: MultiplayerPlayerState, now: number) {
       if (transition.id === lastHandledTransitionId) return
       lastHandledTransitionId = transition.id
 
-      // Departure: open the door in the map this client is still displaying as
-      // the dedicated actor reaches it and disappears into the other map.
+      // Departure: if the nearby door was already opened while the trainer began
+      // White 2's slow doorway walk, do not restart the animation at map-change
+      // time. This keeps the trainer from walking behind a still-closed door.
       if (sameMap(local.location.mapId, transition.fromMapId)) {
-        await playDoor(transition.fromWorldPosition, local.location.mapId, now)
+        const recentPreopen = preopenedDoor
+          && sameMap(preopenedDoor.mapId, local.location.mapId)
+          && now - preopenedDoor.startedAt <= PREOPEN_REUSE_MS
+        if (!recentPreopen) await playDoor(transition.fromWorldPosition, local.location.mapId, now)
+        preopenedDoor = null
         return
       }
 
@@ -130,6 +170,7 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
       // after this starts instead of popping in front of a closed door.
       if (sameMap(local.location.mapId, transition.toMapId)) {
         await playDoor(transition.toWorldPosition, local.location.mapId, now)
+        preopenedDoor = null
       }
     }
 
@@ -139,13 +180,20 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
       await serviceActiveDoor(local?.location.mapId, now)
       if (!local || !remote) {
         previousRemote = remote
+        preopenedDoor = null
         return
       }
+
+      const previous = previousRemote
+      // Pre-open a nearby native door while both players still agree on the map,
+      // before the remote map ID changes. This is intentionally conservative:
+      // only a north-facing, actually-moving approach is eligible.
+      await maybePreopenDoor(previous, remote, local, now)
 
       // Prefer explicit transition metadata when available. The inferred path
       // keeps this compatible with peers that only publish ordinary state.
       const transition = remote.transition
-        ?? (previousRemote ? inferredTransition(previousRemote, remote, now) : null)
+        ?? (previous ? inferredTransition(previous, remote, now) : null)
       previousRemote = remote
       if (transition) await handleTransition(transition, local, now)
     }
