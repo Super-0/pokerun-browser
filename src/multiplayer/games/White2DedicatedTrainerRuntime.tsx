@@ -334,8 +334,9 @@ async function writeRenderProfile(bridge: MelonDsBridge, binding: ActorBinding, 
  *
  * A real game-created FieldActor owns the remote player lifecycle. PokéRun drives
  * its logical/continuous position and replays render states learned from the local
- * protagonist onto that dedicated actor. No map NPC is borrowed. BlAct Y remains
- * game-owned so shadow/vertical animation stays native.
+ * protagonist onto that dedicated actor. No map NPC is borrowed. BlAct X/Y/Z is
+ * kept aligned with the replicated WPos so scripted vertical doorway movement
+ * cannot leave the billboard at a stale game-owned height.
  */
 export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -615,6 +616,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
           runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x04, world.y >>> 0),
           runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x08, world.z >>> 0),
           runtimeBridge.write32(next.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
+          runtimeBridge.write32(next.blActAddress + BLACT_POSITION + 0x04, world.y >>> 0),
           runtimeBridge.write32(next.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
         ])
         renderedWorld = { ...world }
@@ -702,8 +704,10 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x00, world.x >>> 0),
         runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x04, world.y >>> 0),
         runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x08, world.z >>> 0),
-        // Keep the native billboard horizontally aligned. BlAct Y remains game-owned.
+        // Keep the native billboard aligned on all three axes. White 2's doorway
+        // scripts can change vertical render position while the actor slow-walks.
         runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
+        runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x04, world.y >>> 0),
         runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
       ]
       await Promise.all(writes)
