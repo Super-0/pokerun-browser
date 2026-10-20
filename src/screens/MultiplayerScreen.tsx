@@ -185,8 +185,17 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
     }
 
     void poll()
-    const timer = window.setInterval(() => void poll(), 40)
-    return () => { cancelled = true; window.clearInterval(timer) }
+    const normalTimer = window.setInterval(() => {
+      if (bridge.getSpeedMultiplier() === 1) void poll()
+    }, 40)
+    const acceleratedTimer = window.setInterval(() => {
+      if (bridge.getSpeedMultiplier() > 1) void poll()
+    }, 16)
+    return () => {
+      cancelled = true
+      window.clearInterval(normalTimer)
+      window.clearInterval(acceleratedTimer)
+    }
   }, [bridge, localRomIdentity, session])
 
   const remoteDifferentMap = Boolean(localState && remoteState && localState.location.mapId !== remoteState.location.mapId)
