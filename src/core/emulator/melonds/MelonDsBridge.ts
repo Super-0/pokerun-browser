@@ -29,7 +29,6 @@ export class MelonDsBridge implements EmulatorBridge {
   private lastFrameAt = 0
   private running = false
   private speedMultiplier: DsSpeedMultiplier = 1
-  private emulatedFrameCount = 0
   private readonly emulatedFrameListeners = new Set<() => void>()
   private topImage: ImageData | null = null
   private bottomImage: ImageData | null = null
@@ -43,7 +42,6 @@ export class MelonDsBridge implements EmulatorBridge {
 
   setSpeedMultiplier(multiplier: DsSpeedMultiplier) { this.speedMultiplier = multiplier }
   getSpeedMultiplier() { return this.speedMultiplier }
-  getEmulatedFrameCount() { return this.emulatedFrameCount }
   subscribeEmulatedFrame(listener: () => void) {
     this.emulatedFrameListeners.add(listener)
     return () => this.emulatedFrameListeners.delete(listener)
@@ -97,7 +95,6 @@ export class MelonDsBridge implements EmulatorBridge {
     this.emulator.setSavePath(this.savePath)
     this.emulator.loadFreeBIOS()
     if (!this.emulator.loadRom(this.cart, false)) throw new Error('melonDS could not attach the ROM cartridge.')
-    this.emulatedFrameCount = 0
     this.status = 'loaded'
   }
 
@@ -108,7 +105,7 @@ export class MelonDsBridge implements EmulatorBridge {
   }
   async pause() { if (this.status === 'running') { this.running = false; if (this.frame) cancelAnimationFrame(this.frame); this.frame = null; this.status = 'paused' } }
   async resume() { if (this.status === 'paused') { this.running = true; this.status = 'running'; this.scheduleFrame() } }
-  async reset() { if (!this.emulator) return; await this.pause(); this.emulator.initialize(true); this.emulatedFrameCount = 0; await this.resume() }
+  async reset() { if (!this.emulator) return; await this.pause(); this.emulator.initialize(true); await this.resume() }
 
   async exportBatterySave() {
     try {
@@ -225,7 +222,6 @@ export class MelonDsBridge implements EmulatorBridge {
   }
 
   private notifyEmulatedFrame() {
-    this.emulatedFrameCount += 1
     for (const listener of this.emulatedFrameListeners) {
       try { listener() } catch (error) { console.warn('melonDS emulated-frame listener failed.', error) }
     }
