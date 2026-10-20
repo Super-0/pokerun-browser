@@ -29,6 +29,18 @@ async function copyText(text: string) {
   area.remove()
 }
 
+function downloadTrace() {
+  const blob = new Blob([multiplayerMovementTrace.exportJson()], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = `pokerun-multiplayer-trace-${new Date().toISOString().replace(/[:.]/g, '-')}.json`
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 export function MultiplayerMovementTracePanel({ player }: { player: 1 | 2 }) {
   const [snapshot, setSnapshot] = useState<MultiplayerMovementTraceSnapshot>(() => multiplayerMovementTrace.snapshot())
   const [copied, setCopied] = useState(false)
@@ -84,6 +96,7 @@ export function MultiplayerMovementTracePanel({ player }: { player: 1 | 2 }) {
       <button className="pixel-button ghost" disabled={!snapshot.active} onClick={() => multiplayerMovementTrace.stop()}>STOP</button>
       <button className="pixel-button ghost" disabled={!snapshot.active} onClick={() => multiplayerMovementTrace.mark('VISUAL GLITCH')}>MARK NOW</button>
       <button className="pixel-button ghost" disabled={!snapshot.eventCount} onClick={() => void copyTrace()}>{copied ? 'COPIED' : 'COPY JSON'}</button>
+      <button className="pixel-button ghost" disabled={!snapshot.eventCount} onClick={downloadTrace}>DOWNLOAD JSON</button>
       <button className="pixel-button ghost" disabled={snapshot.active || !snapshot.eventCount} onClick={() => multiplayerMovementTrace.clear()}>CLEAR</button>
     </div>
 
