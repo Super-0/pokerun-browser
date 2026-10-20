@@ -36,7 +36,8 @@ export function MultiplayerMovementTracePanel({ player }: { player: 1 | 2 }) {
 
   useEffect(() => {
     multiplayerMovementTrace.setTabLabel(`PLAYER ${player}`)
-    return multiplayerMovementTrace.subscribe(setSnapshot)
+    const unsubscribe = multiplayerMovementTrace.subscribe(setSnapshot)
+    return () => { unsubscribe() }
   }, [player])
 
   useEffect(() => {
