@@ -21,7 +21,7 @@ type OutboundMessage = { type: MultiplayerMessage['type']; [key: string]: unknow
 
 const codeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const TRANSITION_REPEAT_MS = 1200
-const MOVEMENT_IDLE_MS = 100
+const MOVEMENT_IDLE_MS = 180
 
 function roomCode() { return Array.from({ length: 6 }, () => codeAlphabet[Math.floor(Math.random() * codeAlphabet.length)]).join('') }
 function missingRom(gameId: GameId): MultiplayerRomIdentity { return { gameId, status: 'missing' } }
