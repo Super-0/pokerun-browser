@@ -1,5 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import ReactDOM from 'react-dom/client'
+import { multiplayerSaveStore, type MultiplayerSaveProfile } from './core/storage/MultiplayerSaveStore'
 import { MultiplayerScreen } from './screens/MultiplayerScreen'
 import './styles/app.css'
 import './styles/emulator.css'
@@ -10,6 +11,10 @@ import './styles/my-runs.css'
 import './styles/multiplayer-session.css'
 
 const DEV_ROOM_KEY = 'pokerun-multiplayer-dev-room-v1'
+const DEV_SAVE_KEYS = {
+  1: 'pokerun-multiplayer-dev-save-player-1-v1',
+  2: 'pokerun-multiplayer-dev-save-player-2-v1',
+} as const
 
 function goToMainApp() {
   window.location.href = '/'
@@ -29,11 +34,22 @@ function setControlledInput(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event('change', { bubbles: true }))
 }
 
+function savedProfileForPlayer(player: 1 | 2) {
+  const profileId = localStorage.getItem(DEV_SAVE_KEYS[player])
+  if (!profileId) return null
+  return multiplayerSaveStore.list('white2').find(profile => profile.id === profileId) ?? null
+}
+
+function profileCard(profile: MultiplayerSaveProfile) {
+  const expectedTitle = `SAVE ${String(profile.slotNumber).padStart(3, '0')}`
+  return [...document.querySelectorAll<HTMLElement>('.run-card')].find(card =>
+    card.querySelector('h2')?.textContent?.trim().toUpperCase() === expectedTitle,
+  ) ?? null
+}
+
 /**
- * Dev-only UI driver. It deliberately uses the production multiplayer UI instead
- * of adding a second room/session implementation: Player 1 creates a normal room,
- * publishes that generated code through same-origin localStorage, and Player 2
- * enters the normal join flow with that code.
+ * Dev-only UI driver. Production multiplayer code stays untouched: this component
+ * drives the existing White 2 picker/lobby controls exactly like a person would.
  */
 function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
   useEffect(() => {
@@ -41,6 +57,8 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
     let cancelled = false
     let pendingJoinCode = ''
     let activeRoomCode = ''
+    let createRequested = false
+    let saveRequested = false
 
     function tick() {
       if (cancelled) return
@@ -52,37 +70,75 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
       if (visibleRoomCode) {
         activeRoomCode = visibleRoomCode
         pendingJoinCode = ''
+        createRequested = false
+
         if (player === 1) {
           if (sharedRoomCode !== visibleRoomCode) localStorage.setItem(DEV_ROOM_KEY, visibleRoomCode)
         } else if (sharedRoomCode && sharedRoomCode !== visibleRoomCode) {
           buttonByText('LEAVE ROOM')?.click()
           activeRoomCode = ''
+          saveRequested = false
+          return
+        }
+
+        const playerCards = [...document.querySelectorAll<HTMLElement>('.lobby-player')]
+        const localCard = playerCards.find(card => card.textContent?.includes('• YOU'))
+        const localRomReady = localCard?.textContent?.includes('ROM VERIFIED') ?? false
+
+        if (!localRomReady) {
+          if (!saveRequested) {
+            const profile = savedProfileForPlayer(player)
+            const card = profile ? profileCard(profile) : null
+            const continueButton = card
+              ? [...card.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim().toUpperCase() === 'CONTINUE')
+              : null
+            if (continueButton && !continueButton.disabled) {
+              saveRequested = true
+              continueButton.click()
+            }
+          }
+          return
+        }
+
+        saveRequested = true
+
+        const ready = buttonByText('READY')
+        if (ready && !ready.disabled) {
+          ready.click()
+          return
+        }
+
+        if (player === 1) {
+          const start = buttonByText('START GAME')
+          if (start && !start.disabled) start.click()
         }
         return
       }
 
-      // If Player 1 was restarted while Player 2 was already in-game, leave the
-      // stale session so the ordinary picker/setup flow can rejoin the new room.
       if (player === 2 && activeRoomCode && sharedRoomCode && activeRoomCode !== sharedRoomCode) {
         const leave = buttonByText('LEAVE SESSION', 'LEAVE ROOM')
         if (leave) {
           leave.click()
           activeRoomCode = ''
           pendingJoinCode = ''
+          saveRequested = false
           return
         }
       }
 
-      // Multiplayer currently exposes White 2 as the registered dev game. Select
-      // the first registered game tile rather than duplicating registry logic here.
       const gameTile = document.querySelector<HTMLButtonElement>('.game-tile')
       if (gameTile) {
+        createRequested = false
         gameTile.click()
         return
       }
 
       if (player === 1) {
-        buttonByText('CREATE ROOM')?.click()
+        const create = buttonByText('CREATE ROOM')
+        if (create && !createRequested) {
+          createRequested = true
+          create.click()
+        }
         return
       }
 
@@ -116,18 +172,49 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
   return <MultiplayerScreen onHome={goToMainApp} onMyRuns={goToMainApp} onSettings={goToMainApp} />
 }
 
+function storedSelection(player: 1 | 2, profiles: MultiplayerSaveProfile[]) {
+  const stored = localStorage.getItem(DEV_SAVE_KEYS[player])
+  if (stored && profiles.some(profile => profile.id === stored)) return stored
+  const index = player - 1
+  return profiles[index]?.id ?? ''
+}
+
 function MultiplayerDevLauncher() {
-  function openPlayer(player: 1 | 2) {
-    if (player === 1) localStorage.removeItem(DEV_ROOM_KEY)
-    window.open(`/multiplayer-dev.html?player=${player}`, `pokerun-multiplayer-player-${player}`)
+  const profiles = useMemo(
+    () => multiplayerSaveStore.list('white2').slice().sort((a, b) => a.slotNumber - b.slotNumber),
+    [],
+  )
+  const [player1Save, setPlayer1Save] = useState(() => storedSelection(1, profiles))
+  const [player2Save, setPlayer2Save] = useState(() => storedSelection(2, profiles))
+
+  useEffect(() => {
+    if (player1Save) localStorage.setItem(DEV_SAVE_KEYS[1], player1Save)
+    else localStorage.removeItem(DEV_SAVE_KEYS[1])
+  }, [player1Save])
+
+  useEffect(() => {
+    if (player2Save) localStorage.setItem(DEV_SAVE_KEYS[2], player2Save)
+    else localStorage.removeItem(DEV_SAVE_KEYS[2])
+  }, [player2Save])
+
+  function launchBoth() {
+    localStorage.removeItem(DEV_ROOM_KEY)
+    if (player1Save) localStorage.setItem(DEV_SAVE_KEYS[1], player1Save)
+    if (player2Save) localStorage.setItem(DEV_SAVE_KEYS[2], player2Save)
+
+    // Only one popup is required. The launcher itself becomes Player 1, which
+    // avoids browsers blocking the second of two scripted window.open calls.
+    const player2 = window.open('/multiplayer-dev.html?player=2', '_blank')
+    if (!player2) {
+      window.alert('Player 2 was blocked by the browser. Allow popups for this localhost site, then launch again.')
+      return
+    }
+    window.location.href = '/multiplayer-dev.html?player=1'
   }
 
-  function openBoth() {
-    localStorage.removeItem(DEV_ROOM_KEY)
-    const player1 = window.open('about:blank', 'pokerun-multiplayer-player-1')
-    const player2 = window.open('about:blank', 'pokerun-multiplayer-player-2')
-    if (player1) player1.location.href = '/multiplayer-dev.html?player=1'
-    if (player2) player2.location.href = '/multiplayer-dev.html?player=2'
+  function openPlayer(player: 1 | 2) {
+    if (player === 1) localStorage.removeItem(DEV_ROOM_KEY)
+    window.location.href = `/multiplayer-dev.html?player=${player}`
   }
 
   return <main className="screen home-screen">
@@ -137,27 +224,48 @@ function MultiplayerDevLauncher() {
         <div>
           <span className="eyebrow">LOCAL DEVELOPMENT ONLY</span>
           <h1>MULTIPLAYER DEV HARNESS</h1>
-          <p>Launch two isolated White 2 multiplayer tabs without going through the normal app or copying room codes.</p>
+          <p>Launch both White 2 players, restore their saved cartridges, join the same room, ready up, and start automatically.</p>
         </div>
       </section>
+
       <section className="multiplayer-setup pixel-border">
         <article>
-          <h2>OPEN BOTH PLAYERS</h2>
-          <p>Player 1 creates a normal White 2 room automatically. Player 2 reads that room code locally and joins it automatically.</p>
-          <button className="pixel-button" onClick={openBoth}>OPEN PLAYER 1 + PLAYER 2</button>
+          <h2>PLAYER 1 SAVE</h2>
+          <p>Remembered for future launches.</p>
+          <select value={player1Save} onChange={event => setPlayer1Save(event.target.value)}>
+            <option value="">MANUAL SELECTION</option>
+            {profiles.map(profile => <option key={profile.id} value={profile.id}>SAVE {String(profile.slotNumber).padStart(3, '0')} • {profile.fileName}</option>)}
+          </select>
         </article>
         <article>
-          <h2>INDIVIDUAL TABS</h2>
-          <p>Player 1 starts a fresh dev room. Player 2 joins the current dev room.</p>
+          <h2>PLAYER 2 SAVE</h2>
+          <p>Remembered for future launches.</p>
+          <select value={player2Save} onChange={event => setPlayer2Save(event.target.value)}>
+            <option value="">MANUAL SELECTION</option>
+            {profiles.map(profile => <option key={profile.id} value={profile.id}>SAVE {String(profile.slotNumber).padStart(3, '0')} • {profile.fileName}</option>)}
+          </select>
+        </article>
+      </section>
+
+      <section className="multiplayer-setup pixel-border">
+        <article>
+          <h2>LAUNCH TEST SESSION</h2>
+          <p>The current tab becomes Player 1 and one new tab opens for Player 2. No room-code copying is required.</p>
+          <button className="pixel-button" onClick={launchBoth}>LAUNCH PLAYER 1 + PLAYER 2</button>
+        </article>
+        <article>
+          <h2>RESTART ONE PLAYER</h2>
+          <p>Useful when only one emulator needs to be restarted.</p>
           <div className="join-row">
             <button className="pixel-button ghost" onClick={() => openPlayer(1)}>PLAYER 1</button>
             <button className="pixel-button ghost" onClick={() => openPlayer(2)}>PLAYER 2</button>
           </div>
         </article>
       </section>
+
       <section className="runs-empty pixel-border">
-        <h2>WHAT THIS ISOLATES</h2>
-        <p>The normal PokéRun app is not mounted here. Room creation/join automation exists only in this dev entry point; the production multiplayer session and transport are unchanged.</p>
+        <h2>SAVED CARTRIDGES FOUND: {profiles.length}</h2>
+        <p>If a player is set to MANUAL SELECTION, that tab will stop in the normal White 2 lobby so you can choose a ROM/save yourself.</p>
       </section>
     </div>
   </main>
