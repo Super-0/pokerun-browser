@@ -21,6 +21,7 @@ type OutboundMessage = { type: MultiplayerMessage['type']; [key: string]: unknow
 
 const codeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const TRANSITION_REPEAT_MS = 1200
+const MOVEMENT_IDLE_MS = 100
 
 function roomCode() { return Array.from({ length: 6 }, () => codeAlphabet[Math.floor(Math.random() * codeAlphabet.length)]).join('') }
 function missingRom(gameId: GameId): MultiplayerRomIdentity { return { gameId, status: 'missing' } }
@@ -53,6 +54,7 @@ export class LocalMultiplayerSession {
   private activeTransition: MultiplayerMapTransition | null = null
   private activeTransitionUntil = 0
   private transitionCounter = 0
+  private movementIdleTimer: number | null = null
 
   constructor(private readonly transport: MultiplayerTransport, private readonly label = 'PLAYER') {}
 
@@ -136,9 +138,22 @@ export class LocalMultiplayerSession {
     const start = room?.gameStart
     if (!room || !start) return
 
-    const outboundState = this.withTransitionMetadata(state)
+    this.clearMovementIdleTimer()
+    const movementState = this.resolveMovementState(state)
+    const outboundState = this.withTransitionMetadata({ ...state, movementState })
     multiplayerPresence.setLocal(outboundState)
-    this.send({ type: 'GAME_STATE', roomCode: room.code, startId: start.startId, sequence: ++this.sequence, playerId: this.localPlayerId, state: outboundState })
+    const sequence = ++this.sequence
+    this.send({ type: 'GAME_STATE', roomCode: room.code, startId: start.startId, sequence, playerId: this.localPlayerId, state: outboundState })
+
+    if (movementState === 'moving') {
+      this.movementIdleTimer = window.setTimeout(() => {
+        this.movementIdleTimer = null
+        if (this.sequence !== sequence) return
+        const latest = this.lastPublishedGameState
+        if (!latest || latest.movementState !== 'moving') return
+        this.publishGameState({ ...latest, movementState: 'idle' })
+      }, MOVEMENT_IDLE_MS)
+    }
   }
 
   leave() {
@@ -148,6 +163,26 @@ export class LocalMultiplayerSession {
     if (!room) return
     this.send({ type: 'PLAYER_LEAVE', roomCode: room.code, playerId: this.localPlayerId })
     this.update({ room: null, localRom: null, remoteStates: {} })
+  }
+
+  private resolveMovementState(state: MultiplayerPlayerState) {
+    if (state.movementState === 'moving' || state.movementState === 'idle') return state.movementState
+    const previous = this.lastPublishedGameState
+    if (!previous) return 'idle'
+    const previousWorld = previous.worldPosition
+    const currentWorld = state.worldPosition
+    if (previousWorld && currentWorld && (
+      previousWorld.x !== currentWorld.x
+      || previousWorld.y !== currentWorld.y
+      || previousWorld.z !== currentWorld.z
+    )) return 'moving'
+    return previous.movementState === 'moving' ? 'moving' : 'idle'
+  }
+
+  private clearMovementIdleTimer() {
+    if (this.movementIdleTimer === null) return
+    window.clearTimeout(this.movementIdleTimer)
+    this.movementIdleTimer = null
   }
 
   private withTransitionMetadata(state: MultiplayerPlayerState): MultiplayerPlayerState {
@@ -188,6 +223,7 @@ export class LocalMultiplayerSession {
   }
 
   private resetGameStateTracking() {
+    this.clearMovementIdleTimer()
     this.lastPublishedGameState = null
     this.activeTransition = null
     this.activeTransitionUntil = 0
