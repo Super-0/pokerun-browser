@@ -10,6 +10,8 @@ const ACTOR_MODEL_ID = 0x0c
 const ACTOR_FACE_DIR = 0x18
 const ACTOR_GPOS = 0x3c
 const ACTOR_WPOS = 0x44
+const ACTOR_MODEL_POS_OFFSET = 0x7e
+const ACTOR_SHADOW_GROUP = 0x81
 const ACTOR_SYSTEM_BACKPTR = 0x88
 const ACTOR_SYSTEM_FIELD_BLACT = 0x28
 
@@ -83,6 +85,13 @@ type RenderProfile = {
   matFlags: number
 }
 
+type ActorVisualAlignment = {
+  offsetX: number
+  offsetY: number
+  offsetZ: number
+  shadowGroup: number
+}
+
 type RenderSequenceStep = RenderProfile & {
   holdMs: number
 }
@@ -114,6 +123,8 @@ type CachedRenderProfile = {
 
 type DedicatedBinding = ActorBinding & {
   nativeRender: RenderProfile
+  nativeAlignment: ActorVisualAlignment
+  protagonistAlignment: ActorVisualAlignment
 }
 
 function delay(ms: number) {
@@ -326,6 +337,25 @@ async function writeRenderProfile(bridge: MelonDsBridge, binding: ActorBinding, 
     bridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, profile.geomFlags),
     bridge.write16(binding.blActAddress + BLACT_FACE_INDEX, profile.faceIndex),
     bridge.write16(binding.blActAddress + BLACT_MAT_FLAGS, profile.matFlags),
+  ])
+}
+
+async function readActorVisualAlignment(bridge: MelonDsBridge, actorAddress: number): Promise<ActorVisualAlignment> {
+  const [offsetX, offsetY, offsetZ, shadowGroup] = await Promise.all([
+    bridge.read8(actorAddress + ACTOR_MODEL_POS_OFFSET + 0x00),
+    bridge.read8(actorAddress + ACTOR_MODEL_POS_OFFSET + 0x01),
+    bridge.read8(actorAddress + ACTOR_MODEL_POS_OFFSET + 0x02),
+    bridge.read8(actorAddress + ACTOR_SHADOW_GROUP),
+  ])
+  return { offsetX, offsetY, offsetZ, shadowGroup }
+}
+
+async function writeActorVisualAlignment(bridge: MelonDsBridge, actorAddress: number, alignment: ActorVisualAlignment) {
+  await Promise.all([
+    bridge.write8(actorAddress + ACTOR_MODEL_POS_OFFSET + 0x00, alignment.offsetX),
+    bridge.write8(actorAddress + ACTOR_MODEL_POS_OFFSET + 0x01, alignment.offsetY),
+    bridge.write8(actorAddress + ACTOR_MODEL_POS_OFFSET + 0x02, alignment.offsetZ),
+    bridge.write8(actorAddress + ACTOR_SHADOW_GROUP, alignment.shadowGroup),
   ])
 }
 
@@ -581,6 +611,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
         runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x04, world.y >>> 0),
         runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
+        writeActorVisualAlignment(runtimeBridge, current.actorAddress, current.protagonistAlignment),
       ]
       if (profile) writes.push(writeRenderProfile(runtimeBridge, current, profile))
       return Promise.all(writes).then(() => undefined)
@@ -605,11 +636,13 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       if (!hadActor) return
       if (cooldown) reacquireAfter = Math.max(reacquireAfter, Date.now() + REACQUIRE_COOLDOWN_MS)
       try {
-        // Put the owned actor back onto its native model-11 material before
-        // White 2 deletes it, so native renderer/resource teardown sees the
-        // material relationship it created rather than our protagonist override.
+        // Restore model 11's native material/alignment before White 2 deletes the
+        // dedicated actor so its normal renderer/resource teardown sees its own state.
         if (current && await bindingStillValid(runtimeBridge, current)) {
-          await writeRenderProfile(runtimeBridge, current, current.nativeRender)
+          await Promise.all([
+            writeRenderProfile(runtimeBridge, current, current.nativeRender),
+            writeActorVisualAlignment(runtimeBridge, current.actorAddress, current.nativeAlignment),
+          ])
         }
         await nativeActors.deleteTestActor()
       } catch {
@@ -633,8 +666,16 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       const spawned = await nativeActors.spawnTestActor()
       ownsActor = true
       try {
-        const rawBinding = await resolveActorBinding(runtimeBridge, spawned.actorAddress, POKERUN_NATIVE_TEST_UID)
-        const next: DedicatedBinding = { ...rawBinding, nativeRender: await readRenderProfile(runtimeBridge, rawBinding) }
+        const [rawBinding, player] = await Promise.all([
+          resolveActorBinding(runtimeBridge, spawned.actorAddress, POKERUN_NATIVE_TEST_UID),
+          ensurePlayerBinding(),
+        ])
+        const [nativeRender, nativeAlignment, protagonistAlignment] = await Promise.all([
+          readRenderProfile(runtimeBridge, rawBinding),
+          readActorVisualAlignment(runtimeBridge, rawBinding.actorAddress),
+          readActorVisualAlignment(runtimeBridge, player.actorAddress),
+        ])
+        const next: DedicatedBinding = { ...rawBinding, nativeRender, nativeAlignment, protagonistAlignment }
         const world = remote.worldPosition
         if (!world) {
           await releaseActor()
