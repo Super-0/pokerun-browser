@@ -20,9 +20,6 @@ import type { GameId } from '../types'
 import '../styles/my-runs.css'
 import '../styles/multiplayer-session.css'
 
-const LIVE_STATE_SAMPLE_FRAMES = 2
-const MOVEMENT_IDLE_FRAMES = 11
-
 interface Props { onHome: () => void; onMyRuns: () => void; onSettings: () => void }
 
 export function MultiplayerScreen({ onHome, onMyRuns, onSettings }: Props) {
@@ -120,7 +117,6 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
   const [saveStatus, setSaveStatus] = useState('WAITING FOR IN-GAME SAVE')
   const localRomIdentity = state.localRom!.identity
   const saveProfileId = state.localRom!.saveProfileId
-
   useEffect(() => {
     let cancelled = false
     setBatteryReady(false)
@@ -164,39 +160,21 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
     let reading = false
     let lastPublished = ''
     let lastPanelKey = ''
-    let lastSampledFrame = bridge.getEmulatedFrameCount()
-    let lastMovementFrame = lastSampledFrame
-    let lastWorldPosition: MultiplayerPlayerState['worldPosition'] = undefined
-    let movementState: 'idle' | 'moving' = 'idle'
 
-    async function poll(frame: number) {
+    async function poll() {
       if (cancelled || reading) return
       reading = true
       try {
         const [live, worldPosition] = await Promise.all([adapter.read(), worldReader.read()])
         if (cancelled) return
-
-        const moved = Boolean(lastWorldPosition && (
-          lastWorldPosition.x !== worldPosition.x
-          || lastWorldPosition.y !== worldPosition.y
-          || lastWorldPosition.z !== worldPosition.z
-        ))
-        if (moved) {
-          lastMovementFrame = frame
-          movementState = 'moving'
-        } else if (movementState === 'moving' && frame - lastMovementFrame >= MOVEMENT_IDLE_FRAMES) {
-          movementState = 'idle'
-        }
-        lastWorldPosition = { ...worldPosition }
-
-        const normalized: MultiplayerPlayerState = { location: live.location, x: live.x, y: live.y, direction: live.direction, movementState, worldPosition }
+        const normalized: MultiplayerPlayerState = { location: live.location, x: live.x, y: live.y, direction: live.direction, worldPosition }
         const panelKey = `${normalized.location.mapId}:${normalized.x}:${normalized.y}:${normalized.direction}`
         if (panelKey !== lastPanelKey) {
           lastPanelKey = panelKey
           setLocalState(normalized)
         }
         setLiveStateError(null)
-        const key = `${panelKey}:${movementState}:${worldPosition.x}:${worldPosition.y}:${worldPosition.z}`
+        const key = `${panelKey}:${worldPosition.x}:${worldPosition.y}:${worldPosition.z}`
         if (key !== lastPublished) {
           lastPublished = key
           session.publishGameState(normalized)
@@ -206,15 +184,9 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
       } finally { reading = false }
     }
 
-    void poll(lastSampledFrame)
-    const unsubscribeFrame = bridge.subscribeEmulatedFrame(() => {
-      if (cancelled || reading) return
-      const frame = bridge.getEmulatedFrameCount()
-      if (frame - lastSampledFrame < LIVE_STATE_SAMPLE_FRAMES) return
-      lastSampledFrame = frame
-      void poll(frame)
-    })
-    return () => { cancelled = true; unsubscribeFrame() }
+    void poll()
+    const timer = window.setInterval(() => void poll(), 40)
+    return () => { cancelled = true; window.clearInterval(timer) }
   }, [bridge, localRomIdentity, session])
 
   const remoteDifferentMap = Boolean(localState && remoteState && localState.location.mapId !== remoteState.location.mapId)
