@@ -511,7 +511,11 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         lastRemoteWorld = { ...remoteWorld }
         remoteMovingUntil = now + MOVING_HOLD_MS
       }
-      const moving = now < remoteMovingUntil
+      const moving = remote.movementState === 'moving'
+        ? true
+        : remote.movementState === 'idle'
+          ? false
+          : now < remoteMovingUntil
 
       if (activeRemoteDirection === null) {
         activeRemoteDirection = remote.direction
