@@ -29,6 +29,7 @@ export class MelonDsBridge implements EmulatorBridge {
   private lastFrameAt = 0
   private running = false
   private speedMultiplier: DsSpeedMultiplier = 1
+  private readonly emulatedFrameListeners = new Set<() => void>()
   private topImage: ImageData | null = null
   private bottomImage: ImageData | null = null
   private pendingBatterySave: Uint8Array | null = null
@@ -41,6 +42,10 @@ export class MelonDsBridge implements EmulatorBridge {
 
   setSpeedMultiplier(multiplier: DsSpeedMultiplier) { this.speedMultiplier = multiplier }
   getSpeedMultiplier() { return this.speedMultiplier }
+  subscribeEmulatedFrame(listener: () => void) {
+    this.emulatedFrameListeners.add(listener)
+    return () => this.emulatedFrameListeners.delete(listener)
+  }
 
   setSaveKey(key: string) {
     const safe = key.replace(/[^a-z0-9_-]/gi, '_')
@@ -122,6 +127,7 @@ export class MelonDsBridge implements EmulatorBridge {
     await this.pause()
     if (this.saveFlushTimer !== null) window.clearTimeout(this.saveFlushTimer)
     this.saveFlushTimer = null
+    this.emulatedFrameListeners.clear()
     this.cart?.delete?.(); this.emulator?.delete?.(); this.cart = null; this.emulator = null; this.status = 'stopped'
   }
 
@@ -215,8 +221,14 @@ export class MelonDsBridge implements EmulatorBridge {
     await this.batterySaveListener?.(save)
   }
 
+  private notifyEmulatedFrame() {
+    for (const listener of this.emulatedFrameListeners) {
+      try { listener() } catch (error) { console.warn('melonDS emulated-frame listener failed.', error) }
+    }
+  }
+
   private installRuntimeCallbacks() {
-    window.WebMelon = { _internal: { events: { onEmulatorFrameUpdate: () => this.draw(), onSaveWrite: () => this.scheduleBatterySaveExport(), onRumbleStart: () => undefined, onRumbleStop: () => undefined, onShutdown: () => { void this.pause() } } } }
+    window.WebMelon = { _internal: { events: { onEmulatorFrameUpdate: () => { this.draw(); this.notifyEmulatedFrame() }, onSaveWrite: () => this.scheduleBatterySaveExport(), onRumbleStart: () => undefined, onRumbleStop: () => undefined, onShutdown: () => { void this.pause() } } } }
   }
   private draw() {
     if (!this.module || !this.emulator || !this.topCanvas || !this.bottomCanvas) return
