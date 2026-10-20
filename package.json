@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/patch-mgba-heap.mjs && vite",
-    "dev:multiplayer": "node scripts/patch-mgba-heap.mjs && vite --host 0.0.0.0 --open=/multiplayer-dev.html",
+    "dev:multiplayer": "node scripts/patch-mgba-heap.mjs && node scripts/dev-multiplayer.mjs",
     "build:melonds": "node scripts/build-melonds.mjs",
     "build": "node scripts/patch-mgba-heap.mjs && tsc -b && vite build",
     "preview": "node scripts/patch-mgba-heap.mjs && vite preview",
