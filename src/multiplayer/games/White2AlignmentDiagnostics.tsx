@@ -6,6 +6,7 @@ import { POKERUN_NATIVE_TEST_UID } from './White2NativeActor'
 import { White2ActorSystemProbe } from './White2ActorSystem'
 
 const PLAYER_UID = 0x00ff
+const ACTOR_UID = 0x08
 const ACTOR_MODEL_ID = 0x0c
 const ACTOR_GPOS = 0x3c
 const ACTOR_WPOS = 0x44
@@ -209,20 +210,42 @@ export function White2AlignmentDiagnostics({ bridge, rom }: { bridge: MelonDsBri
     const runtimeBridge = bridge
     let cancelled = false
     let lastSignature = ''
+    let localActorAddress = 0
+    let remoteActorAddress = 0
+
+    async function ensureActorAddresses() {
+      if (localActorAddress && remoteActorAddress) {
+        const [localUid, remoteUid] = await Promise.all([
+          runtimeBridge.read16(localActorAddress + ACTOR_UID),
+          runtimeBridge.read16(remoteActorAddress + ACTOR_UID),
+        ])
+        if (localUid === PLAYER_UID && remoteUid === POKERUN_NATIVE_TEST_UID) {
+          return { localActorAddress, remoteActorAddress }
+        }
+        localActorAddress = 0
+        remoteActorAddress = 0
+      }
+
+      const scan = await new White2ActorSystemProbe(runtimeBridge).scanHeap()
+      const localActor = scan.entries.find(entry => entry.uid === PLAYER_UID && entry.state === 'player')
+      const remoteActor = scan.entries.find(entry => entry.uid === POKERUN_NATIVE_TEST_UID && entry.state === 'active')
+      if (!localActor || !remoteActor) return null
+      localActorAddress = localActor.address
+      remoteActorAddress = remoteActor.address
+      return { localActorAddress, remoteActorAddress }
+    }
 
     async function sample() {
       if (cancelled || runtimeBridge.status !== 'running') return
       const presence = presenceRef.current
       if (!presence.local || !presence.remote || presence.local.location.mapId !== presence.remote.location.mapId) return
 
-      const scan = await new White2ActorSystemProbe(runtimeBridge).scanHeap()
-      const localActor = scan.entries.find(entry => entry.uid === PLAYER_UID && entry.state === 'player')
-      const remoteActor = scan.entries.find(entry => entry.uid === POKERUN_NATIVE_TEST_UID && entry.state === 'active')
-      if (!localActor || !remoteActor) return
+      const addresses = await ensureActorAddresses()
+      if (!addresses) return
 
       const [local, remote] = await Promise.all([
-        readActorSnapshot(runtimeBridge, localActor.address),
-        readActorSnapshot(runtimeBridge, remoteActor.address),
+        readActorSnapshot(runtimeBridge, addresses.localActorAddress),
+        readActorSnapshot(runtimeBridge, addresses.remoteActorAddress),
       ])
 
       const snapshot: AlignmentDiagnosticSnapshot = {
