@@ -49,6 +49,12 @@ if (TASK_CODE_OFFSET + FIELD_TASK_TRAMPOLINE.length > FIELD_ACTOR_SIZE) {
   throw new Error('White 2 field-task trampoline no longer fits in the reserved scratch area.')
 }
 
+// White 2 converts a Union Room player view into one of its dedicated remote
+// trainer NPC models. View 0 maps to model 11, so use that game-native remote
+// trainer model for the lifecycle probe. Once creation is proven, PokéRun can
+// bind the remote player's actual appearance separately.
+const UNION_REMOTE_TRAINER_MODEL = 11
+
 // Temporary dev UID. Production will allocate a PokéRun-owned UID only after the
 // native create/delete lifecycle is validated across map transitions.
 export const POKERUN_NATIVE_TEST_UID = 0x7f01
@@ -109,14 +115,9 @@ function buildZoneNpc(player: White2ActorHeapEntry) {
   const view = new DataView(bytes.buffer)
   const x = Math.max(-32768, Math.min(32767, player.x + 1))
   const z = Math.max(-32768, Math.min(32767, player.y))
-  const modelId = player.modelId
 
   putU16(view, 0x00, POKERUN_NATIVE_TEST_UID)
-  // Create the dedicated multiplayer actor with the live protagonist's actual
-  // native model. PokéRun still replays learned protagonist frames for remote
-  // animation, but White 2's own updates now fall back to the same character
-  // instead of briefly restoring the old model-11 Youngster renderer.
-  putU16(view, 0x02, modelId)
+  putU16(view, 0x02, UNION_REMOTE_TRAINER_MODEL)
   putU16(view, 0x04, 2) // Same base move code used by White 2's Union Room parent actor.
   putU16(view, 0x06, 0)
   putU16(view, 0x08, 0)
@@ -132,7 +133,7 @@ function buildZoneNpc(player: White2ActorHeapEntry) {
   putU16(view, 0x1e, z)
   view.setInt32(0x20, 0, true)
 
-  return { bytes, x, z, modelId }
+  return { bytes, x, z, modelId: UNION_REMOTE_TRAINER_MODEL }
 }
 
 function delay(ms: number) {
