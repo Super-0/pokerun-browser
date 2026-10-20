@@ -334,9 +334,9 @@ async function writeRenderProfile(bridge: MelonDsBridge, binding: ActorBinding, 
  *
  * A real game-created FieldActor owns the remote player lifecycle. PokéRun drives
  * its logical/continuous position and replays render states learned from the local
- * protagonist onto that dedicated actor. No map NPC is borrowed. BlAct X/Y/Z is
- * kept aligned with the replicated WPos so scripted vertical doorway movement
- * cannot leave the billboard at a stale game-owned height.
+ * protagonist onto that dedicated actor. No map NPC is borrowed. The remote
+ * billboard mirrors the local protagonist's native BlAct-Y minus WPos-Y offset
+ * instead of assuming those Y coordinates are identical.
  */
 export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -361,6 +361,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
     let lastPlayerX: number | null = null
     let lastPlayerZ: number | null = null
+    let playerBillboardYOffset = 0
     let playerMovingUntil = 0
     let activePlayerRunDirection: Direction | null = null
     let lastPlayerDirection: Direction | null = null
@@ -409,6 +410,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       playerBinding = null
       lastPlayerX = null
       lastPlayerZ = null
+      playerBillboardYOffset = 0
       playerMovingUntil = 0
       finalizeActivePlayerRun()
       finishTurnCapture()
@@ -449,13 +451,16 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
     async function learnLocalRender(now: number) {
       const current = await ensurePlayerBinding()
-      const [faceDir, x, z, profile] = await Promise.all([
+      const [faceDir, x, worldY, billboardY, z, profile] = await Promise.all([
         runtimeBridge.read16(current.actorAddress + ACTOR_FACE_DIR),
         runtimeBridge.read32(current.actorAddress + ACTOR_WPOS + 0x00),
+        runtimeBridge.read32(current.actorAddress + ACTOR_WPOS + 0x04),
+        runtimeBridge.read32(current.blActAddress + BLACT_POSITION + 0x04),
         runtimeBridge.read32(current.actorAddress + ACTOR_WPOS + 0x08),
         readRenderProfile(runtimeBridge, current),
       ])
 
+      playerBillboardYOffset = signed32(billboardY) - signed32(worldY)
       if (lastPlayerX !== null && (x !== lastPlayerX || z !== lastPlayerZ)) playerMovingUntil = now + MOVING_HOLD_MS
       lastPlayerX = x
       lastPlayerZ = z
@@ -571,6 +576,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     }
 
     function applyRemoteFrame(current: DedicatedBinding, remote: MultiplayerPlayerState, world: MultiplayerWorldPosition, profile: RenderProfile | null) {
+      const billboardY = (signed32(world.y) + playerBillboardYOffset) >>> 0
       const writes: Promise<void>[] = [
         runtimeBridge.write16(current.actorAddress + ACTOR_FACE_DIR, FIELD_FACE_BY_DIRECTION[remote.direction]),
         runtimeBridge.write16(current.actorAddress + ACTOR_GPOS + 0x00, remote.x),
@@ -579,7 +585,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x04, world.y >>> 0),
         runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x08, world.z >>> 0),
         runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
-        runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x04, world.y >>> 0),
+        runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x04, billboardY),
         runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
       ]
       if (profile) writes.push(writeRenderProfile(runtimeBridge, current, profile))
