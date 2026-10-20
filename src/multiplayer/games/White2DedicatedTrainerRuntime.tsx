@@ -375,6 +375,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     let remoteStepStartedAt = 0
     let remoteWasMoving = false
     let remoteTurn: RemoteTurnPlayback | null = null
+    let latestRemoteProfile: RenderProfile | null = null
 
     let stableMapId: MultiplayerPlayerState['location']['mapId'] | null = null
     let stableMapSince = 0
@@ -424,6 +425,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       remoteStepStartedAt = 0
       remoteWasMoving = false
       remoteTurn = null
+      latestRemoteProfile = null
     }
 
     async function ensurePlayerBinding() {
@@ -568,6 +570,32 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       return directionKnowledge.idle ?? directionKnowledge.movingSequence[0] ?? null
     }
 
+    function applyRemoteFrame(current: DedicatedBinding, remote: MultiplayerPlayerState, world: MultiplayerWorldPosition, profile: RenderProfile | null) {
+      const writes: Promise<void>[] = [
+        runtimeBridge.write16(current.actorAddress + ACTOR_FACE_DIR, FIELD_FACE_BY_DIRECTION[remote.direction]),
+        runtimeBridge.write16(current.actorAddress + ACTOR_GPOS + 0x00, remote.x),
+        runtimeBridge.write16(current.actorAddress + ACTOR_GPOS + 0x04, remote.y),
+        runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x00, world.x >>> 0),
+        runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x04, world.y >>> 0),
+        runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x08, world.z >>> 0),
+        runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
+        runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x04, world.y >>> 0),
+        runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
+      ]
+      if (profile) writes.push(writeRenderProfile(runtimeBridge, current, profile))
+      return Promise.all(writes).then(() => undefined)
+    }
+
+    const unsubscribeEmulatedFrame = runtimeBridge.subscribeEmulatedFrame(() => {
+      if (cancelled || runtimeBridge.status !== 'running') return
+      const current = binding
+      const local = presenceRef.current.local
+      const remote = presenceRef.current.remote
+      const world = renderedWorld
+      if (!current || !local || !remote || !world || local.location.mapId !== remote.location.mapId) return
+      void applyRemoteFrame(current, remote, world, latestRemoteProfile)
+    })
+
     async function releaseActor(cooldown = true) {
       const current = binding
       const hadActor = ownsActor || current !== null
@@ -612,17 +640,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
           await releaseActor()
           return null
         }
-        await Promise.all([
-          runtimeBridge.write16(next.actorAddress + ACTOR_FACE_DIR, FIELD_FACE_BY_DIRECTION[remote.direction]),
-          runtimeBridge.write16(next.actorAddress + ACTOR_GPOS + 0x00, remote.x),
-          runtimeBridge.write16(next.actorAddress + ACTOR_GPOS + 0x04, remote.y),
-          runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x00, world.x >>> 0),
-          runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x04, world.y >>> 0),
-          runtimeBridge.write32(next.actorAddress + ACTOR_WPOS + 0x08, world.z >>> 0),
-          runtimeBridge.write32(next.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
-          runtimeBridge.write32(next.blActAddress + BLACT_POSITION + 0x04, world.y >>> 0),
-          runtimeBridge.write32(next.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
-        ])
+        await applyRemoteFrame(next, remote, world, null)
         renderedWorld = { ...world }
         binding = next
         return next
@@ -700,22 +718,8 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         z: smoothFx32(renderedWorld.z, targetWorld.z),
       } : { ...targetWorld }
       const world = renderedWorld
-
-      const writes: Promise<void>[] = [
-        runtimeBridge.write16(current.actorAddress + ACTOR_FACE_DIR, FIELD_FACE_BY_DIRECTION[remote.direction]),
-        runtimeBridge.write16(current.actorAddress + ACTOR_GPOS + 0x00, remote.x),
-        runtimeBridge.write16(current.actorAddress + ACTOR_GPOS + 0x04, remote.y),
-        runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x00, world.x >>> 0),
-        runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x04, world.y >>> 0),
-        runtimeBridge.write32(current.actorAddress + ACTOR_WPOS + 0x08, world.z >>> 0),
-        // Keep the native billboard aligned on all three axes. White 2's doorway
-        // scripts can change vertical render position while the actor slow-walks.
-        runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x00, world.x >>> 0),
-        runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x04, world.y >>> 0),
-        runtimeBridge.write32(current.blActAddress + BLACT_POSITION + 0x08, world.z >>> 0),
-      ]
-      await Promise.all(writes)
-      if (profile) await writeRenderProfile(runtimeBridge, current, profile)
+      latestRemoteProfile = profile
+      await applyRemoteFrame(current, remote, world, profile)
     }
 
     async function run() {
@@ -745,6 +749,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     void run()
     return () => {
       cancelled = true
+      unsubscribeEmulatedFrame()
       finishTurnCapture()
       finalizeActivePlayerRun()
       if (cacheStorageKey) saveCachedKnowledge(cacheStorageKey, knowledge, turns)
