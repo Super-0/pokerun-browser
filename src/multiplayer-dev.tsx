@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { multiplayerSaveStore, type MultiplayerSaveProfile } from './core/storage/MultiplayerSaveStore'
+import { installMultiplayerMovementTraceInstrumentation } from './multiplayer/debug/MultiplayerMovementTrace'
+import { MultiplayerMovementTracePanel } from './multiplayer/debug/MultiplayerMovementTracePanel'
 import { MultiplayerScreen } from './screens/MultiplayerScreen'
 import './styles/app.css'
 import './styles/emulator.css'
@@ -9,6 +11,8 @@ import './styles/cover-mascots.css'
 import './styles/emerald-scene.css'
 import './styles/my-runs.css'
 import './styles/multiplayer-session.css'
+
+installMultiplayerMovementTraceInstrumentation()
 
 const DEV_ROOM_KEY = 'pokerun-multiplayer-dev-room-v1'
 const DEV_SAVE_KEYS = {
@@ -169,7 +173,10 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
     }
   }, [player])
 
-  return <MultiplayerScreen onHome={goToMainApp} onMyRuns={goToMainApp} onSettings={goToMainApp} />
+  return <>
+    <MultiplayerMovementTracePanel player={player}/>
+    <MultiplayerScreen onHome={goToMainApp} onMyRuns={goToMainApp} onSettings={goToMainApp} />
+  </>
 }
 
 function storedSelection(player: 1 | 2, profiles: MultiplayerSaveProfile[]) {
