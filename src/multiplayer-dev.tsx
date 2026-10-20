@@ -124,8 +124,10 @@ function MultiplayerDevLauncher() {
 
   function openBoth() {
     localStorage.removeItem(DEV_ROOM_KEY)
-    window.open('/multiplayer-dev.html?player=1', 'pokerun-multiplayer-player-1')
-    window.setTimeout(() => window.open('/multiplayer-dev.html?player=2', 'pokerun-multiplayer-player-2'), 180)
+    const player1 = window.open('about:blank', 'pokerun-multiplayer-player-1')
+    const player2 = window.open('about:blank', 'pokerun-multiplayer-player-2')
+    if (player1) player1.location.href = '/multiplayer-dev.html?player=1'
+    if (player2) player2.location.href = '/multiplayer-dev.html?player=2'
   }
 
   return <main className="screen home-screen">
