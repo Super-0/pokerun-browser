@@ -10,10 +10,18 @@ import {
 const FIND_FIELD_ACTOR = 0x02167a54
 const CREATE_ACTOR = 0x021668b4
 const DELETE_ACTOR = 0x02166980
+const FLDACT_GET_BLACT_IDX = 0x02167240
 const GFL_TCB_MGR_ADD_TASK = 0x0203a640
 const NATIVE_STACK_RESERVE = 0x1000
 const MMSYS_TCB_MGR = 0x24
 const ZONE_NPC_SIZE = 0x24
+
+// Swan FieldActor / FieldActorVTable layout.
+const ACTOR_UID = 0x08
+const ACTOR_SCENE_NODE_VTABLE = 0x90
+const SCENE_NODE_ON_SUSPEND = 0x0c
+const SCENE_NODE_ON_WAKE_UP = 0x10
+const BLACT_NONE = 0xffff
 
 // A long White 2 actor create can yield through Nitro's scheduler while loading
 // resources. The bounded direct ARM9 call gate intentionally cannot follow that
@@ -97,6 +105,12 @@ function assertMainRamPointer(value: number, label: string) {
   }
 }
 
+function assertMainRamCodePointer(value: number, label: string) {
+  if (value < 0x02000000 || value >= 0x02400000 || (value & 0x1) !== 0) {
+    throw new Error(`${label} is not a valid White 2 Thumb code pointer: ${hex(value)}.`)
+  }
+}
+
 function assertCallReturned(call: Arm9NativeCallResult, label: string) {
   if (call.status === 1) return
   const reason = call.status === 2 ? 'invalid call arguments' : call.status === 3 ? 'instruction limit reached' : call.status === 4 ? 'callee halted ARM9' : `unknown status ${call.status}`
@@ -141,6 +155,8 @@ function delay(ms: number) {
 }
 
 export class White2NativeActorBridge {
+  private readonly suspendedActors = new Set<number>()
+
   constructor(private readonly bridge: MelonDsBridge, private readonly rom: MultiplayerRomIdentity) {}
 
   private assertSupported() {
@@ -160,6 +176,24 @@ export class White2NativeActorBridge {
     const call = await this.bridge.callArm9Thumb4(FIND_FIELD_ACTOR, actorSystem, uid, 0, 0, NATIVE_STACK_RESERVE)
     assertCallReturned(call, 'FindFieldActor')
     return call.result >>> 0
+  }
+
+  private async getBlActIndex(actorAddress: number) {
+    const call = await this.bridge.callArm9Thumb4(FLDACT_GET_BLACT_IDX, actorAddress, 0, 0, 0, NATIVE_STACK_RESERVE)
+    assertCallReturned(call, 'FldAct_GetBlActIdx')
+    return call.result & 0xffff
+  }
+
+  private async resolveSceneNodeMethod(actorAddress: number, methodOffset: number, label: string) {
+    assertMainRamPointer(actorAddress, `${label} actor`)
+    const vtable = await this.bridge.read32(actorAddress + ACTOR_SCENE_NODE_VTABLE)
+    assertMainRamPointer(vtable, `${label} scene-node vtable`)
+    const rawFunctionAddress = await this.bridge.read32(vtable + methodOffset)
+    const functionAddress = rawFunctionAddress & ~1
+    assertMainRamCodePointer(functionAddress, `${label} function`)
+    const firstOpcode = await this.bridge.read16(functionAddress)
+    if (firstOpcode === 0 || firstOpcode === 0xffff) throw new Error(`${label} function is not resident.`)
+    return functionAddress >>> 0
   }
 
   private async runFieldTask(
@@ -234,6 +268,45 @@ export class White2NativeActorBridge {
     }
   }
 
+  private async trySuspendActor(actorAddress: number) {
+    try {
+      const suspendFunction = await this.resolveSceneNodeMethod(actorAddress, SCENE_NODE_ON_SUSPEND, 'Remote actor suspend')
+      const suspendScan = await new White2ActorSystemProbe(this.bridge).scanHeap()
+      await this.runFieldTask(suspendScan, suspendFunction, () => [actorAddress, 0, 0, 0])
+
+      const [uid, blActIndex] = await Promise.all([
+        this.bridge.read16(actorAddress + ACTOR_UID),
+        this.getBlActIndex(actorAddress),
+      ])
+      if (uid !== POKERUN_NATIVE_TEST_UID || blActIndex === BLACT_NONE) {
+        throw new Error('Remote actor suspension changed its live billboard binding.')
+      }
+
+      this.suspendedActors.add(actorAddress)
+      return true
+    } catch (reason) {
+      // OnSuspend is an optimization only. If this actor type does not preserve
+      // its billboard while suspended, immediately ask its own scene node to wake
+      // and continue with the already-working native update path.
+      try {
+        const wakeFunction = await this.resolveSceneNodeMethod(actorAddress, SCENE_NODE_ON_WAKE_UP, 'Remote actor wake fallback')
+        const wakeScan = await new White2ActorSystemProbe(this.bridge).scanHeap()
+        await this.runFieldTask(wakeScan, wakeFunction, () => [actorAddress, 0, 0, 0])
+      } catch {
+        // The caller's normal lifecycle validation/cleanup will handle a bad actor.
+      }
+      console.warn('White 2 remote actor scene suspension unavailable; keeping native scene updates active.', reason)
+      return false
+    }
+  }
+
+  private async wakeActorIfSuspended(actorAddress: number, scan?: White2ActorHeapScan) {
+    if (!this.suspendedActors.delete(actorAddress)) return
+    const wakeFunction = await this.resolveSceneNodeMethod(actorAddress, SCENE_NODE_ON_WAKE_UP, 'Remote actor wake')
+    const wakeScan = scan ?? await new White2ActorSystemProbe(this.bridge).scanHeap()
+    await this.runFieldTask(wakeScan, wakeFunction, () => [actorAddress, 0, 0, 0])
+  }
+
   private async deleteActorAddress(actorAddress: number, scan?: White2ActorHeapScan) {
     assertMainRamPointer(actorAddress, 'Actor to delete')
     const deleteOpcode = await this.bridge.read16(DELETE_ACTOR)
@@ -281,14 +354,25 @@ export class White2NativeActorBridge {
       throw new Error(`Created actor verification failed: returned ${hex(actorAddress)}, FindFieldActor saw ${hex(found)}.`)
     }
 
+    await this.trySuspendActor(actorAddress)
+
     return { actorAddress, uid: POKERUN_NATIVE_TEST_UID, modelId: npc.modelId, zoneId: player.zoneId, x: npc.x, z: npc.z }
   }
 
   async deleteTestActor(actorAddress?: number) {
     const { scan } = await this.currentPlayer()
     const address = actorAddress ?? await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
-    if (address === 0) return false
+    if (address === 0) {
+      this.suspendedActors.clear()
+      return false
+    }
+    try {
+      await this.wakeActorIfSuspended(address, scan)
+    } catch (reason) {
+      console.warn('White 2 remote actor wake failed before deletion; continuing native cleanup.', reason)
+    }
     await this.deleteActorAddress(address, scan)
+    this.suspendedActors.delete(address)
     const remaining = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
     if (remaining !== 0) throw new Error(`DeleteActor returned, but test UID still resolves to ${hex(remaining)}.`)
     return true
