@@ -510,7 +510,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       }
     }
 
-    function remoteProfile(now: number, remote: MultiplayerPlayerState) {
+    function remoteProfile(now: number, remote: MultiplayerPlayerState, playbackRate: number) {
       const remoteWorld = remote.worldPosition
       if (!remoteWorld) return null
 
@@ -542,8 +542,10 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
       if (remoteTurn) {
         let safety = remoteTurn.sequence.length + 1
-        while (safety > 0 && now - remoteTurn.stepStartedAt >= remoteTurn.sequence[remoteTurn.index].holdMs) {
-          remoteTurn.stepStartedAt += remoteTurn.sequence[remoteTurn.index].holdMs
+        while (safety > 0) {
+          const holdMs = remoteTurn.sequence[remoteTurn.index].holdMs / playbackRate
+          if (now - remoteTurn.stepStartedAt < holdMs) break
+          remoteTurn.stepStartedAt += holdMs
           if (remoteTurn.index >= remoteTurn.sequence.length - 1) {
             remoteTurn = null
             break
@@ -562,8 +564,10 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         }
         const sequence = directionKnowledge.movingSequence
         let safety = sequence.length + 1
-        while (safety > 0 && now - remoteStepStartedAt >= sequence[remoteSequenceIndex].holdMs) {
-          remoteStepStartedAt += sequence[remoteSequenceIndex].holdMs
+        while (safety > 0) {
+          const holdMs = sequence[remoteSequenceIndex].holdMs / playbackRate
+          if (now - remoteStepStartedAt < holdMs) break
+          remoteStepStartedAt += holdMs
           remoteSequenceIndex = (remoteSequenceIndex + 1) % sequence.length
           safety -= 1
         }
@@ -716,7 +720,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
       const current = await ensureActor(remote)
       if (!current) return
-      const profile = remoteProfile(now, remote)
+      const profile = remoteProfile(now, remote, runtimeBridge.getSpeedMultiplier())
       const targetWorld = remote.worldPosition
       renderedWorld = renderedWorld ? {
         x: smoothFx32(renderedWorld.x, targetWorld.x),
