@@ -201,7 +201,8 @@ export class MelonDsBridge implements EmulatorBridge {
       if (now - this.lastFrameAt >= 1000 / 60) {
         this.lastFrameAt = now
         this.emulator.setInput(this.inputMask)
-        for (let index = 0; index < this.speedMultiplier; index += 1) this.emulator.processFrame(false)
+        for (let index = 1; index < this.speedMultiplier; index += 1) this.emulator.processFrame(true)
+        this.emulator.processFrame(false)
       }
       this.scheduleFrame()
     })
