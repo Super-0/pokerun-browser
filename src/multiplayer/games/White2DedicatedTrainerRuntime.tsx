@@ -199,26 +199,39 @@ function emptyKnowledge(): Record<Direction, DirectionKnowledge> {
   }
 }
 
-function bootstrapWalkSequence(knowledge: Record<Direction, DirectionKnowledge>, direction: Direction): RenderSequenceStep[] {
-  let trustedProfile = knowledge[direction].idle
-  if (!trustedProfile) {
-    for (const candidate of DIRECTIONS) {
-      const idle = knowledge[candidate].idle
-      if (idle) {
-        trustedProfile = idle
-        break
-      }
-    }
+function trustedBootstrapProfile(knowledge: Record<Direction, DirectionKnowledge>, direction: Direction): RenderProfile | null {
+  const directionIdle = knowledge[direction].idle
+  if (directionIdle) return directionIdle
+  for (const candidate of DIRECTIONS) {
+    const idle = knowledge[candidate].idle
+    if (idle) return idle
   }
+  return null
+}
+
+function bootstrapIdleProfile(knowledge: Record<Direction, DirectionKnowledge>, direction: Direction): RenderProfile | null {
+  const trustedProfile = trustedBootstrapProfile(knowledge, direction)
+  if (!trustedProfile) return null
+  return {
+    ...trustedProfile,
+    faceIndex: WALK_FACE_START_BY_DIRECTION[direction],
+  }
+}
+
+function bootstrapWalkSequence(knowledge: Record<Direction, DirectionKnowledge>, direction: Direction): RenderSequenceStep[] {
+  const trustedProfile = trustedBootstrapProfile(knowledge, direction)
   if (!trustedProfile) return []
 
   const baseFaceIndex = WALK_FACE_START_BY_DIRECTION[direction]
-  const holdMs = LEARN_SAMPLE_MS * 2
-  return [baseFaceIndex, baseFaceIndex + 1, baseFaceIndex, baseFaceIndex + 2].map(faceIndex => ({
-    ...trustedProfile,
-    faceIndex,
-    holdMs,
-  }))
+  // The recorded White 2 cadence is step pose -> idle -> opposite step pose -> idle.
+  // West was observed at roughly 7 (117 ms) -> 6 (118 ms) -> 8 (84 ms) -> 6,
+  // so mirror that timing for the other directional frame groups during bootstrap.
+  return [
+    { ...trustedProfile, faceIndex: baseFaceIndex + 1, holdMs: 120 },
+    { ...trustedProfile, faceIndex: baseFaceIndex, holdMs: 120 },
+    { ...trustedProfile, faceIndex: baseFaceIndex + 2, holdMs: 90 },
+    { ...trustedProfile, faceIndex: baseFaceIndex, holdMs: 120 },
+  ]
 }
 
 function appendStep(sequence: RenderSequenceStep[], profile: RenderProfile) {
@@ -713,7 +726,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         remoteWasMoving = false
         activeRemoteMotionKind = null
       }
-      return directionKnowledge.idle ?? fallbackWalkSequence[0] ?? null
+      return directionKnowledge.idle ?? bootstrapIdleProfile(knowledge, remote.direction) ?? null
     }
 
     function applyRemoteFrame(current: DedicatedBinding, remote: MultiplayerPlayerState, world: MultiplayerWorldPosition, profile: RenderProfile | null) {
