@@ -43,8 +43,6 @@ const LEARN_SAMPLE_MS = 40
 const MOVING_HOLD_MS = 120
 const ENTER_REMOTE_DX = 6
 const ENTER_REMOTE_DY = 4
-const EXIT_REMOTE_DX = 7
-const EXIT_REMOTE_DY = 5
 const MAP_STABLE_MS = 280
 const MISSING_STATE_GRACE_MS = 160
 const REACQUIRE_COOLDOWN_MS = 250
@@ -739,15 +737,13 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
       const dx = Math.abs(remote.x - local.x)
       const dy = Math.abs(remote.y - local.y)
-      if (rangeLatched) {
-        if (dx > EXIT_REMOTE_DX || dy > EXIT_REMOTE_DY) rangeLatched = false
-      } else if (dx <= ENTER_REMOTE_DX && dy <= ENTER_REMOTE_DY) {
-        rangeLatched = true
-      }
 
+      // Distance only gates the initial spawn. Once this map owns a dedicated
+      // remote FieldActor, keep it alive and let White 2 handle off-camera culling.
+      // Deleting/recreating the actor on distance transitions corrupts its renderer.
       if (!rangeLatched) {
-        await releaseActor()
-        return
+        if (dx > ENTER_REMOTE_DX || dy > ENTER_REMOTE_DY) return
+        rangeLatched = true
       }
 
       const current = await ensureActor(remote)
