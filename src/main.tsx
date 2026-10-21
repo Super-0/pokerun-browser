@@ -3,6 +3,7 @@ import App from './App'
 import { installDeepTraceDiagnostics } from './multiplayer/debug/DeepTraceDiagnostics'
 import { installMultiplayerMovementTraceInstrumentation } from './multiplayer/debug/MultiplayerMovementTrace'
 import { MultiplayerMovementTracePanel } from './multiplayer/debug/MultiplayerMovementTracePanel'
+import { installWhite2DedicatedTraceDiagnostics } from './multiplayer/debug/White2DedicatedTraceDiagnostics'
 import './styles/app.css'
 import './styles/emulator.css'
 import './styles/game-themes.css'
@@ -16,6 +17,7 @@ const tracePlayer = params.get('player') === '2' ? 2 : 1
 if (networkTrace) {
   installMultiplayerMovementTraceInstrumentation()
   installDeepTraceDiagnostics()
+  installWhite2DedicatedTraceDiagnostics()
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<>
