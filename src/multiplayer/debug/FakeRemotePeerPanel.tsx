@@ -15,6 +15,12 @@ import { BroadcastChannelTransport } from '../transports/BroadcastChannelTranspo
 const TILE_WORLD = 0x10000
 const STEP_MS = 40
 const SUBSTEPS_PER_TILE = 6
+const MAX_REPLAY_IDLE_GAP_MS = 1000
+
+type RecordedPathFrame = {
+  elapsedMs: number
+  state: MultiplayerPlayerState
+}
 
 type FakeRemoteSnapshot = {
   connection: MultiplayerConnectionState
@@ -24,6 +30,9 @@ type FakeRemoteSnapshot = {
   hostState: MultiplayerPlayerState | null
   fakeState: MultiplayerPlayerState | null
   script: string | null
+  recordingPath: boolean
+  recordedFrames: number
+  recordedDurationMs: number
 }
 
 type Listener = (snapshot: FakeRemoteSnapshot) => void
@@ -32,6 +41,14 @@ type OutboundMessage = StripProtocolBase<MultiplayerMessage>
 
 function sleep(ms: number) {
   return new Promise<void>(resolve => window.setTimeout(resolve, ms))
+}
+
+function clonePlayerState(state: MultiplayerPlayerState): MultiplayerPlayerState {
+  return {
+    ...state,
+    location: { ...state.location },
+    worldPosition: state.worldPosition ? { ...state.worldPosition } : undefined,
+  }
 }
 
 function worldFromGrid(x: number, y: number, height = 0x1000f): MultiplayerWorldPosition {
@@ -69,6 +86,10 @@ class FakeRemotePeer {
   private readyRequested = false
   private scriptGeneration = 0
   private script: string | null = null
+  private recordingPath = false
+  private recordingStartedAt = 0
+  private recordingMapId: MultiplayerPlayerState['location']['mapId'] | null = null
+  private recordedPath: RecordedPathFrame[] = []
   private snapshot: FakeRemoteSnapshot = {
     connection: 'disconnected',
     phase: 'WAITING FOR HOST ROOM',
@@ -77,6 +98,9 @@ class FakeRemotePeer {
     hostState: null,
     fakeState: null,
     script: null,
+    recordingPath: false,
+    recordedFrames: 0,
+    recordedDurationMs: 0,
   }
 
   connect() {
@@ -90,6 +114,7 @@ class FakeRemotePeer {
 
   dispose() {
     this.stopScript()
+    this.recordingPath = false
     if (this.roomCode) this.send({ type: 'PLAYER_LEAVE', roomCode: this.roomCode, playerId: this.playerId })
     this.unsubscribeMessage?.()
     this.unsubscribeConnection?.()
@@ -110,6 +135,7 @@ class FakeRemotePeer {
     if (this.roomCode) this.send({ type: 'PLAYER_LEAVE', roomCode: this.roomCode, playerId: this.playerId })
 
     this.stopScript()
+    this.clearRecordedPath()
     this.roomCode = normalized
     this.room = null
     this.startId = ''
@@ -126,6 +152,72 @@ class FakeRemotePeer {
       roomCode: normalized,
       player: this.fakePlayer({ gameId: 'white2', status: 'missing' }),
     })
+  }
+
+  startPathRecording() {
+    if (!this.hostState || !this.startId) {
+      this.update({ phase: 'WAITING FOR HOST GAME STATE' })
+      return
+    }
+
+    this.stopScript()
+    const initial = clonePlayerState(this.hostState)
+    this.recordingPath = true
+    this.recordingStartedAt = performance.now()
+    this.recordingMapId = initial.location.mapId
+    this.recordedPath = [{ elapsedMs: 0, state: initial }]
+    this.update({
+      recordingPath: true,
+      recordedFrames: 1,
+      recordedDurationMs: 0,
+      phase: `RECORDING LEGAL PATH • MAP ${String(initial.location.mapId)}`,
+    })
+  }
+
+  stopPathRecording(phase = 'LEGAL PATH RECORDING STOPPED') {
+    if (!this.recordingPath) return
+    this.recordingPath = false
+    const duration = this.recordedPath[this.recordedPath.length - 1]?.elapsedMs ?? 0
+    this.update({
+      recordingPath: false,
+      recordedFrames: this.recordedPath.length,
+      recordedDurationMs: duration,
+      phase,
+    })
+  }
+
+  clearRecordedPath() {
+    this.recordingPath = false
+    this.recordingStartedAt = 0
+    this.recordingMapId = null
+    this.recordedPath = []
+    this.update({ recordingPath: false, recordedFrames: 0, recordedDurationMs: 0 })
+  }
+
+  async replayRecordedPath() {
+    if (this.recordingPath) this.stopPathRecording()
+    if (!this.startId || this.recordedPath.length < 2) {
+      this.update({ phase: 'RECORD AT LEAST TWO HOST STATES FIRST' })
+      return
+    }
+
+    const frames = this.recordedPath.map(frame => ({
+      elapsedMs: frame.elapsedMs,
+      state: clonePlayerState(frame.state),
+    }))
+    const generation = this.beginScript(`REPLAY LEGAL PATH • ${frames.length} STATES`)
+
+    this.publish(frames[0].state)
+    for (let index = 1; index < frames.length; index += 1) {
+      const gap = Math.max(0, frames[index].elapsedMs - frames[index - 1].elapsedMs)
+      await sleep(Math.min(MAX_REPLAY_IDLE_GAP_MS, gap))
+      if (generation !== this.scriptGeneration) return
+      this.publish(frames[index].state)
+    }
+
+    if (generation === this.scriptGeneration) {
+      this.finishScript(`LEGAL PATH REPLAY COMPLETE • ${frames.length} STATES`)
+    }
   }
 
   resetBesideHost() {
@@ -185,6 +277,7 @@ class FakeRemotePeer {
   }
 
   private beginScript(label: string) {
+    if (this.recordingPath) this.stopPathRecording()
     this.stopScript()
     const generation = ++this.scriptGeneration
     this.script = label
@@ -196,6 +289,21 @@ class FakeRemotePeer {
     this.script = null
     if (this.fakeState && this.startId) this.publish({ ...this.fakeState, movementState: 'idle' })
     this.update({ script: null, phase })
+  }
+
+  private captureRecordedHostState(state: MultiplayerPlayerState) {
+    if (!this.recordingPath) return
+    if (state.location.mapId !== this.recordingMapId) {
+      this.stopPathRecording('LEGAL PATH RECORDING STOPPED • MAP CHANGED')
+      return
+    }
+
+    const elapsedMs = Math.max(0, Math.round(performance.now() - this.recordingStartedAt))
+    this.recordedPath.push({ elapsedMs, state: clonePlayerState(state) })
+    this.update({
+      recordedFrames: this.recordedPath.length,
+      recordedDurationMs: elapsedMs,
+    })
   }
 
   private ensureFakeState() {
@@ -317,6 +425,7 @@ class FakeRemotePeer {
     if (message.type === 'GAME_STATE' && message.playerId !== this.playerId && (!this.startId || message.startId === this.startId)) {
       this.hostPlayerId = message.playerId
       this.hostState = message.state
+      this.captureRecordedHostState(message.state)
       this.update({ hostState: message.state })
       if (this.startId && !this.fakeState) {
         this.resetStateBesideHostWithoutStopping()
@@ -330,21 +439,22 @@ class FakeRemotePeer {
     this.startId = startId
     this.sequence = 0
     this.fakeState = null
+    this.clearRecordedPath()
     this.update({ gameStarted: true, fakeState: null, phase: 'GAME STARTED • WAITING FOR HOST POSITION' })
   }
 
   private publish(state: MultiplayerPlayerState) {
     if (!this.roomCode || !this.startId) return
-    this.fakeState = state
+    this.fakeState = clonePlayerState(state)
     this.send({
       type: 'GAME_STATE',
       roomCode: this.roomCode,
       startId: this.startId,
       sequence: ++this.sequence,
       playerId: this.playerId,
-      state,
+      state: this.fakeState,
     })
-    this.update({ fakeState: state })
+    this.update({ fakeState: this.fakeState })
   }
 
   private fakePlayer(rom: MultiplayerRomIdentity): MultiplayerPlayer {
@@ -376,6 +486,9 @@ export function FakeRemotePeerPanel({ roomCodeStorageKey }: { roomCodeStorageKey
     hostState: null,
     fakeState: null,
     script: null,
+    recordingPath: false,
+    recordedFrames: 0,
+    recordedDurationMs: 0,
   })
 
   useEffect(() => {
@@ -420,6 +533,39 @@ export function FakeRemotePeerPanel({ roomCodeStorageKey }: { roomCodeStorageKey
     <div style={{ marginTop: 4, opacity: 0.75 }}>
       HOST {host ? `${host.location.mapId} • ${host.x},${host.y}` : 'WAITING'}<br/>
       FAKE {fake ? `${fake.location.mapId} • ${fake.x},${fake.y} • ${fake.direction.toUpperCase()}` : 'WAITING'}
+    </div>
+
+    <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(53,84,107,0.35)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+        <b>LEGAL PATH</b>
+        <span style={{ opacity: 0.75 }}>
+          {snapshot.recordingPath
+            ? `REC • ${snapshot.recordedFrames}`
+            : `${snapshot.recordedFrames} STATES • ${(snapshot.recordedDurationMs / 1000).toFixed(1)}s`}
+        </span>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}>
+        <button
+          disabled={controlsDisabled || snapshot.recordingPath}
+          onClick={() => peer.startPathRecording()}
+        >● RECORD HOST</button>
+        <button
+          disabled={!snapshot.recordingPath}
+          onClick={() => peer.stopPathRecording()}
+        >■ STOP RECORD</button>
+        <button
+          disabled={controlsDisabled || snapshot.recordingPath || snapshot.recordedFrames < 2 || Boolean(snapshot.script)}
+          onClick={() => void peer.replayRecordedPath()}
+        >▶ REPLAY PATH</button>
+        <button
+          disabled={snapshot.recordingPath || snapshot.recordedFrames === 0}
+          onClick={() => peer.clearRecordedPath()}
+        >CLEAR PATH</button>
+      </div>
+      <div style={{ marginTop: 5, opacity: 0.68 }}>
+        Record the real trainer, then replay those exact White 2-approved positions as Player 2.
+        Recording stops automatically if the map changes.
+      </div>
     </div>
 
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 10 }}>
