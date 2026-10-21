@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'vite'
 
-const MULTIPLAYER_PORT = Number(process.env.POKERUN_MULTIPLAYER_PORT ?? 5174)
+const MULTIPLAYER_PORT = Number(process.env.POKERUN_MULTIPLAYER_PORT ?? 5173)
 
 function openBrowser(url) {
   let command
