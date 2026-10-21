@@ -170,8 +170,16 @@ class FakeRemotePeer {
     this.resetStateBesideHostWithoutStopping()
     await sleep(300)
     if (generation !== this.scriptGeneration) return
+    // The fake starts one tile east of the host. This route reaches dx=7, dy=5:
+    // far enough to leave the camera at the current test location while staying
+    // inside the runtime's dx<=7/dy<=5 retention box. That isolates camera culling
+    // from the separate distance-based actor release path.
     await this.walkInternal('east', 6, generation)
+    if (generation !== this.scriptGeneration) return
+    await this.walkInternal('north', 5, generation)
     await sleep(900)
+    if (generation !== this.scriptGeneration) return
+    await this.walkInternal('south', 5, generation)
     if (generation !== this.scriptGeneration) return
     await this.walkInternal('west', 6, generation)
     if (generation === this.scriptGeneration) this.finishScript('OFFSCREEN TEST COMPLETE')
