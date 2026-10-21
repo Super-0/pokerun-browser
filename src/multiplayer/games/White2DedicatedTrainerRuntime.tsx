@@ -52,8 +52,12 @@ const MAX_STEP_HOLD_MS = 250
 const SMOOTHING_ALPHA = 0.72
 const SMOOTHING_SNAP_FX32 = 16 * 4096
 const SMOOTHING_EPSILON_FX32 = 64
-// V3 rejects doorway/clipping-only renderer geometry from reusable walk/turn animation knowledge.
-const CACHE_VERSION = 3
+// Trace data shows White 2 walking at roughly 248 FX32 units/ms and running at
+// roughly 482 FX32 units/ms. Keep the threshold between those two stable bands.
+const RUN_SPEED_THRESHOLD_FX32_PER_MS = 360
+// V4 separates walk/run animation knowledge and refuses cached frames whose
+// geometry does not match the trusted idle renderer for that direction.
+const CACHE_VERSION = 4
 
 const FIELD_FACE_BY_DIRECTION = { north: 0, south: 1, west: 2, east: 3 } as const
 const DIRECTION_BY_FIELD_FACE: Partial<Record<number, MultiplayerPlayerState['direction']>> = {
@@ -65,6 +69,7 @@ const DIRECTION_BY_FIELD_FACE: Partial<Record<number, MultiplayerPlayerState['di
 const DIRECTIONS: MultiplayerPlayerState['direction'][] = ['north', 'south', 'west', 'east']
 
 type Direction = MultiplayerPlayerState['direction']
+type MotionKind = 'walk' | 'run'
 type TurnKey = `${Direction}->${Direction}`
 
 type ActorBinding = {
@@ -90,8 +95,9 @@ type RenderSequenceStep = RenderProfile & {
 type DirectionKnowledge = {
   idle: RenderProfile | null
   idleCounts: Map<string, { count: number; profile: RenderProfile }>
-  movingSequence: RenderSequenceStep[]
-  currentRun: RenderSequenceStep[]
+  walkSequence: RenderSequenceStep[]
+  runSequence: RenderSequenceStep[]
+  currentSequence: RenderSequenceStep[]
 }
 
 type TurnCapture = {
@@ -106,9 +112,15 @@ type RemoteTurnPlayback = {
   stepStartedAt: number
 }
 
+type CachedDirectionKnowledge = {
+  idle: RenderProfile | null
+  walkSequence: RenderSequenceStep[]
+  runSequence: RenderSequenceStep[]
+}
+
 type CachedRenderProfile = {
   version: number
-  directions: Record<Direction, { idle: RenderProfile | null; movingSequence: RenderSequenceStep[] }>
+  directions: Record<Direction, CachedDirectionKnowledge>
   turns?: Record<string, RenderSequenceStep[]>
 }
 
@@ -162,8 +174,9 @@ function createDirectionKnowledge(): DirectionKnowledge {
   return {
     idle: null,
     idleCounts: new Map<string, { count: number; profile: RenderProfile }>(),
-    movingSequence: [],
-    currentRun: [],
+    walkSequence: [],
+    runSequence: [],
+    currentSequence: [],
   }
 }
 
@@ -189,11 +202,14 @@ function sequenceDuration(sequence: RenderSequenceStep[]) {
   return sequence.reduce((total, step) => total + step.holdMs, 0)
 }
 
-function finalizeRun(knowledge: DirectionKnowledge) {
-  if (knowledge.currentRun.length > knowledge.movingSequence.length) {
-    knowledge.movingSequence = knowledge.currentRun.map(step => ({ ...step }))
+function finalizeMotion(knowledge: DirectionKnowledge, motionKind: MotionKind) {
+  const target = motionKind === 'run' ? knowledge.runSequence : knowledge.walkSequence
+  if (knowledge.currentSequence.length > target.length) {
+    const next = knowledge.currentSequence.map(step => ({ ...step }))
+    if (motionKind === 'run') knowledge.runSequence = next
+    else knowledge.walkSequence = next
   }
-  knowledge.currentRun = []
+  knowledge.currentSequence = []
 }
 
 function observeIdle(knowledge: DirectionKnowledge, profile: RenderProfile) {
@@ -204,10 +220,34 @@ function observeIdle(knowledge: DirectionKnowledge, profile: RenderProfile) {
   knowledge.idle = [...knowledge.idleCounts.values()].sort((a, b) => b.count - a.count)[0]?.profile ?? knowledge.idle
 }
 
+function profileMatchesIdle(idle: RenderProfile, profile: RenderProfile) {
+  return profile.geomFlags === idle.geomFlags && profile.matFlags === idle.matFlags
+}
+
 function hasStableGeometry(knowledge: DirectionKnowledge, profile: RenderProfile) {
   const idle = knowledge.idle
   if (!idle) return true
-  return profile.geomFlags === idle.geomFlags && profile.matFlags === idle.matFlags
+  return profileMatchesIdle(idle, profile)
+}
+
+function sanitizeSequence(sequence: RenderSequenceStep[] | undefined, idle: RenderProfile | null) {
+  if (!idle || !Array.isArray(sequence)) return []
+  return sequence
+    .filter(step => Number.isFinite(step?.holdMs)
+      && step.holdMs > 0
+      && step.holdMs <= MAX_STEP_HOLD_MS
+      && profileMatchesIdle(idle, step))
+    .map(step => ({ ...step }))
+}
+
+function motionKindForVelocity(velocityFx32PerMs: number): MotionKind {
+  return velocityFx32PerMs >= RUN_SPEED_THRESHOLD_FX32_PER_MS ? 'run' : 'walk'
+}
+
+function motionVelocity(a: MultiplayerWorldPosition, b: MultiplayerWorldPosition, elapsedMs: number) {
+  const dx = signed32(b.x) - signed32(a.x)
+  const dz = signed32(b.z) - signed32(a.z)
+  return Math.hypot(dx, dz) / Math.max(1, elapsedMs)
 }
 
 function worldChanged(a: MultiplayerWorldPosition | null, b: MultiplayerWorldPosition) {
@@ -224,15 +264,23 @@ function loadCachedKnowledge(key: string, knowledge: Record<Direction, Direction
     if (!raw) return
     const cached = JSON.parse(raw) as CachedRenderProfile
     if (cached.version !== CACHE_VERSION) return
+
     for (const direction of DIRECTIONS) {
       const saved = cached.directions?.[direction]
       if (!saved) continue
-      knowledge[direction].idle = saved.idle ?? null
-      knowledge[direction].movingSequence = Array.isArray(saved.movingSequence) ? saved.movingSequence : []
-      if (saved.idle) knowledge[direction].idleCounts.set(profileKey(saved.idle), { count: 1, profile: saved.idle })
+      const idle = saved.idle ?? null
+      knowledge[direction].idle = idle
+      knowledge[direction].walkSequence = sanitizeSequence(saved.walkSequence, idle)
+      knowledge[direction].runSequence = sanitizeSequence(saved.runSequence, idle)
+      if (idle) knowledge[direction].idleCounts.set(profileKey(idle), { count: 1, profile: { ...idle } })
     }
+
     for (const [keyValue, sequence] of Object.entries(cached.turns ?? {})) {
-      if (Array.isArray(sequence)) turns.set(keyValue as TurnKey, sequence)
+      if (!Array.isArray(sequence)) continue
+      const to = keyValue.split('->')[1] as Direction | undefined
+      if (!to || !DIRECTIONS.includes(to)) continue
+      const safe = sanitizeSequence(sequence, knowledge[to].idle)
+      if (safe.length) turns.set(keyValue as TurnKey, safe)
     }
   } catch {
     // Cache is optional. Live learning will rebuild it.
@@ -243,7 +291,8 @@ function saveCachedKnowledge(key: string, knowledge: Record<Direction, Direction
   try {
     const directions = Object.fromEntries(DIRECTIONS.map(direction => [direction, {
       idle: knowledge[direction].idle,
-      movingSequence: knowledge[direction].movingSequence,
+      walkSequence: knowledge[direction].walkSequence,
+      runSequence: knowledge[direction].runSequence,
     }])) as CachedRenderProfile['directions']
     const savedTurns = Object.fromEntries([...turns.entries()].map(([keyValue, sequence]) => [keyValue, sequence.map(step => ({ ...step }))]))
     localStorage.setItem(key, JSON.stringify({ version: CACHE_VERSION, directions, turns: savedTurns } satisfies CachedRenderProfile))
@@ -384,17 +433,23 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
     let lastPlayerX: number | null = null
     let lastPlayerZ: number | null = null
+    let lastPlayerSampleAt = 0
     let playerBillboardYOffset = 0
     let playerMovingUntil = 0
-    let activePlayerRunDirection: Direction | null = null
+    let playerMotionKind: MotionKind = 'walk'
+    let activePlayerMotionDirection: Direction | null = null
+    let activePlayerMotionKind: MotionKind | null = null
     let lastPlayerDirection: Direction | null = null
     let lastPlayerMoving = false
     let activeTurnCapture: TurnCapture | null = null
 
     let lastRemoteWorld: MultiplayerWorldPosition | null = null
+    let lastRemoteWorldAt = 0
     let renderedWorld: MultiplayerWorldPosition | null = null
     let remoteMovingUntil = 0
+    let remoteMotionKind: MotionKind = 'walk'
     let activeRemoteDirection: Direction | null = null
+    let activeRemoteMotionKind: MotionKind | null = null
     let remoteSequenceIndex = 0
     let remoteStepStartedAt = 0
     let remoteWasMoving = false
@@ -425,19 +480,22 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       }
     }
 
-    function finalizeActivePlayerRun() {
-      if (!activePlayerRunDirection) return
-      finalizeRun(knowledge[activePlayerRunDirection])
-      activePlayerRunDirection = null
+    function finalizeActivePlayerMotion() {
+      if (!activePlayerMotionDirection || !activePlayerMotionKind) return
+      finalizeMotion(knowledge[activePlayerMotionDirection], activePlayerMotionKind)
+      activePlayerMotionDirection = null
+      activePlayerMotionKind = null
     }
 
     function resetPlayerBinding() {
       playerBinding = null
       lastPlayerX = null
       lastPlayerZ = null
+      lastPlayerSampleAt = 0
       playerBillboardYOffset = 0
       playerMovingUntil = 0
-      finalizeActivePlayerRun()
+      playerMotionKind = 'walk'
+      finalizeActivePlayerMotion()
       finishTurnCapture()
       lastPlayerDirection = null
       lastPlayerMoving = false
@@ -445,9 +503,12 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
     function resetRemoteAnimation() {
       lastRemoteWorld = null
+      lastRemoteWorldAt = 0
       renderedWorld = null
       remoteMovingUntil = 0
+      remoteMotionKind = 'walk'
       activeRemoteDirection = null
+      activeRemoteMotionKind = null
       remoteSequenceIndex = 0
       remoteStepStartedAt = 0
       remoteWasMoving = false
@@ -486,9 +547,14 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       ])
 
       playerBillboardYOffset = signed32(billboardY) - signed32(worldY)
-      if (lastPlayerX !== null && (x !== lastPlayerX || z !== lastPlayerZ)) playerMovingUntil = now + MOVING_HOLD_MS
+      if (lastPlayerX !== null && lastPlayerZ !== null && lastPlayerSampleAt > 0 && (x !== lastPlayerX || z !== lastPlayerZ)) {
+        const velocity = Math.hypot(signed32(x) - signed32(lastPlayerX), signed32(z) - signed32(lastPlayerZ)) / Math.max(1, now - lastPlayerSampleAt)
+        playerMotionKind = motionKindForVelocity(velocity)
+        playerMovingUntil = now + MOVING_HOLD_MS
+      }
       lastPlayerX = x
       lastPlayerZ = z
+      lastPlayerSampleAt = now
 
       const direction = DIRECTION_BY_FIELD_FACE[faceDir]
       if (!direction) return
@@ -506,7 +572,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       }
 
       if (lastPlayerDirection && direction !== lastPlayerDirection && !moving && !lastPlayerMoving) {
-        finalizeActivePlayerRun()
+        finalizeActivePlayerMotion()
         activeTurnCapture = { key: turnKey(lastPlayerDirection, direction), startedAt: now, sequence: [] }
         if (hasStableGeometry(knowledge[direction], profile)) appendStep(activeTurnCapture.sequence, profile)
         lastPlayerDirection = direction
@@ -516,13 +582,14 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
       const directionKnowledge = knowledge[direction]
       if (moving) {
-        if (activePlayerRunDirection !== direction) {
-          finalizeActivePlayerRun()
-          activePlayerRunDirection = direction
+        if (activePlayerMotionDirection !== direction || activePlayerMotionKind !== playerMotionKind) {
+          finalizeActivePlayerMotion()
+          activePlayerMotionDirection = direction
+          activePlayerMotionKind = playerMotionKind
         }
-        if (hasStableGeometry(directionKnowledge, profile)) appendStep(directionKnowledge.currentRun, profile)
+        if (hasStableGeometry(directionKnowledge, profile)) appendStep(directionKnowledge.currentSequence, profile)
       } else {
-        finalizeActivePlayerRun()
+        finalizeActivePlayerMotion()
         observeIdle(directionKnowledge, profile)
       }
 
@@ -540,7 +607,12 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       if (!remoteWorld) return null
 
       if (worldChanged(lastRemoteWorld, remoteWorld)) {
+        if (lastRemoteWorld && lastRemoteWorldAt > 0) {
+          const velocity = motionVelocity(lastRemoteWorld, remoteWorld, now - lastRemoteWorldAt)
+          if (velocity > 0) remoteMotionKind = motionKindForVelocity(velocity)
+        }
         lastRemoteWorld = { ...remoteWorld }
+        lastRemoteWorldAt = now
         remoteMovingUntil = now + MOVING_HOLD_MS
       }
       const moving = remote.movementState === 'moving'
@@ -556,6 +628,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       } else if (activeRemoteDirection !== remote.direction) {
         const previousDirection = activeRemoteDirection
         activeRemoteDirection = remote.direction
+        activeRemoteMotionKind = null
         remoteSequenceIndex = 0
         remoteStepStartedAt = now
         remoteWasMoving = false
@@ -580,12 +653,17 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       }
 
       const directionKnowledge = knowledge[remote.direction]
-      if (moving && directionKnowledge.movingSequence.length) {
-        if (!remoteWasMoving) {
+      const requestedMotionKind = remoteMotionKind
+      const sequence = requestedMotionKind === 'run'
+        ? (directionKnowledge.runSequence.length ? directionKnowledge.runSequence : directionKnowledge.walkSequence)
+        : directionKnowledge.walkSequence
+
+      if (moving && sequence.length) {
+        if (!remoteWasMoving || activeRemoteMotionKind !== requestedMotionKind) {
           remoteSequenceIndex = 0
           remoteStepStartedAt = now
         }
-        const sequence = directionKnowledge.movingSequence
+        activeRemoteMotionKind = requestedMotionKind
         let safety = sequence.length + 1
         while (safety > 0 && now - remoteStepStartedAt >= sequence[remoteSequenceIndex].holdMs) {
           remoteStepStartedAt += sequence[remoteSequenceIndex].holdMs
@@ -596,8 +674,11 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         return sequence[remoteSequenceIndex]
       }
 
-      if (!moving) remoteWasMoving = false
-      return directionKnowledge.idle ?? directionKnowledge.movingSequence[0] ?? null
+      if (!moving) {
+        remoteWasMoving = false
+        activeRemoteMotionKind = null
+      }
+      return directionKnowledge.idle ?? (requestedMotionKind === 'run' ? directionKnowledge.walkSequence[0] ?? null : null)
     }
 
     function applyRemoteFrame(current: DedicatedBinding, remote: MultiplayerPlayerState, world: MultiplayerWorldPosition, profile: RenderProfile | null) {
@@ -815,7 +896,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       cancelled = true
       unsubscribeEmulatedFrame()
       finishTurnCapture()
-      finalizeActivePlayerRun()
+      finalizeActivePlayerMotion()
       if (cacheStorageKey) saveCachedKnowledge(cacheStorageKey, knowledge, turns)
       if (!nativeStateUnsafe && runtimeBridge.status === 'running') void releaseActor(false).catch(() => undefined)
     }
