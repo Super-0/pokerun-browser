@@ -4,7 +4,10 @@ import { resolve } from 'node:path'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
 const source = resolve(root, 'third_party/ds-anywhere')
-const patch = resolve(root, 'third_party/patches/0001-expose-arm9-bus-reads.patch')
+const patches = [
+  resolve(root, 'third_party/patches/0001-expose-arm9-bus-reads.patch'),
+  resolve(root, 'third_party/patches/0002-real-hidden-fast-forward-frames.patch'),
+]
 const build = resolve(source, 'build-pokerun-wasm')
 const output = resolve(root, 'public/emulators/melonds')
 const expectedRevision = '53c7c6cb362560a9e362ae754a162f638fa3cd64'
@@ -22,13 +25,15 @@ if (!existsSync(resolve(source, '.git'))) throw new Error('Missing third_party/d
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim()
 if (revision !== expectedRevision) throw new Error(`DS Anywhere must be pinned to ${expectedRevision}; found ${revision}.`)
 
-// The patch is PokéRun-owned and can change while the pinned upstream revision stays fixed.
+// PokéRun-owned patches can change while the pinned upstream revision stays fixed.
 // Always restore tracked upstream files first so an older applied patch cannot block a newer one.
 run('git', ['reset', '--hard', expectedRevision], source)
-// --recount makes the build resilient to stale unified-diff hunk counts when the
+// --recount makes the build resilient to stale unified-diff hunk counts when a
 // PokéRun-owned patch is edited by hand; git still validates the actual context.
-run('git', ['apply', '--recount', '--check', patch], source)
-run('git', ['apply', '--recount', patch], source)
+for (const patch of patches) {
+  run('git', ['apply', '--recount', '--check', patch], source)
+  run('git', ['apply', '--recount', patch], source)
+}
 
 const patchedCpp = readFileSync(resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.cpp'), 'utf8')
 for (const symbol of requiredRuntimeSymbols) {
