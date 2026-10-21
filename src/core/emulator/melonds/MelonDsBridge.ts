@@ -26,12 +26,9 @@ export class MelonDsBridge implements EmulatorBridge {
   private topCanvas: HTMLCanvasElement | null = null
   private bottomCanvas: HTMLCanvasElement | null = null
   private frame: number | null = null
-  private acceleratedPumpTimer: number | null = null
-  private acceleratedFramesPending = 0
   private lastFrameAt = 0
   private running = false
   private speedMultiplier: DsSpeedMultiplier = 1
-  private acceleratedDrawPending = false
   private readonly emulatedFrameListeners = new Set<() => void>()
   private topImage: ImageData | null = null
   private bottomImage: ImageData | null = null
@@ -43,12 +40,7 @@ export class MelonDsBridge implements EmulatorBridge {
 
   attachScreens(top: HTMLCanvasElement, bottom: HTMLCanvasElement) { this.topCanvas = top; this.bottomCanvas = bottom }
 
-  setSpeedMultiplier(multiplier: DsSpeedMultiplier) {
-    if (this.speedMultiplier === multiplier) return
-    this.speedMultiplier = multiplier
-    this.clearAcceleratedFrames()
-    this.acceleratedDrawPending = false
-  }
+  setSpeedMultiplier(multiplier: DsSpeedMultiplier) { this.speedMultiplier = multiplier }
   getSpeedMultiplier() { return this.speedMultiplier }
   subscribeEmulatedFrame(listener: () => void) {
     this.emulatedFrameListeners.add(listener)
@@ -111,15 +103,7 @@ export class MelonDsBridge implements EmulatorBridge {
     this.emulator.initialize(true)
     this.status = 'running'; this.running = true; this.scheduleFrame()
   }
-  async pause() {
-    if (this.status !== 'running') return
-    this.running = false
-    if (this.frame) cancelAnimationFrame(this.frame)
-    this.frame = null
-    this.clearAcceleratedFrames()
-    this.acceleratedDrawPending = false
-    this.status = 'paused'
-  }
+  async pause() { if (this.status === 'running') { this.running = false; if (this.frame) cancelAnimationFrame(this.frame); this.frame = null; this.status = 'paused' } }
   async resume() { if (this.status === 'paused') { this.running = true; this.status = 'running'; this.scheduleFrame() } }
   async reset() { if (!this.emulator) return; await this.pause(); this.emulator.initialize(true); await this.resume() }
 
@@ -211,45 +195,13 @@ export class MelonDsBridge implements EmulatorBridge {
 
   private assertEmulator() { if (!this.emulator || this.status === 'idle' || this.status === 'stopped') throw new Error('melonDS is not running.'); return this.emulator }
   private assertAddress(address: number) { if (!Number.isInteger(address) || address < 0 || address > 0xffffffff) throw new Error('Invalid ARM9 bus address.'); return address >>> 0 }
-  private clearAcceleratedFrames() {
-    if (this.acceleratedPumpTimer !== null) window.clearTimeout(this.acceleratedPumpTimer)
-    this.acceleratedPumpTimer = null
-    this.acceleratedFramesPending = 0
-  }
-  private queueAcceleratedFrames(count: number) {
-    if (!this.emulator || this.speedMultiplier === 1 || count <= 0) return
-    const maxPending = this.speedMultiplier - 1
-    this.acceleratedFramesPending = Math.min(maxPending, this.acceleratedFramesPending + count)
-    this.scheduleAcceleratedPump()
-  }
-  private scheduleAcceleratedPump() {
-    if (this.acceleratedPumpTimer !== null || this.acceleratedFramesPending <= 0) return
-    this.acceleratedPumpTimer = window.setTimeout(() => {
-      this.acceleratedPumpTimer = null
-      if (!this.running || !this.emulator || this.speedMultiplier === 1) {
-        this.acceleratedFramesPending = 0
-        return
-      }
-      if (this.acceleratedFramesPending <= 0) return
-      this.acceleratedFramesPending -= 1
-      this.emulator.setInput(this.inputMask)
-      this.emulator.processFrame(false)
-      if (this.acceleratedFramesPending > 0) this.scheduleAcceleratedPump()
-    }, 0)
-  }
   private scheduleFrame() {
     this.frame = requestAnimationFrame(now => {
       if (!this.running || !this.emulator) return
       if (now - this.lastFrameAt >= 1000 / 60) {
         this.lastFrameAt = now
-        const multiplier = this.speedMultiplier
-        if (multiplier > 1) this.queueAcceleratedFrames(multiplier - 1)
         this.emulator.setInput(this.inputMask)
-        this.emulator.processFrame(false)
-        if (multiplier > 1 && this.acceleratedDrawPending) {
-          this.acceleratedDrawPending = false
-          this.draw()
-        }
+        for (let index = 0; index < this.speedMultiplier; index += 1) this.emulator.processFrame(false)
       }
       this.scheduleFrame()
     })
@@ -276,11 +228,7 @@ export class MelonDsBridge implements EmulatorBridge {
   }
 
   private installRuntimeCallbacks() {
-    window.WebMelon = { _internal: { events: { onEmulatorFrameUpdate: () => {
-      if (this.speedMultiplier === 1) this.draw()
-      else this.acceleratedDrawPending = true
-      this.notifyEmulatedFrame()
-    }, onSaveWrite: () => this.scheduleBatterySaveExport(), onRumbleStart: () => undefined, onRumbleStop: () => undefined, onShutdown: () => { void this.pause() } } } }
+    window.WebMelon = { _internal: { events: { onEmulatorFrameUpdate: () => { this.draw(); this.notifyEmulatedFrame() }, onSaveWrite: () => this.scheduleBatterySaveExport(), onRumbleStart: () => undefined, onRumbleStop: () => undefined, onShutdown: () => { void this.pause() } } } }
   }
   private draw() {
     if (!this.module || !this.emulator || !this.topCanvas || !this.bottomCanvas) return
