@@ -30,6 +30,13 @@ const BLACT_MAT_FLAGS = 0x18
 const HANDLE_SIZE = 0x28
 const HANDLE_BLACT_INDEX = 0x00
 const HANDLE_MAT_ENTRY = 0x04
+const HANDLE_ANIMS = 0x08
+const HANDLE_ANIM_COUNT = 0x0c
+const HANDLE_ANIM = 0x0e
+const HANDLE_STEP = 0x10
+const HANDLE_WAIT = 0x12
+const HANDLE_LOOPS = 0x14
+const HANDLE_ANIMATE = 0x18
 
 const FLDACT_GET_BLACT_IDX = 0x02167240
 const NATIVE_STACK_RESERVE = 0x400
@@ -803,6 +810,22 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       try {
         const rawBinding = await resolveActorBinding(runtimeBridge, spawned.actorAddress, POKERUN_NATIVE_TEST_UID)
         const next: DedicatedBinding = { ...rawBinding, nativeRender: await readRenderProfile(runtimeBridge, rawBinding) }
+
+        // The BlAct billboard owns its own face animation independently of the
+        // FieldActor movement system. White 2's scene-node update repeatedly
+        // enables that animation, which can overwrite PokéRun's faceIndex for
+        // one rendered frame. Detach the native animation set entirely; the
+        // dedicated remote's frames are driven exclusively by PokéRun.
+        await Promise.all([
+          runtimeBridge.write32(next.handleAddress + HANDLE_ANIMS, 0),
+          runtimeBridge.write16(next.handleAddress + HANDLE_ANIM_COUNT, 0),
+          runtimeBridge.write16(next.handleAddress + HANDLE_ANIM, 0),
+          runtimeBridge.write16(next.handleAddress + HANDLE_STEP, 0),
+          runtimeBridge.write16(next.handleAddress + HANDLE_WAIT, 0),
+          runtimeBridge.write16(next.handleAddress + HANDLE_LOOPS, 0),
+          runtimeBridge.write32(next.handleAddress + HANDLE_ANIMATE, 0),
+        ])
+
         const world = remote.worldPosition
         if (!world) {
           await releaseActor()
