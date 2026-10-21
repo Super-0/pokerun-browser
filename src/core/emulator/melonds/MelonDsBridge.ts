@@ -214,8 +214,8 @@ export class MelonDsBridge implements EmulatorBridge {
     for (const timer of this.acceleratedFrameTimers) window.clearTimeout(timer)
     this.acceleratedFrameTimers.clear()
   }
-  private scheduleAcceleratedFrames(multiplier: Exclude<DsSpeedMultiplier, 1>) {
-    if (!this.emulator) return
+  private scheduleAcceleratedFrames(multiplier: DsSpeedMultiplier) {
+    if (!this.emulator || multiplier === 1) return
     const displayFrameMs = 1000 / 60
     for (let index = 1; index < multiplier; index += 1) {
       const timer = window.setTimeout(() => {
