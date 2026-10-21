@@ -1,5 +1,6 @@
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { installDeepTraceDiagnostics } from './multiplayer/debug/DeepTraceDiagnostics'
 import { installMultiplayerMovementTraceInstrumentation } from './multiplayer/debug/MultiplayerMovementTrace'
 import { MultiplayerMovementTracePanel } from './multiplayer/debug/MultiplayerMovementTracePanel'
 import './styles/app.css'
@@ -12,7 +13,10 @@ const params = new URLSearchParams(window.location.search)
 const networkTrace = params.get('transport') === 'network'
 const tracePlayer = params.get('player') === '2' ? 2 : 1
 
-if (networkTrace) installMultiplayerMovementTraceInstrumentation()
+if (networkTrace) {
+  installMultiplayerMovementTraceInstrumentation()
+  installDeepTraceDiagnostics()
+}
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<>
   <App />
