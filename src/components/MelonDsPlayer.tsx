@@ -9,6 +9,11 @@ import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
 
+type RuntimeSpeedStats = {
+  bridgeSpeed: DsSpeedMultiplier
+  processFramesPerSecond: number
+}
+
 export type DsPartnerMarker = {
   dx: number
   dy: number
@@ -80,11 +85,48 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   const [memoryText, setMemoryText] = useState('NOT READ')
   const [speed, setSpeed] = useState<DsSpeedMultiplier>(storedSpeed)
   const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
+  const [runtimeSpeedStats, setRuntimeSpeedStats] = useState<RuntimeSpeedStats>({ bridgeSpeed: speed, processFramesPerSecond: 0 })
   const speedRef = useRef<DsSpeedMultiplier>(speed)
 
   useEffect(() => multiplayerPresence.subscribe(snapshot => {
     setPresence(previous => sameMarkerPresence(previous, snapshot) ? previous : snapshot)
   }), [])
+
+  useEffect(() => {
+    if (!import.meta.env.DEV) return
+    let observedBridge: MelonDsBridge | null = null
+    let unsubscribeFrame: (() => void) | null = null
+    let frameCount = 0
+    let windowStartedAt = performance.now()
+
+    const bindBridge = (bridge: MelonDsBridge | null) => {
+      if (bridge === observedBridge) return
+      unsubscribeFrame?.()
+      observedBridge = bridge
+      frameCount = 0
+      windowStartedAt = performance.now()
+      unsubscribeFrame = bridge?.subscribeEmulatedFrame(() => { frameCount += 1 }) ?? null
+    }
+
+    const timer = window.setInterval(() => {
+      const bridge = bridgeRef.current
+      bindBridge(bridge)
+      const now = performance.now()
+      const elapsedMs = now - windowStartedAt
+      if (elapsedMs < 500) return
+      setRuntimeSpeedStats({
+        bridgeSpeed: bridge?.getSpeedMultiplier() ?? 1,
+        processFramesPerSecond: elapsedMs > 0 ? frameCount * 1000 / elapsedMs : 0,
+      })
+      frameCount = 0
+      windowStartedAt = now
+    }, 250)
+
+    return () => {
+      window.clearInterval(timer)
+      unsubscribeFrame?.()
+    }
+  }, [])
 
   useEffect(() => {
     const top = topRef.current
@@ -212,7 +254,11 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
         {status !== 'running' && <div className={`melonds-status ${status === 'error' ? 'error' : ''}`}><strong>{status === 'error' ? 'EMULATOR ERROR' : 'BOOTING'}</strong><span>{statusText}</span></div>}
       </div>
       <div className="mgba-meta pixel-border"><span>{statusText} • {speed}× SPEED</span><span>ARROWS MOVE • X=A • Z=B • S=X • A=Y • Q/W=L/R • ENTER=START • RIGHT SHIFT=SELECT</span><span>TOUCH: BOTTOM SCREEN</span></div>
-      {import.meta.env.DEV && <div className="melonds-debug pixel-border"><button disabled={!ready} onClick={() => void inspectArm9()}>READ ARM9 BUS</button><code>{memoryText}</code></div>}
+      {import.meta.env.DEV && <div className="melonds-debug pixel-border">
+        <code>BRIDGE {runtimeSpeedStats.bridgeSpeed}× • PROCESS {Math.round(runtimeSpeedStats.processFramesPerSecond)}/s</code>
+        <button disabled={!ready} onClick={() => void inspectArm9()}>READ ARM9 BUS</button>
+        <code>{memoryText}</code>
+      </div>}
     </div>
   )
 }
