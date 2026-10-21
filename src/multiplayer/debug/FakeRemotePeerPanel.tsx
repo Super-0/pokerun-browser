@@ -170,10 +170,10 @@ class FakeRemotePeer {
     this.resetStateBesideHostWithoutStopping()
     await sleep(300)
     if (generation !== this.scriptGeneration) return
-    await this.walkInternal('east', 10, generation)
+    await this.walkInternal('east', 7, generation)
     await sleep(900)
     if (generation !== this.scriptGeneration) return
-    await this.walkInternal('west', 10, generation)
+    await this.walkInternal('west', 7, generation)
     if (generation === this.scriptGeneration) this.finishScript('OFFSCREEN TEST COMPLETE')
   }
 
