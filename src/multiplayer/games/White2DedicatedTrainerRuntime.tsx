@@ -54,8 +54,9 @@ const MAX_STEP_HOLD_MS = 250
 const SMOOTHING_ALPHA = 0.72
 const SMOOTHING_SNAP_FX32 = 16 * 4096
 const SMOOTHING_EPSILON_FX32 = 64
-// V3 rejects doorway/clipping-only renderer geometry from reusable walk/turn animation knowledge.
-const CACHE_VERSION = 3
+// V4 requires a learned idle surface before accepting walk/turn frames and
+// refuses cached profiles that swap material/geometry state underneath it.
+const CACHE_VERSION = 4
 
 const FIELD_FACE_BY_DIRECTION = { north: 0, south: 1, west: 2, east: 3 } as const
 const DIRECTION_BY_FIELD_FACE: Partial<Record<number, MultiplayerPlayerState['direction']>> = {
@@ -208,8 +209,10 @@ function observeIdle(knowledge: DirectionKnowledge, profile: RenderProfile) {
 
 function hasStableGeometry(knowledge: DirectionKnowledge, profile: RenderProfile) {
   const idle = knowledge.idle
-  if (!idle) return true
-  return profile.geomFlags === idle.geomFlags && profile.matFlags === idle.matFlags
+  if (!idle) return false
+  return profile.matEntry === idle.matEntry
+    && profile.geomFlags === idle.geomFlags
+    && profile.matFlags === idle.matFlags
 }
 
 function worldChanged(a: MultiplayerWorldPosition | null, b: MultiplayerWorldPosition) {
@@ -229,12 +232,20 @@ function loadCachedKnowledge(key: string, knowledge: Record<Direction, Direction
     for (const direction of DIRECTIONS) {
       const saved = cached.directions?.[direction]
       if (!saved) continue
-      knowledge[direction].idle = saved.idle ?? null
-      knowledge[direction].movingSequence = Array.isArray(saved.movingSequence) ? saved.movingSequence : []
-      if (saved.idle) knowledge[direction].idleCounts.set(profileKey(saved.idle), { count: 1, profile: saved.idle })
+      const idle = saved.idle ?? null
+      knowledge[direction].idle = idle
+      knowledge[direction].movingSequence = idle && Array.isArray(saved.movingSequence)
+        ? saved.movingSequence.filter(step => hasStableGeometry({ ...knowledge[direction], idle }, step))
+        : []
+      if (idle) knowledge[direction].idleCounts.set(profileKey(idle), { count: 1, profile: idle })
     }
     for (const [keyValue, sequence] of Object.entries(cached.turns ?? {})) {
-      if (Array.isArray(sequence)) turns.set(keyValue as TurnKey, sequence)
+      if (!Array.isArray(sequence)) continue
+      const targetDirection = keyValue.split('->')[1] as Direction | undefined
+      const targetKnowledge = targetDirection ? knowledge[targetDirection] : null
+      if (!targetKnowledge?.idle) continue
+      const filtered = sequence.filter(step => hasStableGeometry(targetKnowledge, step))
+      if (filtered.length) turns.set(keyValue as TurnKey, filtered)
     }
   } catch {
     // Cache is optional. Live learning will rebuild it.
@@ -551,6 +562,11 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
           ? false
           : now < remoteMovingUntil
 
+      const directionKnowledge = knowledge[remote.direction]
+      const safeProfile = (profile: RenderProfile | null) => profile && hasStableGeometry(directionKnowledge, profile)
+        ? profile
+        : directionKnowledge.idle
+
       if (activeRemoteDirection === null) {
         activeRemoteDirection = remote.direction
         remoteSequenceIndex = 0
@@ -578,10 +594,9 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
           remoteTurn.index += 1
           safety -= 1
         }
-        if (remoteTurn) return remoteTurn.sequence[remoteTurn.index]
+        if (remoteTurn) return safeProfile(remoteTurn.sequence[remoteTurn.index])
       }
 
-      const directionKnowledge = knowledge[remote.direction]
       if (moving && directionKnowledge.movingSequence.length) {
         if (!remoteWasMoving) {
           remoteSequenceIndex = 0
@@ -595,11 +610,11 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
           safety -= 1
         }
         remoteWasMoving = true
-        return sequence[remoteSequenceIndex]
+        return safeProfile(sequence[remoteSequenceIndex])
       }
 
       if (!moving) remoteWasMoving = false
-      return directionKnowledge.idle ?? directionKnowledge.movingSequence[0] ?? null
+      return directionKnowledge.idle
     }
 
     function applyRemoteFrame(current: DedicatedBinding, remote: MultiplayerPlayerState, world: MultiplayerWorldPosition, profile: RenderProfile | null) {
