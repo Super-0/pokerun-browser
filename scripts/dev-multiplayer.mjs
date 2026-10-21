@@ -1,6 +1,8 @@
 import { spawn } from 'node:child_process'
 import { createServer } from 'vite'
 
+const MULTIPLAYER_PORT = Number(process.env.POKERUN_MULTIPLAYER_PORT ?? 5174)
+
 function openBrowser(url) {
   let command
   let args
@@ -30,6 +32,8 @@ function openBrowser(url) {
 const server = await createServer({
   server: {
     host: '0.0.0.0',
+    port: MULTIPLAYER_PORT,
+    strictPort: true,
     open: false,
   },
 })
@@ -37,10 +41,6 @@ const server = await createServer({
 await server.listen()
 server.printUrls()
 
-const address = server.httpServer?.address()
-const port = address && typeof address === 'object' ? address.port : null
-if (!port) throw new Error('Could not determine the multiplayer dev server port.')
-
-const harnessUrl = `http://localhost:${port}/multiplayer-dev.html`
+const harnessUrl = `http://localhost:${MULTIPLAYER_PORT}/multiplayer-dev.html`
 console.log(`\nPokéRun multiplayer harness:\n${harnessUrl}\n`)
 openBrowser(harnessUrl)
