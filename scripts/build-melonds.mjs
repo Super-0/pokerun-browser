@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
 
@@ -35,6 +35,11 @@ for (const patch of patches) {
   run('git', ['apply', '--recount', patch], source)
 }
 
+// Apply build requirements after restoring and patching upstream.
+const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')
+writeFileSync(wasmCmake, readFileSync(wasmCmake, 'utf8') +
+  '\ntarget_compile_features(wasmemulator PRIVATE cxx_std_20)\n')
+
 const patchedCpp = readFileSync(resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.cpp'), 'utf8')
 for (const symbol of requiredRuntimeSymbols) {
   if (!patchedCpp.includes(`.function("${symbol}"`)) throw new Error(`PokéRun melonDS patch did not expose ${symbol} through Embind.`)
@@ -44,7 +49,10 @@ for (const symbol of requiredRuntimeSymbols) {
 // JS/WASM pair has compiled and passed export verification. A compiler failure
 // should not turn into a confusing browser-side 404 on the next launch.
 rmSync(build, { recursive: true, force: true })
-run('emcmake', ['cmake', '-S', 'wasmelonDS', '-B', build, '-DBUILD_QT_SDL=OFF', '-DENABLE_OGLRENDERER=OFF', '-DENABLE_GDBSTUB=OFF'], source)
+run('emcmake', ['cmake', '-S', 'wasmelonDS', '-B', build, '-DBUILD_QT_SDL=OFF', '-DENABLE_OGLRENDERER=OFF', '-DENABLE_GDBSTUB=OFF',
+  '-DCMAKE_C_FLAGS=-pthread',
+  '-DCMAKE_CXX_FLAGS=-pthread',
+  '-DCMAKE_EXE_LINKER_FLAGS=-pthread'], source)
 run('cmake', ['--build', build, '--target', 'wasmemulator', '-j2'], source)
 
 const builtJsPath = resolve(build, 'wasmemulator.js')

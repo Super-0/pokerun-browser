@@ -2,8 +2,8 @@ import { useEffect, useRef } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerPlayerState, MultiplayerRomIdentity, MultiplayerWorldPosition } from '../core/protocol'
-import { POKERUN_NATIVE_TEST_UID, White2NativeActorBridge } from './White2NativeActor'
-import { White2ActorSystemProbe } from './White2ActorSystem'
+import { POKERUN_NATIVE_TEST_UID, White2NativeActorBridge, White2NativeActorUnsafeStateError } from './White2NativeActor'
+import { White2ActorSystemProbe, White2ActorSystemUnavailableError } from './White2ActorSystem'
 
 const ACTOR_UID = 0x08
 const ACTOR_MODEL_ID = 0x0c
@@ -11,6 +11,8 @@ const ACTOR_FACE_DIR = 0x18
 const ACTOR_GPOS = 0x3c
 const ACTOR_WPOS = 0x44
 const ACTOR_SYSTEM_BACKPTR = 0x88
+const ACTOR_SCENE_NODE_VTABLE = 0x90
+const SCENE_NODE_GET_BLACT_INDEX = 0x14
 const ACTOR_SYSTEM_FIELD_BLACT = 0x28
 
 const FIELD_BLACT_SYSTEM = 0x04
@@ -124,6 +126,10 @@ function signed32(value: number) {
   return value | 0
 }
 
+function hex(value: number) {
+  return `0x${value.toString(16).padStart(8, '0').toUpperCase()}`
+}
+
 function smoothFx32(current: number, target: number) {
   const currentSigned = signed32(current)
   const targetSigned = signed32(target)
@@ -134,6 +140,12 @@ function smoothFx32(current: number, target: number) {
 
 function isMainRamPointer(value: number) {
   return Number.isInteger(value) && value >= MAIN_RAM_START && value < MAIN_RAM_END && (value & 0x3) === 0
+}
+
+function isMainRamFunctionPointer(value: number) {
+  const address = value & ~1
+  return Number.isInteger(value) && address >= MAIN_RAM_START && address < MAIN_RAM_END
+    && ((value & 1) === 1 || (address & 3) === 0)
 }
 
 function assertMainRamPointer(value: number, label: string) {
@@ -243,8 +255,20 @@ function saveCachedKnowledge(key: string, knowledge: Record<Direction, Direction
 }
 
 async function getNativeBlActIndex(bridge: MelonDsBridge, actorAddress: number) {
+  // IRDO's FldAct_GetBlActIdx dereferences actor->sceneNodeVTable (+0x90),
+  // then its +0x14 method entry. A loading actor can have a valid UID and
+  // actor-system backpointer before that table is ready; calling the game
+  // routine then raises an ARM9 data abort at 0x02167248.
+  const sceneNodeVTable = await bridge.read32(actorAddress + ACTOR_SCENE_NODE_VTABLE)
+  if (!isMainRamPointer(sceneNodeVTable)) {
+    throw new White2ActorSystemUnavailableError(`White 2 actor ${hex(actorAddress)} scene-node method table is not ready (${hex(sceneNodeVTable)}).`)
+  }
+  const getter = await bridge.read32(sceneNodeVTable + SCENE_NODE_GET_BLACT_INDEX)
+  if (!isMainRamFunctionPointer(getter)) {
+    throw new White2ActorSystemUnavailableError(`White 2 actor ${hex(actorAddress)} billboard-index method is not ready (${hex(getter)} at table ${hex(sceneNodeVTable)}).`)
+  }
   const call = await bridge.callArm9Thumb4(FLDACT_GET_BLACT_IDX, actorAddress, 0, 0, 0, NATIVE_STACK_RESERVE)
-  if (call.status !== 1) throw new Error(`FldAct_GetBlActIdx native call failed with status ${call.status}.`)
+  if (call.status !== 1) throw new White2NativeActorUnsafeStateError(`FldAct_GetBlActIdx native call failed with status ${call.status}, PC 0x${call.pc.toString(16).toUpperCase()}, after ${call.instructions} instructions. Reload the tab before retrying native actor calls.`)
   return call.result & 0xffff
 }
 
@@ -352,6 +376,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
     let cancelled = false
     let ownsActor = false
+    let nativeStateUnsafe = false
     let binding: DedicatedBinding | null = null
     let playerBinding: ActorBinding | null = null
     let playerModelId: number | null = null
@@ -384,6 +409,8 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     let rangeLatched = false
     let reacquireAfter = 0
     let lastError = ''
+    let unavailableSince = 0
+    let unavailableReported = false
 
     let knowledge = emptyKnowledge()
     let turns = new Map<TurnKey, RenderSequenceStep[]>()
@@ -435,7 +462,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       resetPlayerBinding()
       const scan = await new White2ActorSystemProbe(runtimeBridge).scanHeap()
       const player = scan.entries.find(entry => entry.state === 'player')
-      if (!player || player.uid !== PLAYER_UID) throw new Error('Live White 2 player actor was not found for render learning.')
+      if (!player || player.uid !== PLAYER_UID) throw new White2ActorSystemUnavailableError('Live White 2 player actor was not found for render learning.')
       playerBinding = await resolveActorBinding(runtimeBridge, player.address, PLAYER_UID)
 
       if (playerModelId !== player.modelId) {
@@ -593,7 +620,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     }
 
     const unsubscribeEmulatedFrame = runtimeBridge.subscribeEmulatedFrame(() => {
-      if (cancelled || runtimeBridge.status !== 'running') return
+      if (cancelled || nativeStateUnsafe || runtimeBridge.status !== 'running') return
       const current = binding
       const local = presenceRef.current.local
       const remote = presenceRef.current.remote
@@ -605,22 +632,26 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     async function releaseActor(cooldown = true) {
       const current = binding
       const hadActor = ownsActor || current !== null
+      if (!hadActor) return
+      // Keep ownership until deletion succeeds. A zero GameData pointer during
+      // a transition means cleanup cannot run yet, not that our actor vanished.
+      if (current) {
+        const liveSystem = await new White2ActorSystemProbe(runtimeBridge).inspect()
+        if (liveSystem.actorSystem !== current.actorSystem) {
+          binding = null
+          ownsActor = false
+          resetRemoteAnimation()
+          return
+        }
+      }
+      if (current && await bindingStillValid(runtimeBridge, current)) {
+        await writeRenderProfile(runtimeBridge, current, current.nativeRender)
+      }
+      await nativeActors.deleteTestActor()
       binding = null
       ownsActor = false
       resetRemoteAnimation()
-      if (!hadActor) return
       if (cooldown) reacquireAfter = Math.max(reacquireAfter, Date.now() + REACQUIRE_COOLDOWN_MS)
-      try {
-        // Put the owned actor back onto its native model-11 material before
-        // White 2 deletes it, so native renderer/resource teardown sees the
-        // material relationship it created rather than our protagonist override.
-        if (current && await bindingStillValid(runtimeBridge, current)) {
-          await writeRenderProfile(runtimeBridge, current, current.nativeRender)
-        }
-        await nativeActors.deleteTestActor()
-      } catch {
-        // A map transition may already have destroyed the old actor system.
-      }
     }
 
     async function ensureActor(remote: MultiplayerPlayerState) {
@@ -638,6 +669,10 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
       const spawned = await nativeActors.spawnTestActor()
       ownsActor = true
+      if (cancelled) {
+        await releaseActor(false)
+        return null
+      }
       try {
         const rawBinding = await resolveActorBinding(runtimeBridge, spawned.actorAddress, POKERUN_NATIVE_TEST_UID)
         const next: DedicatedBinding = { ...rawBinding, nativeRender: await readRenderProfile(runtimeBridge, rawBinding) }
@@ -651,7 +686,8 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         binding = next
         return next
       } catch (error) {
-        await releaseActor().catch(() => undefined)
+        if (error instanceof White2NativeActorUnsafeStateError) throw error
+        await releaseActor()
         throw error
       }
     }
@@ -734,13 +770,39 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
           if (runtimeBridge.status === 'running') {
             await tick()
             lastError = ''
+            unavailableSince = 0
+            unavailableReported = false
           }
         } catch (reason) {
+          if (reason instanceof White2ActorSystemUnavailableError) {
+            unavailableSince ||= Date.now()
+            if (!unavailableReported && Date.now() - unavailableSince >= 3000) {
+              unavailableReported = true
+              console.warn('White 2 dedicated trainer runtime is waiting for field actor initialization:', reason)
+            }
+            await delay(200)
+            continue
+          }
+          if (reason instanceof White2NativeActorUnsafeStateError) {
+            nativeStateUnsafe = true
+            console.warn('White 2 dedicated trainer runtime stopped native calls:', reason)
+            break
+          }
           rangeLatched = false
           stableMapId = null
           stableMapSince = 0
           resetPlayerBinding()
-          await releaseActor()
+          try {
+            await releaseActor()
+          } catch (cleanupError) {
+            if (cleanupError instanceof White2ActorSystemUnavailableError) {
+              await delay(200)
+              continue
+            }
+            nativeStateUnsafe = true
+            console.warn('White 2 dedicated trainer runtime stopped after actor cleanup failed:', cleanupError)
+            break
+          }
           const message = reason instanceof Error ? reason.message : String(reason)
           if (message !== lastError) {
             lastError = message
@@ -759,7 +821,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       finishTurnCapture()
       finalizeActivePlayerRun()
       if (cacheStorageKey) saveCachedKnowledge(cacheStorageKey, knowledge, turns)
-      if (runtimeBridge.status === 'running') void releaseActor(false)
+      if (!nativeStateUnsafe && runtimeBridge.status === 'running') void releaseActor(false).catch(() => undefined)
     }
   }, [bridge, rom.gameId, rom.sha256])
 

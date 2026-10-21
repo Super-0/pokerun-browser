@@ -2,6 +2,7 @@ import type { Arm9NativeCallResult, MelonDsBridge } from '../../core/emulator/me
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import {
   White2ActorSystemProbe,
+  White2ActorSystemUnavailableError,
   type White2ActorHeapEntry,
   type White2ActorHeapScan,
 } from './White2ActorSystem'
@@ -35,7 +36,9 @@ const TASK_CODE_OFFSET = 0xdc
 const TASK_STATUS_OFFSET = 0x18
 const TASK_RESULT_OFFSET = 0x14
 const TASK_SCRATCH_SIZE = FIELD_ACTOR_SIZE - TASK_DATA_OFFSET
-const TASK_TIMEOUT_MS = 8000
+// The scheduled callback only advances when this tab runs game frames. A hidden
+// multiplayer tab may spend eight wall-clock seconds running very few frames.
+const TASK_TIMEOUT_FRAMES = 900
 
 const FIELD_TASK_TRAMPOLINE = Uint8Array.from([
   0xf0, 0xb5, 0x04, 0x00, 0x0d, 0x00, 0x2e, 0x68,
@@ -58,6 +61,9 @@ const UNION_REMOTE_TRAINER_MODEL = 11
 // Temporary dev UID. Production will allocate a PokéRun-owned UID only after the
 // native create/delete lifecycle is validated across map transitions.
 export const POKERUN_NATIVE_TEST_UID = 0x7f01
+
+/** A native task may still execute, or actor ownership is ambiguous. Reload before retrying. */
+export class White2NativeActorUnsafeStateError extends Error {}
 
 export type White2NativeCallValidation = {
   actorSystem: number
@@ -152,7 +158,7 @@ export class White2NativeActorBridge {
     const scan = await new White2ActorSystemProbe(this.bridge).scanHeap()
     if (scan.suspiciousSlots.length) throw new Error(`Native actor test blocked by suspicious actor slots: ${scan.suspiciousSlots.join(', ')}.`)
     const player = scan.entries.find(entry => entry.state === 'player')
-    if (!player) throw new Error('White 2 player actor was not found.')
+    if (!player) throw new White2ActorSystemUnavailableError('White 2 player actor was not found while the field is loading.')
     return { scan, player }
   }
 
@@ -200,6 +206,9 @@ export class White2NativeActorBridge {
 
     let scheduled = false
     let completed = false
+    let scheduledTask = 0
+    let emulatedFrames = 0
+    const unsubscribeEmulatedFrame = this.bridge.subscribeEmulatedFrame(() => { emulatedFrames += 1 })
     try {
       await this.bridge.writeBytes(dataAddress, scratch)
       const addTask = await this.bridge.callArm9Thumb4(
@@ -213,10 +222,10 @@ export class White2NativeActorBridge {
       assertCallReturned(addTask, 'GFL_TCBMgrAddTask')
       if (addTask.result === 0) throw new Error('White 2 field actor TCB manager has no free task entry.')
       assertMainRamPointer(addTask.result, 'Scheduled field task')
+      scheduledTask = addTask.result
       scheduled = true
 
-      const deadline = performance.now() + TASK_TIMEOUT_MS
-      while (performance.now() < deadline) {
+      while (emulatedFrames < TASK_TIMEOUT_FRAMES) {
         const status = await this.bridge.read32(dataAddress + TASK_STATUS_OFFSET)
         if (status === 1) {
           const result = await this.bridge.read32(dataAddress + TASK_RESULT_OFFSET)
@@ -226,8 +235,20 @@ export class White2NativeActorBridge {
         await delay(16)
       }
 
-      throw new Error('Scheduled White 2 field task did not finish within 8 seconds. Reload the tab before retrying so a late callback cannot reuse restored scratch memory.')
+      const status = await this.bridge.read32(dataAddress + TASK_STATUS_OFFSET)
+      if (status === 1) {
+        const result = await this.bridge.read32(dataAddress + TASK_RESULT_OFFSET)
+        completed = true
+        return result >>> 0
+      }
+      const [callback, taskData, scratchUid] = await Promise.all([
+        this.bridge.read32(scheduledTask + 0x14),
+        this.bridge.read32(scheduledTask + 0x10),
+        this.bridge.read16(scratchSlot.address + 0x08),
+      ])
+      throw new White2NativeActorUnsafeStateError(`Scheduled White 2 field task did not finish after ${emulatedFrames} game frames (status ${status}, task ${hex(scheduledTask)}, callback ${hex(callback)}, data ${hex(taskData)}, scratch UID ${hex(scratchUid)}, tab ${document.visibilityState}). Reload the tab before retrying.`)
     } finally {
+      unsubscribeEmulatedFrame()
       // Once the callback reports status=1 it has already removed its own TCB,
       // so nothing in the game can execute or reference this scratch again.
       if (!scheduled || completed) await this.bridge.writeBytes(dataAddress, originalScratch)
@@ -260,7 +281,7 @@ export class White2NativeActorBridge {
   async spawnTestActor(): Promise<White2NativeSpawn> {
     const { scan, player } = await this.currentPlayer()
     const existing = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
-    if (existing !== 0) throw new Error(`Test UID ${hex(POKERUN_NATIVE_TEST_UID)} is already in use at ${hex(existing)}. Reload the tab before retrying the native lifecycle probe.`)
+    if (existing !== 0) throw new White2NativeActorUnsafeStateError(`Test UID ${hex(POKERUN_NATIVE_TEST_UID)} is already in use at ${hex(existing)}. Reload the tab before retrying the native lifecycle probe.`)
 
     const createOpcode = await this.bridge.read16(CREATE_ACTOR)
     if (createOpcode === 0 || createOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-create address.')
@@ -276,9 +297,9 @@ export class White2NativeActorBridge {
 
     const found = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
     if (found !== actorAddress) {
-      const cleanupScan = await new White2ActorSystemProbe(this.bridge).scanHeap()
-      if (found) await this.deleteActorAddress(found, cleanupScan).catch(() => undefined)
-      throw new Error(`Created actor verification failed: returned ${hex(actorAddress)}, FindFieldActor saw ${hex(found)}.`)
+      // Two addresses mean a prior timed-out create may have finished late.
+      // Deleting only the first lookup result leaves the returned actor behind.
+      throw new White2NativeActorUnsafeStateError(`Created actor verification failed: returned ${hex(actorAddress)}, FindFieldActor saw ${hex(found)}. Reload the tab before retrying.`)
     }
 
     return { actorAddress, uid: POKERUN_NATIVE_TEST_UID, modelId: npc.modelId, zoneId: player.zoneId, x: npc.x, z: npc.z }

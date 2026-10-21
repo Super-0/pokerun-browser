@@ -45,6 +45,7 @@ export type MelonDsModule = {
 
 declare global {
   interface Window {
+    HEAPU8?: Uint8Array
     Module?: Partial<MelonDsModule> & { onRuntimeInitialized?: () => void; locateFile?: (path: string) => string }
     FS?: {
       writeFile(path: string, data: Uint8Array): void
@@ -66,7 +67,20 @@ export function loadMelonDsRuntime() {
     if (document.querySelector('script[data-pokerun-melonds]')) return reject(new Error('melonDS runtime script was already requested but did not initialize.'))
     window.Module = {
       locateFile: file => `/emulators/melonds/${file}?v=${MELONDS_RUNTIME_CACHE_TOKEN}`,
-      onRuntimeInitialized: () => resolve(window.Module as MelonDsModule),
+      onRuntimeInitialized: () => {
+        // Current Emscripten keeps HEAPU8 as a script global instead of
+        // exporting it on Module. Read it on every draw so a new memory view
+        // is used if the WASM memory ever grows.
+        if (!(window.HEAPU8 instanceof Uint8Array)) {
+          reject(new Error('melonDS initialized without an accessible WASM framebuffer heap.'))
+          return
+        }
+        Object.defineProperty(window.Module, 'HEAPU8', {
+          configurable: true,
+          get: () => window.HEAPU8,
+        })
+        resolve(window.Module as MelonDsModule)
+      },
     }
     const script = document.createElement('script')
     script.dataset.pokerunMelonds = 'true'

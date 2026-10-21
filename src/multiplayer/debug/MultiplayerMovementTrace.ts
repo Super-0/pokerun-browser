@@ -1,4 +1,4 @@
-import { MelonDsBridge, type Arm9NativeCallResult } from '../../core/emulator/melonds/MelonDsBridge'
+import { MelonDsBridge, type Arm9NativeCallResult, type MelonDsFrameStats } from '../../core/emulator/melonds/MelonDsBridge'
 import { LocalMultiplayerSession } from '../core/LocalMultiplayerSession'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerMessage, MultiplayerPlayerState, MultiplayerWorldPosition } from '../core/protocol'
@@ -48,6 +48,7 @@ type TraceStage =
   | 'remote_target'
   | 'memory_sample'
   | 'actor_discovery'
+  | 'emulator_perf'
   | 'marker'
   | 'trace_note'
 
@@ -86,6 +87,9 @@ export type MultiplayerMovementTraceSummary = {
   packetAgeMs: TraceNumberStats
   renderErrorTiles: TraceNumberStats
   sampleOverheadMs: TraceNumberStats
+  emulatedFramesPerSec: TraceNumberStats
+  processCostMsPerFrame: TraceNumberStats
+  mainThreadBusyPercent: TraceNumberStats
   sequenceGaps: number
   localProfileChanges: number
   remoteProfileChanges: number
@@ -123,6 +127,8 @@ type BridgeTraceState = {
   remoteBinding: RenderBinding | null
   lastDiscoveryAt: number
   sampling: boolean
+  lastPerfAt: number
+  lastFrameStats: MelonDsFrameStats | null
 }
 
 type TraceWindow = Window & {
@@ -219,6 +225,9 @@ function summarize(events: MultiplayerMovementTraceEvent[], startedAt: number | 
   const packetAges: number[] = []
   const renderErrors: number[] = []
   const overheads: number[] = []
+  const frameRates: number[] = []
+  const frameCosts: number[] = []
+  const busyPercents: number[] = []
   const remoteProfiles = new Map<string, number>()
   const localProfiles = new Set<string>()
   let sequenceGaps = 0
@@ -226,6 +235,14 @@ function summarize(events: MultiplayerMovementTraceEvent[], startedAt: number | 
 
   for (const event of sorted) {
     stageCounts[event.stage] = (stageCounts[event.stage] ?? 0) + 1
+    if (event.stage === 'emulator_perf') {
+      const rate = Number(event.data.framesPerSec)
+      const cost = Number(event.data.processMsPerFrame)
+      const busy = Number(event.data.busyPercent)
+      if (Number.isFinite(rate)) frameRates.push(rate)
+      if (Number.isFinite(cost)) frameCosts.push(cost)
+      if (Number.isFinite(busy)) busyPercents.push(busy)
+    }
     if (event.stage === 'memory_sample') {
       const speed = Number(event.data.speed || 0)
       if (speed) speedCounts[`${speed}x`] = (speedCounts[`${speed}x`] ?? 0) + 1
@@ -268,6 +285,9 @@ function summarize(events: MultiplayerMovementTraceEvent[], startedAt: number | 
     packetAgeMs: numberStats(packetAges),
     renderErrorTiles: numberStats(renderErrors),
     sampleOverheadMs: numberStats(overheads),
+    emulatedFramesPerSec: numberStats(frameRates),
+    processCostMsPerFrame: numberStats(frameCosts),
+    mainThreadBusyPercent: numberStats(busyPercents),
     sequenceGaps,
     localProfileChanges: countProfileChanges(sorted, 'localProfile'),
     remoteProfileChanges: countProfileChanges(sorted, 'remoteProfile'),
@@ -314,6 +334,8 @@ class MultiplayerMovementTraceController {
       remoteBinding: null,
       lastDiscoveryAt: 0,
       sampling: false,
+      lastPerfAt: 0,
+      lastFrameStats: null,
     })
   }
 
@@ -430,6 +452,10 @@ class MultiplayerMovementTraceController {
     this.stoppedAt = null
     this.events = []
     this.active = true
+    for (const state of this.bridgeStates.values()) {
+      state.lastFrameStats = null
+      state.lastPerfAt = 0
+    }
     if (this.stopTimer !== null) window.clearTimeout(this.stopTimer)
     this.stopTimer = window.setTimeout(() => this.stop(), Math.max(0, this.endsAt - Date.now()))
     this.startSampler()
@@ -467,7 +493,10 @@ class MultiplayerMovementTraceController {
     if (this.samplerTimer !== null) return
     const run = () => {
       if (!this.active) return
-      for (const state of this.bridgeStates.values()) void this.sampleBridge(state)
+      for (const state of this.bridgeStates.values()) {
+        this.sampleFrameStats(state)
+        void this.sampleBridge(state)
+      }
     }
     this.samplerTimer = window.setInterval(run, SAMPLE_MS)
     run()
@@ -476,6 +505,48 @@ class MultiplayerMovementTraceController {
   private stopSampler() {
     if (this.samplerTimer !== null) window.clearInterval(this.samplerTimer)
     this.samplerTimer = null
+  }
+
+  private sampleFrameStats(state: BridgeTraceState) {
+    if (state.bridge.status !== 'running') return
+    const now = performance.now()
+    const current = state.bridge.getFrameStats()
+    const previous = state.lastFrameStats
+    const elapsedMs = now - state.lastPerfAt
+    if (!previous) {
+      state.lastFrameStats = current
+      state.lastPerfAt = now
+      return
+    }
+    if (elapsedMs < 1000) return
+    const frames = current.frames - previous.frames
+    const hiddenFrames = current.hiddenFrames - previous.hiddenFrames
+    const visibleFrames = current.visibleFrames - previous.visibleFrames
+    const processMs = current.processMs - previous.processMs
+    const hiddenProcessMs = current.hiddenProcessMs - previous.hiddenProcessMs
+    const visibleProcessMs = current.visibleProcessMs - previous.visibleProcessMs
+    const batchMs = current.batchMs - previous.batchMs
+    this.record('emulator_perf', {
+      speed: state.bridge.getSpeedMultiplier(),
+      visibility: document.visibilityState,
+      elapsedMs,
+      frames,
+      hiddenFrames,
+      visibleFrames,
+      batches: current.batches - previous.batches,
+      rafCallbacks: current.rafCallbacks - previous.rafCallbacks,
+      processMs,
+      hiddenProcessMs,
+      visibleProcessMs,
+      batchMs,
+      framesPerSec: frames * 1000 / elapsedMs,
+      processMsPerFrame: frames ? processMs / frames : 0,
+      hiddenMsPerFrame: hiddenFrames ? hiddenProcessMs / hiddenFrames : 0,
+      visibleMsPerFrame: visibleFrames ? visibleProcessMs / visibleFrames : 0,
+      busyPercent: batchMs * 100 / elapsedMs,
+    })
+    state.lastFrameStats = current
+    state.lastPerfAt = now
   }
 
   private async sampleBridge(state: BridgeTraceState) {

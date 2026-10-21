@@ -15,6 +15,18 @@ export type Arm9NativeCallResult = {
   instructions: number
 }
 
+export type MelonDsFrameStats = {
+  frames: number
+  hiddenFrames: number
+  visibleFrames: number
+  processMs: number
+  hiddenProcessMs: number
+  visibleProcessMs: number
+  batches: number
+  batchMs: number
+  rafCallbacks: number
+}
+
 /** PokéRun's melonDS boundary. ARM9 methods access the emulated DS bus, never the WASM host heap. */
 export class MelonDsBridge implements EmulatorBridge {
   readonly platform: Platform = 'NDS'
@@ -29,6 +41,7 @@ export class MelonDsBridge implements EmulatorBridge {
   private lastFrameAt = 0
   private running = false
   private speedMultiplier: DsSpeedMultiplier = 1
+  private readonly frameStats: MelonDsFrameStats = { frames: 0, hiddenFrames: 0, visibleFrames: 0, processMs: 0, hiddenProcessMs: 0, visibleProcessMs: 0, batches: 0, batchMs: 0, rafCallbacks: 0 }
   private readonly emulatedFrameListeners = new Set<() => void>()
   private topImage: ImageData | null = null
   private bottomImage: ImageData | null = null
@@ -42,6 +55,7 @@ export class MelonDsBridge implements EmulatorBridge {
 
   setSpeedMultiplier(multiplier: DsSpeedMultiplier) { this.speedMultiplier = multiplier }
   getSpeedMultiplier() { return this.speedMultiplier }
+  getFrameStats(): MelonDsFrameStats { return { ...this.frameStats } }
   subscribeEmulatedFrame(listener: () => void) {
     this.emulatedFrameListeners.add(listener)
     return () => this.emulatedFrameListeners.delete(listener)
@@ -198,11 +212,33 @@ export class MelonDsBridge implements EmulatorBridge {
   private scheduleFrame() {
     this.frame = requestAnimationFrame(now => {
       if (!this.running || !this.emulator) return
-      if (now - this.lastFrameAt >= 1000 / 60) {
-        this.lastFrameAt = now
+      this.frameStats.rafCallbacks += 1
+      const frameInterval = 1000 / 60
+      const elapsed = now - this.lastFrameAt
+      // Keep the ideal frame clock across rAF jitter and displays above 60 Hz.
+      // Drop stale time after a slow batch or background-tab pause instead of
+      // trying to catch up with extra emulator frames in one callback.
+      if (elapsed >= frameInterval - 1) {
+        const batchStart = performance.now()
+        this.lastFrameAt = elapsed > frameInterval * 2 ? now : this.lastFrameAt + frameInterval
         this.emulator.setInput(this.inputMask)
-        for (let index = 1; index < this.speedMultiplier; index += 1) this.emulator.processFrame(true)
-        this.emulator.processFrame(false)
+        for (let index = 0; index < this.speedMultiplier; index += 1) {
+          const hidden = index < this.speedMultiplier - 1
+          const frameStart = performance.now()
+          this.emulator.processFrame(hidden)
+          const processMs = performance.now() - frameStart
+          this.frameStats.processMs += processMs
+          this.frameStats.frames += 1
+          if (hidden) {
+            this.frameStats.hiddenFrames += 1
+            this.frameStats.hiddenProcessMs += processMs
+          } else {
+            this.frameStats.visibleFrames += 1
+            this.frameStats.visibleProcessMs += processMs
+          }
+        }
+        this.frameStats.batches += 1
+        this.frameStats.batchMs += performance.now() - batchStart
       }
       this.scheduleFrame()
     })

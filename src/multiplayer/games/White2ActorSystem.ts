@@ -89,6 +89,9 @@ function signed16(value: number) {
   return value & 0x8000 ? value - 0x10000 : value
 }
 
+/** Field pointers are briefly zero while White 2 enters or leaves a map. */
+export class White2ActorSystemUnavailableError extends Error {}
+
 /**
  * Read-only discovery of White 2's live FieldActorSystem.
  *
@@ -105,12 +108,15 @@ export class White2ActorSystemProbe {
 
   async inspect(): Promise<White2ActorSystemSnapshot> {
     const gameSystem = await this.bridge.read32(WHITE2_G_GAME_SYSTEM)
+    if (gameSystem === 0) throw new White2ActorSystemUnavailableError(`White 2 GameSystem pointer is invalid (${hex(gameSystem)}).`)
     if (!isMainRamPointer(gameSystem)) throw new Error(`White 2 GameSystem pointer is invalid (${hex(gameSystem)}).`)
 
     const gameData = await this.bridge.read32(gameSystem + GAME_SYSTEM_GAME_DATA)
+    if (gameData === 0) throw new White2ActorSystemUnavailableError(`White 2 GameData pointer is invalid (${hex(gameData)}).`)
     if (!isMainRamPointer(gameData)) throw new Error(`White 2 GameData pointer is invalid (${hex(gameData)}).`)
 
     const actorSystem = await this.bridge.read32(gameData + GAME_DATA_ACTOR_SYSTEM)
+    if (actorSystem === 0) throw new White2ActorSystemUnavailableError(`White 2 actor-system pointer is invalid (${hex(actorSystem)}).`)
     if (!isMainRamPointer(actorSystem)) throw new Error(`White 2 actor-system pointer is invalid (${hex(actorSystem)}).`)
 
     const [capacity, count, actorHeap] = await Promise.all([
