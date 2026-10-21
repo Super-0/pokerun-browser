@@ -1,4 +1,4 @@
-import type { Arm9NativeCallResult, MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
+import { MelonDsBridge, type Arm9NativeCallResult } from '../../core/emulator/melonds/MelonDsBridge'
 import { LocalMultiplayerSession } from '../core/LocalMultiplayerSession'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerMessage, MultiplayerPlayerState, MultiplayerWorldPosition } from '../core/protocol'
