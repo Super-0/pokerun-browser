@@ -165,16 +165,16 @@ class FakeRemotePeer {
   }
 
   async runOffscreenReturnTest() {
-    const generation = this.beginScript('OFFSCREEN + RETURN TEST')
+    const generation = this.beginScript('CAMERA CULL + RETURN TEST')
     if (!this.ensureFakeState()) return this.finishScript('WAITING FOR HOST GAME STATE')
     this.resetStateBesideHostWithoutStopping()
     await sleep(300)
     if (generation !== this.scriptGeneration) return
-    await this.walkInternal('east', 6, generation)
+    await this.walkWorldOnly('east', 12, generation)
     await sleep(900)
     if (generation !== this.scriptGeneration) return
-    await this.walkInternal('west', 6, generation)
-    if (generation === this.scriptGeneration) this.finishScript('OFFSCREEN TEST COMPLETE')
+    await this.walkWorldOnly('west', 12, generation)
+    if (generation === this.scriptGeneration) this.finishScript('CAMERA CULL TEST COMPLETE')
   }
 
   stopScript() {
@@ -235,6 +235,32 @@ class FakeRemotePeer {
           ...start,
           x: finalStep ? start.x + dx : start.x,
           y: finalStep ? start.y + dy : start.y,
+          direction,
+          movementState: 'moving',
+          worldPosition: {
+            x: Math.round(startWorld.x + dx * TILE_WORLD * fraction),
+            y: startWorld.y,
+            z: Math.round(startWorld.z + dy * TILE_WORLD * fraction),
+          },
+        })
+        await sleep(STEP_MS)
+      }
+    }
+  }
+
+  private async walkWorldOnly(direction: MultiplayerDirection, tiles: number, generation: number) {
+    if (!this.ensureFakeState()) return
+    const dx = direction === 'east' ? 1 : direction === 'west' ? -1 : 0
+    const dy = direction === 'south' ? 1 : direction === 'north' ? -1 : 0
+
+    for (let tile = 0; tile < tiles; tile += 1) {
+      const start = this.fakeState!
+      const startWorld = start.worldPosition ?? worldFromGrid(start.x, start.y)
+      for (let step = 1; step <= SUBSTEPS_PER_TILE; step += 1) {
+        if (generation !== this.scriptGeneration) return
+        const fraction = step / SUBSTEPS_PER_TILE
+        this.publish({
+          ...start,
           direction,
           movementState: 'moving',
           worldPosition: {
@@ -400,7 +426,7 @@ export function FakeRemotePeerPanel({ roomCodeStorageKey }: { roomCodeStorageKey
       <button disabled={controlsDisabled} onClick={() => peer.resetBesideHost()}>RESET BESIDE ME</button>
       <button disabled={controlsDisabled} onClick={() => peer.stopScript()}>STOP</button>
       <button disabled={controlsDisabled} onClick={() => void peer.runSouthTest()}>SOUTH WALK TEST</button>
-      <button disabled={controlsDisabled} onClick={() => void peer.runOffscreenReturnTest()}>OFFSCREEN + RETURN</button>
+      <button disabled={controlsDisabled} onClick={() => void peer.runOffscreenReturnTest()}>CAMERA CULL + RETURN</button>
     </div>
 
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 5, marginTop: 8 }}>
