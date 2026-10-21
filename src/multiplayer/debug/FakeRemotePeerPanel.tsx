@@ -27,8 +27,8 @@ type FakeRemoteSnapshot = {
 }
 
 type Listener = (snapshot: FakeRemoteSnapshot) => void
-
-type OutboundMessage = Omit<MultiplayerMessage, 'version' | 'senderId' | 'sentAt'>
+type StripProtocolBase<T> = T extends unknown ? Omit<T, 'version' | 'senderId' | 'sentAt'> : never
+type OutboundMessage = StripProtocolBase<MultiplayerMessage>
 
 function sleep(ms: number) {
   return new Promise<void>(resolve => window.setTimeout(resolve, ms))
