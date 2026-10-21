@@ -49,6 +49,8 @@ const MAP_STABLE_MS = 280
 const MISSING_STATE_GRACE_MS = 160
 const REACQUIRE_COOLDOWN_MS = 250
 const BIND_TIMEOUT_MS = 1800
+const REBIND_TIMEOUT_MS = 120
+const REBIND_RETRY_MS = 120
 const TURN_CAPTURE_MS = 240
 const MAX_STEP_HOLD_MS = 250
 const SMOOTHING_ALPHA = 0.72
@@ -376,6 +378,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
     let cancelled = false
     let ownsActor = false
+    let ownedActorAddress: number | null = null
     let nativeStateUnsafe = false
     let binding: DedicatedBinding | null = null
     let playerBinding: ActorBinding | null = null
@@ -408,6 +411,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     let lastCompletePresenceAt = 0
     let rangeLatched = false
     let reacquireAfter = 0
+    let rebindAfter = 0
     let lastError = ''
     let unavailableSince = 0
     let unavailableReported = false
@@ -640,6 +644,8 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         if (liveSystem.actorSystem !== current.actorSystem) {
           binding = null
           ownsActor = false
+          ownedActorAddress = null
+          rebindAfter = 0
           resetRemoteAnimation()
           return
         }
@@ -650,6 +656,8 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       await nativeActors.deleteTestActor()
       binding = null
       ownsActor = false
+      ownedActorAddress = null
+      rebindAfter = 0
       resetRemoteAnimation()
       if (cooldown) reacquireAfter = Math.max(reacquireAfter, Date.now() + REACQUIRE_COOLDOWN_MS)
     }
@@ -657,18 +665,48 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     async function ensureActor(remote: MultiplayerPlayerState) {
       if (binding) {
         if (await bindingStillValid(runtimeBridge, binding)) return binding
-        await releaseActor()
-        return null
+        // White 2 can cull/rebuild the billboard while keeping the FieldActor alive.
+        // Stop writing through the stale BlAct/handle, but preserve ownership and
+        // animation state so we can rebind to the same actor when it becomes visible.
+        ownedActorAddress = binding.actorAddress
+        binding = null
+        rebindAfter = 0
       }
+
       if (ownsActor) {
-        await releaseActor()
-        return null
+        const actorAddress = ownedActorAddress
+        if (!actorAddress) {
+          await releaseActor()
+          return null
+        }
+        if (Date.now() < rebindAfter) return null
+
+        try {
+          const rawBinding = await resolveActorBinding(runtimeBridge, actorAddress, POKERUN_NATIVE_TEST_UID, REBIND_TIMEOUT_MS)
+          const next: DedicatedBinding = { ...rawBinding, nativeRender: await readRenderProfile(runtimeBridge, rawBinding) }
+          binding = next
+          rebindAfter = 0
+          return next
+        } catch (error) {
+          if (error instanceof White2NativeActorUnsafeStateError) throw error
+          const uid = await runtimeBridge.read16(actorAddress + ACTOR_UID)
+          if (uid === POKERUN_NATIVE_TEST_UID) {
+            rebindAfter = Date.now() + REBIND_RETRY_MS
+            return null
+          }
+          ownsActor = false
+          ownedActorAddress = null
+          rebindAfter = 0
+          resetRemoteAnimation()
+        }
       }
+
       resetRemoteAnimation()
       if (Date.now() < reacquireAfter) return null
 
       const spawned = await nativeActors.spawnTestActor()
       ownsActor = true
+      ownedActorAddress = spawned.actorAddress
       if (cancelled) {
         await releaseActor(false)
         return null
