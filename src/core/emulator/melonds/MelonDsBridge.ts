@@ -288,7 +288,7 @@ export class MelonDsBridge implements EmulatorBridge {
   }
 
   private installRuntimeCallbacks() {
-    window.WebMelon = { _internal: { events: { onEmulatorFrameUpdate: () => { this.draw(); this.notifyEmulatedFrame() }, onSaveWrite: () => this.scheduleBatterySaveExport(), onRumbleStart: () => undefined, onRumbleStop: () => undefined, onShutdown: () => { void this.pause() } } } }
+    window.WebMelon = { _internal: { events: { onEmulatorFrameUpdate: () => { this.notifyEmulatedFrame(); this.draw() }, onSaveWrite: () => this.scheduleBatterySaveExport(), onRumbleStart: () => undefined, onRumbleStop: () => undefined, onShutdown: () => { void this.pause() } } } }
   }
   private draw() {
     if (!this.module || !this.emulator || !this.topCanvas || !this.bottomCanvas) return
