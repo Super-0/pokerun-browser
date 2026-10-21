@@ -72,6 +72,16 @@ type Direction = MultiplayerPlayerState['direction']
 type MotionKind = 'walk' | 'run'
 type TurnKey = `${Direction}->${Direction}`
 
+// White 2's normal protagonist walk frames are grouped by direction in the
+// renderer atlas. Learned sequences always win; these indices are only a
+// temporary cold-start fallback until the local protagonist demonstrates them.
+const WALK_FACE_START_BY_DIRECTION: Record<Direction, number> = {
+  north: 0,
+  south: 3,
+  west: 6,
+  east: 9,
+}
+
 type ActorBinding = {
   actorAddress: number
   uid: number
@@ -187,6 +197,28 @@ function emptyKnowledge(): Record<Direction, DirectionKnowledge> {
     west: createDirectionKnowledge(),
     east: createDirectionKnowledge(),
   }
+}
+
+function bootstrapWalkSequence(knowledge: Record<Direction, DirectionKnowledge>, direction: Direction): RenderSequenceStep[] {
+  let trustedProfile = knowledge[direction].idle
+  if (!trustedProfile) {
+    for (const candidate of DIRECTIONS) {
+      const idle = knowledge[candidate].idle
+      if (idle) {
+        trustedProfile = idle
+        break
+      }
+    }
+  }
+  if (!trustedProfile) return []
+
+  const baseFaceIndex = WALK_FACE_START_BY_DIRECTION[direction]
+  const holdMs = LEARN_SAMPLE_MS * 2
+  return [baseFaceIndex, baseFaceIndex + 1, baseFaceIndex, baseFaceIndex + 2].map(faceIndex => ({
+    ...trustedProfile,
+    faceIndex,
+    holdMs,
+  }))
 }
 
 function appendStep(sequence: RenderSequenceStep[], profile: RenderProfile) {
@@ -654,9 +686,12 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
       const directionKnowledge = knowledge[remote.direction]
       const requestedMotionKind = remoteMotionKind
+      const fallbackWalkSequence = directionKnowledge.walkSequence.length
+        ? directionKnowledge.walkSequence
+        : bootstrapWalkSequence(knowledge, remote.direction)
       const sequence = requestedMotionKind === 'run'
-        ? (directionKnowledge.runSequence.length ? directionKnowledge.runSequence : directionKnowledge.walkSequence)
-        : directionKnowledge.walkSequence
+        ? (directionKnowledge.runSequence.length ? directionKnowledge.runSequence : fallbackWalkSequence)
+        : fallbackWalkSequence
 
       if (moving && sequence.length) {
         if (!remoteWasMoving || activeRemoteMotionKind !== requestedMotionKind) {
@@ -678,7 +713,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         remoteWasMoving = false
         activeRemoteMotionKind = null
       }
-      return directionKnowledge.idle ?? (requestedMotionKind === 'run' ? directionKnowledge.walkSequence[0] ?? null : null)
+      return directionKnowledge.idle ?? fallbackWalkSequence[0] ?? null
     }
 
     function applyRemoteFrame(current: DedicatedBinding, remote: MultiplayerPlayerState, world: MultiplayerWorldPosition, profile: RenderProfile | null) {
@@ -760,7 +795,9 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
           await releaseActor()
           return null
         }
-        await applyRemoteFrame(next, remote, world, null)
+        const initialProfile = remoteProfile(Date.now(), remote)
+        latestRemoteProfile = initialProfile
+        await applyRemoteFrame(next, remote, world, initialProfile)
         renderedWorld = { ...world }
         binding = next
         return next
