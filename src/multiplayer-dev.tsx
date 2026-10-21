@@ -19,6 +19,7 @@ const DEV_SAVE_KEYS = {
   1: 'pokerun-multiplayer-dev-save-player-1-v1',
   2: 'pokerun-multiplayer-dev-save-player-2-v1',
 } as const
+const AUTO_RETRY_MS = 1000
 
 function goToMainApp() {
   window.location.href = '/'
@@ -54,34 +55,59 @@ function profileCard(profile: MultiplayerSaveProfile) {
 /**
  * Dev-only UI driver. Production multiplayer code stays untouched: this component
  * drives the existing White 2 picker/lobby controls exactly like a person would.
+ * Every asynchronous phase is verified from the next rendered UI state and retried
+ * after a bounded delay instead of assuming one synthetic click succeeded.
  */
 function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
+  const [autoStatus, setAutoStatus] = useState('BOOTING')
+
   useEffect(() => {
     document.title = `PokéRun Multiplayer Dev • Player ${player}`
     let cancelled = false
-    let pendingJoinCode = ''
     let activeRoomCode = ''
-    let createRequested = false
-    let saveRequested = false
+    let lastCreateAt = 0
+    let lastJoinAt = 0
+    let lastSaveAt = 0
+    let lastReadyAt = 0
+    let lastStartAt = 0
+    let lastStatus = ''
+
+    function status(next: string) {
+      if (next === lastStatus) return
+      lastStatus = next
+      setAutoStatus(next)
+    }
+
+    function retryReady(button: HTMLButtonElement) {
+      const now = Date.now()
+      if (button.disabled || now - lastReadyAt < AUTO_RETRY_MS) return
+      lastReadyAt = now
+      button.click()
+    }
 
     function tick() {
       if (cancelled) return
 
+      if (document.querySelector('.active-run')) {
+        status('GAME RUNNING')
+        return
+      }
+
+      const now = Date.now()
       const sharedRoomCode = localStorage.getItem(DEV_ROOM_KEY)?.trim().toUpperCase() ?? ''
       const roomCodeElement = document.querySelector<HTMLElement>('.lobby-room-code strong')
       const visibleRoomCode = roomCodeElement?.textContent?.trim().toUpperCase() ?? ''
 
       if (visibleRoomCode) {
         activeRoomCode = visibleRoomCode
-        pendingJoinCode = ''
-        createRequested = false
 
         if (player === 1) {
           if (sharedRoomCode !== visibleRoomCode) localStorage.setItem(DEV_ROOM_KEY, visibleRoomCode)
         } else if (sharedRoomCode && sharedRoomCode !== visibleRoomCode) {
+          status('ROOM CHANGED • REJOINING')
           buttonByText('LEAVE ROOM')?.click()
           activeRoomCode = ''
-          saveRequested = false
+          lastSaveAt = 0
           return
         }
 
@@ -90,78 +116,112 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
         const localRomReady = localCard?.textContent?.includes('ROM VERIFIED') ?? false
 
         if (!localRomReady) {
-          if (!saveRequested) {
-            const profile = savedProfileForPlayer(player)
-            const card = profile ? profileCard(profile) : null
-            const continueButton = card
-              ? [...card.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim().toUpperCase() === 'CONTINUE')
-              : null
-            if (continueButton && !continueButton.disabled) {
-              saveRequested = true
-              continueButton.click()
-            }
+          const profile = savedProfileForPlayer(player)
+          if (!profile) {
+            status(`WAITING FOR PLAYER ${player} SAVE`)
+            return
+          }
+
+          const card = profileCard(profile)
+          const continueButton = card
+            ? [...card.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim().toUpperCase() === 'CONTINUE')
+            : null
+
+          if (!continueButton) {
+            status(`WAITING FOR SAVE ${String(profile.slotNumber).padStart(3, '0')} UI`)
+            return
+          }
+
+          status(`RESTORING SAVE ${String(profile.slotNumber).padStart(3, '0')}`)
+          if (!continueButton.disabled && now - lastSaveAt >= AUTO_RETRY_MS) {
+            lastSaveAt = now
+            continueButton.click()
           }
           return
         }
 
-        saveRequested = true
-
         const ready = buttonByText('READY')
-        if (ready && !ready.disabled) {
-          ready.click()
+        if (ready) {
+          status('READYING')
+          retryReady(ready)
           return
         }
 
         if (player === 1) {
           const start = buttonByText('START GAME')
-          if (start && !start.disabled) start.click()
+          if (start) {
+            if (start.disabled) {
+              status('WAITING FOR PLAYER 2 READY')
+            } else {
+              status('STARTING GAME')
+              if (now - lastStartAt >= AUTO_RETRY_MS) {
+                lastStartAt = now
+                start.click()
+              }
+            }
+            return
+          }
         }
+
+        status(player === 1 ? 'WAITING FOR START CONTROL' : 'READY • WAITING FOR HOST')
         return
       }
 
       if (player === 2 && activeRoomCode && sharedRoomCode && activeRoomCode !== sharedRoomCode) {
         const leave = buttonByText('LEAVE SESSION', 'LEAVE ROOM')
         if (leave) {
+          status('ROOM CHANGED • LEAVING OLD SESSION')
           leave.click()
           activeRoomCode = ''
-          pendingJoinCode = ''
-          saveRequested = false
+          lastJoinAt = 0
+          lastSaveAt = 0
           return
         }
       }
 
       const gameTile = document.querySelector<HTMLButtonElement>('.game-tile')
       if (gameTile) {
-        createRequested = false
+        status('SELECTING WHITE 2')
         gameTile.click()
         return
       }
 
       if (player === 1) {
         const create = buttonByText('CREATE ROOM')
-        if (create && !createRequested) {
-          createRequested = true
-          create.click()
+        if (create) {
+          status('CREATING ROOM')
+          if (!create.disabled && now - lastCreateAt >= AUTO_RETRY_MS) {
+            lastCreateAt = now
+            create.click()
+          }
+        } else {
+          status('WAITING FOR CREATE ROOM UI')
         }
         return
       }
 
-      if (!sharedRoomCode) return
-      const input = document.querySelector<HTMLInputElement>('input[aria-label="Room code"]')
-      if (!input) return
+      if (!sharedRoomCode) {
+        status('WAITING FOR HOST ROOM CODE')
+        return
+      }
 
-      if (input.value !== sharedRoomCode) setControlledInput(input, sharedRoomCode)
-      if (pendingJoinCode === sharedRoomCode) return
-      pendingJoinCode = sharedRoomCode
+      const input = document.querySelector<HTMLInputElement>('input[aria-label="Room code"]')
+      if (!input) {
+        status('WAITING FOR JOIN ROOM UI')
+        return
+      }
+
+      if (input.value.trim().toUpperCase() !== sharedRoomCode) setControlledInput(input, sharedRoomCode)
+      status(`JOINING ${sharedRoomCode}`)
+      if (now - lastJoinAt < AUTO_RETRY_MS) return
+      lastJoinAt = now
 
       window.setTimeout(() => {
         if (cancelled) return
         const currentInput = document.querySelector<HTMLInputElement>('input[aria-label="Room code"]')
-        if (!currentInput || currentInput.value.trim().toUpperCase() !== sharedRoomCode) {
-          pendingJoinCode = ''
-          return
-        }
-        buttonByText('JOIN')?.click()
+        if (!currentInput || currentInput.value.trim().toUpperCase() !== sharedRoomCode) return
+        const join = buttonByText('JOIN')
+        if (join && !join.disabled) join.click()
       }, 80)
     }
 
@@ -174,6 +234,17 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
   }, [player])
 
   return <>
+    <div style={{
+      position: 'fixed',
+      left: 12,
+      bottom: 12,
+      zIndex: 10000,
+      padding: '8px 10px',
+      background: 'rgba(244, 249, 252, 0.97)',
+      border: '2px solid #35546b',
+      fontSize: 11,
+      color: '#243f54',
+    }}><b>AUTO P{player}</b> • {autoStatus}</div>
     <MultiplayerMovementTracePanel player={player}/>
     <MultiplayerScreen onHome={goToMainApp} onMyRuns={goToMainApp} onSettings={goToMainApp} />
   </>
