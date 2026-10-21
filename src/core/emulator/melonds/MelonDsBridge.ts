@@ -39,6 +39,7 @@ export class MelonDsBridge implements EmulatorBridge {
   private bottomCanvas: HTMLCanvasElement | null = null
   private frame: number | null = null
   private lastFrameAt = 0
+  private frameAccumulator = 0
   private running = false
   private speedMultiplier: DsSpeedMultiplier = 1
   private readonly frameStats: MelonDsFrameStats = { frames: 0, hiddenFrames: 0, visibleFrames: 0, processMs: 0, hiddenProcessMs: 0, visibleProcessMs: 0, batches: 0, batchMs: 0, rafCallbacks: 0 }
@@ -117,7 +118,16 @@ export class MelonDsBridge implements EmulatorBridge {
     this.emulator.initialize(true)
     this.status = 'running'; this.running = true; this.scheduleFrame()
   }
-  async pause() { if (this.status === 'running') { this.running = false; if (this.frame) cancelAnimationFrame(this.frame); this.frame = null; this.status = 'paused' } }
+  async pause() {
+    if (this.status === 'running') {
+      this.running = false
+      if (this.frame) cancelAnimationFrame(this.frame)
+      this.frame = null
+      this.lastFrameAt = 0
+      this.frameAccumulator = 0
+      this.status = 'paused'
+    }
+  }
   async resume() { if (this.status === 'paused') { this.running = true; this.status = 'running'; this.scheduleFrame() } }
   async reset() { if (!this.emulator) return; await this.pause(); this.emulator.initialize(true); await this.resume() }
 
@@ -214,13 +224,26 @@ export class MelonDsBridge implements EmulatorBridge {
       if (!this.running || !this.emulator) return
       this.frameStats.rafCallbacks += 1
       const frameInterval = 1000 / 60
-      const elapsed = now - this.lastFrameAt
-      // Keep the ideal frame clock across rAF jitter and displays above 60 Hz.
-      // Drop stale time after a slow batch or background-tab pause instead of
-      // trying to catch up with extra emulator frames in one callback.
-      if (elapsed >= frameInterval - 1) {
+
+      if (this.lastFrameAt === 0) {
+        this.lastFrameAt = now
+        this.frameAccumulator = frameInterval
+      } else {
+        const elapsed = Math.max(0, now - this.lastFrameAt)
+        this.lastFrameAt = now
+
+        // Preserve fractional rAF timing without allowing a large catch-up backlog.
+        this.frameAccumulator = Math.min(
+          this.frameAccumulator + elapsed,
+          frameInterval * 2,
+        )
+      }
+
+      if (this.frameAccumulator >= frameInterval) {
+        // Run at most one emulator batch per browser callback.
+        this.frameAccumulator %= frameInterval
+
         const batchStart = performance.now()
-        this.lastFrameAt = elapsed > frameInterval * 2 ? now : this.lastFrameAt + frameInterval
         this.emulator.setInput(this.inputMask)
         for (let index = 0; index < this.speedMultiplier; index += 1) {
           const hidden = index < this.speedMultiplier - 1
