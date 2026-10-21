@@ -26,7 +26,8 @@ export class MelonDsBridge implements EmulatorBridge {
   private topCanvas: HTMLCanvasElement | null = null
   private bottomCanvas: HTMLCanvasElement | null = null
   private frame: number | null = null
-  private readonly acceleratedFrameTimers = new Set<number>()
+  private acceleratedPumpTimer: number | null = null
+  private acceleratedFramesPending = 0
   private lastFrameAt = 0
   private running = false
   private speedMultiplier: DsSpeedMultiplier = 1
@@ -211,30 +212,38 @@ export class MelonDsBridge implements EmulatorBridge {
   private assertEmulator() { if (!this.emulator || this.status === 'idle' || this.status === 'stopped') throw new Error('melonDS is not running.'); return this.emulator }
   private assertAddress(address: number) { if (!Number.isInteger(address) || address < 0 || address > 0xffffffff) throw new Error('Invalid ARM9 bus address.'); return address >>> 0 }
   private clearAcceleratedFrames() {
-    for (const timer of this.acceleratedFrameTimers) window.clearTimeout(timer)
-    this.acceleratedFrameTimers.clear()
+    if (this.acceleratedPumpTimer !== null) window.clearTimeout(this.acceleratedPumpTimer)
+    this.acceleratedPumpTimer = null
+    this.acceleratedFramesPending = 0
   }
-  private scheduleAcceleratedFrames(multiplier: DsSpeedMultiplier) {
-    if (!this.emulator || multiplier === 1) return
-    const displayFrameMs = 1000 / 60
-    for (let index = 1; index < multiplier; index += 1) {
-      const timer = window.setTimeout(() => {
-        this.acceleratedFrameTimers.delete(timer)
-        if (!this.running || !this.emulator || this.speedMultiplier !== multiplier) return
-        this.emulator.setInput(this.inputMask)
-        this.emulator.processFrame(false)
-      }, displayFrameMs * index / multiplier)
-      this.acceleratedFrameTimers.add(timer)
-    }
+  private queueAcceleratedFrames(count: number) {
+    if (!this.emulator || this.speedMultiplier === 1 || count <= 0) return
+    const maxPending = this.speedMultiplier - 1
+    this.acceleratedFramesPending = Math.min(maxPending, this.acceleratedFramesPending + count)
+    this.scheduleAcceleratedPump()
+  }
+  private scheduleAcceleratedPump() {
+    if (this.acceleratedPumpTimer !== null || this.acceleratedFramesPending <= 0) return
+    this.acceleratedPumpTimer = window.setTimeout(() => {
+      this.acceleratedPumpTimer = null
+      if (!this.running || !this.emulator || this.speedMultiplier === 1) {
+        this.acceleratedFramesPending = 0
+        return
+      }
+      if (this.acceleratedFramesPending <= 0) return
+      this.acceleratedFramesPending -= 1
+      this.emulator.setInput(this.inputMask)
+      this.emulator.processFrame(false)
+      if (this.acceleratedFramesPending > 0) this.scheduleAcceleratedPump()
+    }, 0)
   }
   private scheduleFrame() {
     this.frame = requestAnimationFrame(now => {
       if (!this.running || !this.emulator) return
       if (now - this.lastFrameAt >= 1000 / 60) {
         this.lastFrameAt = now
-        this.clearAcceleratedFrames()
         const multiplier = this.speedMultiplier
-        if (multiplier > 1) this.scheduleAcceleratedFrames(multiplier)
+        if (multiplier > 1) this.queueAcceleratedFrames(multiplier - 1)
         this.emulator.setInput(this.inputMask)
         this.emulator.processFrame(false)
         if (multiplier > 1 && this.acceleratedDrawPending) {
