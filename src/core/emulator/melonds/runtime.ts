@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v4'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v5'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B34
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B35
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
 type WasmEmulator = {
@@ -14,7 +14,7 @@ type WasmEmulator = {
   setSavePath(path: string): void
   loadRom(cart: WasmCart, reset: boolean): boolean
   initialize(direct: boolean): void
-  processFrame(ghost: boolean): void
+  processFrame(hidden: boolean): void
   setInput(mask: number): void
   touchScreen(x: number, y: number): void
   releaseScreen(): void
