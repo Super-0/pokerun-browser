@@ -9,6 +9,7 @@ type TraceApi = {
   isActive(): boolean
   record(stage: string, data: TraceData): void
   subscribe(listener: (snapshot: { active: boolean }) => void): () => void
+  mark(note?: string): void
 }
 type RendererWindow = Window & { __POKERUN_RENDERER_TABLE_TRACE_INSTALLED__?: boolean }
 type WatchState = {
@@ -375,6 +376,12 @@ export function installRendererTableTraceDiagnostics() {
     const result = originalAttachScreens.call(this, top, bottom)
     registerBridge(this)
     return result
+  }
+
+  const originalMark = trace.mark.bind(trace)
+  trace.mark = (note = 'VISUAL MARK') => {
+    originalMark(note)
+    for (const [bridge, state] of bridges) void snapshotRendererTable(bridge, state, `marker:${note}`)
   }
 
   trace.subscribe(snapshot => {
