@@ -255,6 +255,10 @@ function saveCachedKnowledge(key: string, knowledge: Record<Direction, Direction
 }
 
 async function getNativeBlActIndex(bridge: MelonDsBridge, actorAddress: number) {
+  // IRDO's FldAct_GetBlActIdx dereferences actor->sceneNodeVTable (+0x90),
+  // then its +0x14 method entry. A loading actor can have a valid UID and
+  // actor-system backpointer before that table is ready; calling the game
+  // routine then raises an ARM9 data abort at 0x02167248.
   const sceneNodeVTable = await bridge.read32(actorAddress + ACTOR_SCENE_NODE_VTABLE)
   if (!isMainRamPointer(sceneNodeVTable)) {
     throw new White2ActorSystemUnavailableError(`White 2 actor ${hex(actorAddress)} scene-node method table is not ready (${hex(sceneNodeVTable)}).`)
@@ -274,6 +278,7 @@ async function resolveActorBinding(bridge: MelonDsBridge, actorAddress: number, 
     if (await bridge.read16(actorAddress + ACTOR_UID) !== expectedUid) {
       throw new Error(`White 2 actor UID 0x${expectedUid.toString(16).toUpperCase()} disappeared before its billboard binding was ready.`)
     }
+
     const actorSystem = await bridge.read32(actorAddress + ACTOR_SYSTEM_BACKPTR)
     assertMainRamPointer(actorSystem, 'Actor system')
     const blActIndex = await getNativeBlActIndex(bridge, actorAddress)
@@ -294,6 +299,7 @@ async function resolveActorBinding(bridge: MelonDsBridge, actorAddress: number, 
         bridge.read16(scene + BLACT_SCENE_CONFIG_ACTOR_COUNT),
       ])
       assertMainRamPointer(sceneActors, 'BlAct actor array')
+
       if (blActIndex < sceneActorCount) {
         const matches: number[] = []
         for (let index = 0; index < handleCount; index += 1) {
@@ -301,7 +307,14 @@ async function resolveActorBinding(bridge: MelonDsBridge, actorAddress: number, 
           if ((await bridge.read32(handleAddress + HANDLE_BLACT_INDEX)) === blActIndex) matches.push(handleAddress)
         }
         if (matches.length === 1) {
-          return { actorAddress, uid: expectedUid, actorSystem, blActIndex, blActAddress: sceneActors + blActIndex * BLACT_SIZE, handleAddress: matches[0] }
+          return {
+            actorAddress,
+            uid: expectedUid,
+            actorSystem,
+            blActIndex,
+            blActAddress: sceneActors + blActIndex * BLACT_SIZE,
+            handleAddress: matches[0],
+          }
         }
       }
     }
@@ -331,6 +344,8 @@ async function readRenderProfile(bridge: MelonDsBridge, binding: ActorBinding): 
 
 async function writeRenderProfile(bridge: MelonDsBridge, binding: ActorBinding, profile: RenderProfile) {
   await Promise.all([
+    // Material and face index are an atomic pair. Never replay a frame against a
+    // different texture atlas; doing so previously corrupted the DS renderer.
     bridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, profile.matEntry),
     bridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, profile.geomFlags),
     bridge.write16(binding.blActAddress + BLACT_FACE_INDEX, profile.faceIndex),
@@ -338,13 +353,27 @@ async function writeRenderProfile(bridge: MelonDsBridge, binding: ActorBinding, 
   ])
 }
 
+/**
+ * Production White 2 multiplayer avatar bridge.
+ *
+ * A real game-created FieldActor owns the remote player lifecycle. PokéRun drives
+ * its logical/continuous position and replays render states learned from the local
+ * protagonist onto that dedicated actor. No map NPC is borrowed. The remote
+ * billboard mirrors the local protagonist's native BlAct-Y minus WPos-Y offset
+ * instead of assuming those Y coordinates are identical.
+ */
 export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
-  useEffect(() => multiplayerPresence.subscribe(snapshot => { presenceRef.current = snapshot }), [])
+
+  useEffect(() => multiplayerPresence.subscribe(snapshot => {
+    presenceRef.current = snapshot
+  }), [])
+
   useEffect(() => {
     if (!bridge || !White2ActorSystemProbe.supportsRom(rom)) return
     const runtimeBridge = bridge
     const nativeActors = new White2NativeActorBridge(runtimeBridge, rom)
+
     let cancelled = false
     let ownsActor = false
     let nativeStateUnsafe = false
@@ -354,6 +383,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     let cacheStorageKey: string | null = null
     let lastCacheSave = 0
     let lastLearnAt = 0
+
     let lastPlayerX: number | null = null
     let lastPlayerZ: number | null = null
     let playerBillboardYOffset = 0
@@ -362,6 +392,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     let lastPlayerDirection: Direction | null = null
     let lastPlayerMoving = false
     let activeTurnCapture: TurnCapture | null = null
+
     let lastRemoteWorld: MultiplayerWorldPosition | null = null
     let renderedWorld: MultiplayerWorldPosition | null = null
     let remoteMovingUntil = 0
@@ -371,6 +402,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     let remoteWasMoving = false
     let remoteTurn: RemoteTurnPlayback | null = null
     let latestRemoteProfile: RenderProfile | null = null
+
     let stableMapId: MultiplayerPlayerState['location']['mapId'] | null = null
     let stableMapSince = 0
     let lastCompletePresenceAt = 0
@@ -379,8 +411,10 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     let lastError = ''
     let unavailableSince = 0
     let unavailableReported = false
+
     let knowledge = emptyKnowledge()
     let turns = new Map<TurnKey, RenderSequenceStep[]>()
+
     function finishTurnCapture() {
       const capture = activeTurnCapture
       activeTurnCapture = null
@@ -388,13 +422,17 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       const distinctProfiles = new Set(capture.sequence.map(profileKey)).size
       if (distinctProfiles < 2) return
       const existing = turns.get(capture.key)
-      if (!existing || sequenceDuration(capture.sequence) > sequenceDuration(existing)) turns.set(capture.key, capture.sequence.map(step => ({ ...step })))
+      if (!existing || sequenceDuration(capture.sequence) > sequenceDuration(existing)) {
+        turns.set(capture.key, capture.sequence.map(step => ({ ...step })))
+      }
     }
+
     function finalizeActivePlayerRun() {
       if (!activePlayerRunDirection) return
       finalizeRun(knowledge[activePlayerRunDirection])
       activePlayerRunDirection = null
     }
+
     function resetPlayerBinding() {
       playerBinding = null
       lastPlayerX = null
@@ -406,6 +444,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       lastPlayerDirection = null
       lastPlayerMoving = false
     }
+
     function resetRemoteAnimation() {
       lastRemoteWorld = null
       renderedWorld = null
@@ -417,6 +456,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       remoteTurn = null
       latestRemoteProfile = null
     }
+
     async function ensurePlayerBinding() {
       if (playerBinding && await bindingStillValid(runtimeBridge, playerBinding)) return playerBinding
       resetPlayerBinding()
@@ -424,6 +464,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       const player = scan.entries.find(entry => entry.state === 'player')
       if (!player || player.uid !== PLAYER_UID) throw new White2ActorSystemUnavailableError('Live White 2 player actor was not found for render learning.')
       playerBinding = await resolveActorBinding(runtimeBridge, player.address, PLAYER_UID)
+
       if (playerModelId !== player.modelId) {
         if (cacheStorageKey) saveCachedKnowledge(cacheStorageKey, knowledge, turns)
         playerModelId = player.modelId
@@ -434,6 +475,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       }
       return playerBinding
     }
+
     async function learnLocalRender(now: number) {
       const current = await ensurePlayerBinding()
       const [faceDir, x, worldY, billboardY, z, profile] = await Promise.all([
@@ -444,22 +486,27 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         runtimeBridge.read32(current.actorAddress + ACTOR_WPOS + 0x08),
         readRenderProfile(runtimeBridge, current),
       ])
+
       playerBillboardYOffset = signed32(billboardY) - signed32(worldY)
       if (lastPlayerX !== null && (x !== lastPlayerX || z !== lastPlayerZ)) playerMovingUntil = now + MOVING_HOLD_MS
       lastPlayerX = x
       lastPlayerZ = z
+
       const direction = DIRECTION_BY_FIELD_FACE[faceDir]
       if (!direction) return
       const moving = now < playerMovingUntil
+
       if (activeTurnCapture) {
-        if (moving || now - activeTurnCapture.startedAt >= TURN_CAPTURE_MS) finishTurnCapture()
-        else {
+        if (moving || now - activeTurnCapture.startedAt >= TURN_CAPTURE_MS) {
+          finishTurnCapture()
+        } else {
           if (hasStableGeometry(knowledge[direction], profile)) appendStep(activeTurnCapture.sequence, profile)
           lastPlayerDirection = direction
           lastPlayerMoving = moving
           return
         }
       }
+
       if (lastPlayerDirection && direction !== lastPlayerDirection && !moving && !lastPlayerMoving) {
         finalizeActivePlayerRun()
         activeTurnCapture = { key: turnKey(lastPlayerDirection, direction), startedAt: now, sequence: [] }
@@ -468,25 +515,47 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         lastPlayerMoving = moving
         return
       }
+
       const directionKnowledge = knowledge[direction]
       if (moving) {
-        if (activePlayerRunDirection !== direction) { finalizeActivePlayerRun(); activePlayerRunDirection = direction }
+        if (activePlayerRunDirection !== direction) {
+          finalizeActivePlayerRun()
+          activePlayerRunDirection = direction
+        }
         if (hasStableGeometry(directionKnowledge, profile)) appendStep(directionKnowledge.currentRun, profile)
       } else {
         finalizeActivePlayerRun()
         observeIdle(directionKnowledge, profile)
       }
+
       lastPlayerDirection = direction
       lastPlayerMoving = moving
-      if (cacheStorageKey && now - lastCacheSave >= 2000) { lastCacheSave = now; saveCachedKnowledge(cacheStorageKey, knowledge, turns) }
+
+      if (cacheStorageKey && now - lastCacheSave >= 2000) {
+        lastCacheSave = now
+        saveCachedKnowledge(cacheStorageKey, knowledge, turns)
+      }
     }
+
     function remoteProfile(now: number, remote: MultiplayerPlayerState) {
       const remoteWorld = remote.worldPosition
       if (!remoteWorld) return null
-      if (worldChanged(lastRemoteWorld, remoteWorld)) { lastRemoteWorld = { ...remoteWorld }; remoteMovingUntil = now + MOVING_HOLD_MS }
-      const moving = remote.movementState === 'moving' ? true : remote.movementState === 'idle' ? false : now < remoteMovingUntil
-      if (activeRemoteDirection === null) { activeRemoteDirection = remote.direction; remoteSequenceIndex = 0; remoteStepStartedAt = now }
-      else if (activeRemoteDirection !== remote.direction) {
+
+      if (worldChanged(lastRemoteWorld, remoteWorld)) {
+        lastRemoteWorld = { ...remoteWorld }
+        remoteMovingUntil = now + MOVING_HOLD_MS
+      }
+      const moving = remote.movementState === 'moving'
+        ? true
+        : remote.movementState === 'idle'
+          ? false
+          : now < remoteMovingUntil
+
+      if (activeRemoteDirection === null) {
+        activeRemoteDirection = remote.direction
+        remoteSequenceIndex = 0
+        remoteStepStartedAt = now
+      } else if (activeRemoteDirection !== remote.direction) {
         const previousDirection = activeRemoteDirection
         activeRemoteDirection = remote.direction
         remoteSequenceIndex = 0
@@ -495,20 +564,29 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         const sequence = !moving ? turns.get(turnKey(previousDirection, remote.direction)) : null
         remoteTurn = sequence?.length ? { sequence, index: 0, stepStartedAt: now } : null
       }
+
       if (moving) remoteTurn = null
+
       if (remoteTurn) {
         let safety = remoteTurn.sequence.length + 1
         while (safety > 0 && now - remoteTurn.stepStartedAt >= remoteTurn.sequence[remoteTurn.index].holdMs) {
           remoteTurn.stepStartedAt += remoteTurn.sequence[remoteTurn.index].holdMs
-          if (remoteTurn.index >= remoteTurn.sequence.length - 1) { remoteTurn = null; break }
+          if (remoteTurn.index >= remoteTurn.sequence.length - 1) {
+            remoteTurn = null
+            break
+          }
           remoteTurn.index += 1
           safety -= 1
         }
         if (remoteTurn) return remoteTurn.sequence[remoteTurn.index]
       }
+
       const directionKnowledge = knowledge[remote.direction]
       if (moving && directionKnowledge.movingSequence.length) {
-        if (!remoteWasMoving) { remoteSequenceIndex = 0; remoteStepStartedAt = now }
+        if (!remoteWasMoving) {
+          remoteSequenceIndex = 0
+          remoteStepStartedAt = now
+        }
         const sequence = directionKnowledge.movingSequence
         let safety = sequence.length + 1
         while (safety > 0 && now - remoteStepStartedAt >= sequence[remoteSequenceIndex].holdMs) {
@@ -519,9 +597,11 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         remoteWasMoving = true
         return sequence[remoteSequenceIndex]
       }
+
       if (!moving) remoteWasMoving = false
       return directionKnowledge.idle ?? directionKnowledge.movingSequence[0] ?? null
     }
+
     function applyRemoteFrame(current: DedicatedBinding, remote: MultiplayerPlayerState, world: MultiplayerWorldPosition, profile: RenderProfile | null) {
       const billboardY = (signed32(world.y) + playerBillboardYOffset) >>> 0
       const writes: Promise<void>[] = [
@@ -538,6 +618,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       if (profile) writes.push(writeRenderProfile(runtimeBridge, current, profile))
       return Promise.all(writes).then(() => undefined)
     }
+
     const unsubscribeEmulatedFrame = runtimeBridge.subscribeEmulatedFrame(() => {
       if (cancelled || nativeStateUnsafe || runtimeBridge.status !== 'running') return
       const current = binding
@@ -547,34 +628,59 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       if (!current || !local || !remote || !world || local.location.mapId !== remote.location.mapId) return
       void applyRemoteFrame(current, remote, world, latestRemoteProfile)
     })
+
     async function releaseActor(cooldown = true) {
       const current = binding
       const hadActor = ownsActor || current !== null
       if (!hadActor) return
+      // Keep ownership until deletion succeeds. A zero GameData pointer during
+      // a transition means cleanup cannot run yet, not that our actor vanished.
       if (current) {
         const liveSystem = await new White2ActorSystemProbe(runtimeBridge).inspect()
-        if (liveSystem.actorSystem !== current.actorSystem) { binding = null; ownsActor = false; resetRemoteAnimation(); return }
+        if (liveSystem.actorSystem !== current.actorSystem) {
+          binding = null
+          ownsActor = false
+          resetRemoteAnimation()
+          return
+        }
       }
-      if (current && await bindingStillValid(runtimeBridge, current)) await writeRenderProfile(runtimeBridge, current, current.nativeRender)
+      if (current && await bindingStillValid(runtimeBridge, current)) {
+        await writeRenderProfile(runtimeBridge, current, current.nativeRender)
+      }
       await nativeActors.deleteTestActor()
       binding = null
       ownsActor = false
       resetRemoteAnimation()
       if (cooldown) reacquireAfter = Math.max(reacquireAfter, Date.now() + REACQUIRE_COOLDOWN_MS)
     }
+
     async function ensureActor(remote: MultiplayerPlayerState) {
-      if (binding) { if (await bindingStillValid(runtimeBridge, binding)) return binding; await releaseActor(); return null }
-      if (ownsActor) { await releaseActor(); return null }
+      if (binding) {
+        if (await bindingStillValid(runtimeBridge, binding)) return binding
+        await releaseActor()
+        return null
+      }
+      if (ownsActor) {
+        await releaseActor()
+        return null
+      }
       resetRemoteAnimation()
       if (Date.now() < reacquireAfter) return null
+
       const spawned = await nativeActors.spawnTestActor()
       ownsActor = true
-      if (cancelled) { await releaseActor(false); return null }
+      if (cancelled) {
+        await releaseActor(false)
+        return null
+      }
       try {
         const rawBinding = await resolveActorBinding(runtimeBridge, spawned.actorAddress, POKERUN_NATIVE_TEST_UID)
         const next: DedicatedBinding = { ...rawBinding, nativeRender: await readRenderProfile(runtimeBridge, rawBinding) }
         const world = remote.worldPosition
-        if (!world) { await releaseActor(); return null }
+        if (!world) {
+          await releaseActor()
+          return null
+        }
         await applyRemoteFrame(next, remote, world, null)
         renderedWorld = { ...world }
         binding = next
@@ -585,26 +691,65 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         throw error
       }
     }
+
     async function tick() {
       const now = Date.now()
-      if (now - lastLearnAt >= LEARN_SAMPLE_MS) { lastLearnAt = now; await learnLocalRender(now) }
+      if (now - lastLearnAt >= LEARN_SAMPLE_MS) {
+        lastLearnAt = now
+        await learnLocalRender(now)
+      }
+
       const presence = presenceRef.current
       const local = presence.local
       const remote = presence.remote
+
       if (!local?.worldPosition || !remote?.worldPosition) {
-        if (ownsActor && now - lastCompletePresenceAt > MISSING_STATE_GRACE_MS) { rangeLatched = false; stableMapId = null; stableMapSince = 0; await releaseActor() }
+        if (ownsActor && now - lastCompletePresenceAt > MISSING_STATE_GRACE_MS) {
+          rangeLatched = false
+          stableMapId = null
+          stableMapSince = 0
+          await releaseActor()
+        }
         return
       }
       lastCompletePresenceAt = now
-      if (local.location.mapId !== remote.location.mapId) { rangeLatched = false; stableMapId = null; stableMapSince = 0; await releaseActor(); return }
+
+      if (local.location.mapId !== remote.location.mapId) {
+        rangeLatched = false
+        stableMapId = null
+        stableMapSince = 0
+        await releaseActor()
+        return
+      }
+
       const currentMapId = local.location.mapId
-      if (stableMapId !== currentMapId) { stableMapId = currentMapId; stableMapSince = now; rangeLatched = false; resetPlayerBinding(); await releaseActor(); return }
-      if (now - stableMapSince < MAP_STABLE_MS) { await releaseActor(false); return }
+      if (stableMapId !== currentMapId) {
+        stableMapId = currentMapId
+        stableMapSince = now
+        rangeLatched = false
+        resetPlayerBinding()
+        await releaseActor()
+        return
+      }
+
+      if (now - stableMapSince < MAP_STABLE_MS) {
+        await releaseActor(false)
+        return
+      }
+
       const dx = Math.abs(remote.x - local.x)
       const dy = Math.abs(remote.y - local.y)
-      if (rangeLatched) { if (dx > EXIT_REMOTE_DX || dy > EXIT_REMOTE_DY) rangeLatched = false }
-      else if (dx <= ENTER_REMOTE_DX && dy <= ENTER_REMOTE_DY) rangeLatched = true
-      if (!rangeLatched) { await releaseActor(); return }
+      if (rangeLatched) {
+        if (dx > EXIT_REMOTE_DX || dy > EXIT_REMOTE_DY) rangeLatched = false
+      } else if (dx <= ENTER_REMOTE_DX && dy <= ENTER_REMOTE_DY) {
+        rangeLatched = true
+      }
+
+      if (!rangeLatched) {
+        await releaseActor()
+        return
+      }
+
       const current = await ensureActor(remote)
       if (!current) return
       const profile = remoteProfile(now, remote)
@@ -618,35 +763,57 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       latestRemoteProfile = profile
       await applyRemoteFrame(current, remote, world, profile)
     }
+
     async function run() {
       while (!cancelled) {
         try {
-          if (runtimeBridge.status === 'running') { await tick(); lastError = ''; unavailableSince = 0; unavailableReported = false }
+          if (runtimeBridge.status === 'running') {
+            await tick()
+            lastError = ''
+            unavailableSince = 0
+            unavailableReported = false
+          }
         } catch (reason) {
           if (reason instanceof White2ActorSystemUnavailableError) {
             unavailableSince ||= Date.now()
-            if (!unavailableReported && Date.now() - unavailableSince >= 3000) { unavailableReported = true; console.warn('White 2 dedicated trainer runtime is waiting for field actor initialization:', reason) }
+            if (!unavailableReported && Date.now() - unavailableSince >= 3000) {
+              unavailableReported = true
+              console.warn('White 2 dedicated trainer runtime is waiting for field actor initialization:', reason)
+            }
             await delay(200)
             continue
           }
-          if (reason instanceof White2NativeActorUnsafeStateError) { nativeStateUnsafe = true; console.warn('White 2 dedicated trainer runtime stopped native calls:', reason); break }
+          if (reason instanceof White2NativeActorUnsafeStateError) {
+            nativeStateUnsafe = true
+            console.warn('White 2 dedicated trainer runtime stopped native calls:', reason)
+            break
+          }
           rangeLatched = false
           stableMapId = null
           stableMapSince = 0
           resetPlayerBinding()
-          try { await releaseActor() } catch (cleanupError) {
-            if (cleanupError instanceof White2ActorSystemUnavailableError) { await delay(200); continue }
+          try {
+            await releaseActor()
+          } catch (cleanupError) {
+            if (cleanupError instanceof White2ActorSystemUnavailableError) {
+              await delay(200)
+              continue
+            }
             nativeStateUnsafe = true
             console.warn('White 2 dedicated trainer runtime stopped after actor cleanup failed:', cleanupError)
             break
           }
           const message = reason instanceof Error ? reason.message : String(reason)
-          if (message !== lastError) { lastError = message; console.warn('White 2 dedicated trainer runtime paused:', reason) }
+          if (message !== lastError) {
+            lastError = message
+            console.warn('White 2 dedicated trainer runtime paused:', reason)
+          }
           await delay(200)
         }
         await delay(UPDATE_MS)
       }
     }
+
     void run()
     return () => {
       cancelled = true
@@ -657,5 +824,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       if (!nativeStateUnsafe && runtimeBridge.status === 'running') void releaseActor(false).catch(() => undefined)
     }
   }, [bridge, rom.gameId, rom.sha256])
+
   return null
 }
