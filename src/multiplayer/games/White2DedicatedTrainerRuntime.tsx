@@ -563,6 +563,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
     let stableMapId: MultiplayerPlayerState['location']['mapId'] | null = null
     let stableMapSince = 0
+    let lastLocalMapId: MultiplayerPlayerState['location']['mapId'] | null = null
     let lastCompletePresenceAt = 0
     let rangeLatched = false
     let reacquireAfter = 0
@@ -620,6 +621,16 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       remoteWasMoving = false
       remoteTurn = null
       latestRemoteProfile = null
+    }
+
+    function abandonActorForLocalMapTransition() {
+      // The local field owns the dedicated remote FieldActor. If the local map
+      // changes, that field/ActorSystem is unloading, so never enqueue DeleteActor
+      // against it. Drop PokéRun's references and let White 2 own teardown.
+      binding = null
+      ownsActor = false
+      resetRemoteAnimation()
+      reacquireAfter = 0
     }
 
     async function ensurePlayerBinding() {
@@ -842,6 +853,34 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       if (cooldown) reacquireAfter = Math.max(reacquireAfter, Date.now() + REACQUIRE_COOLDOWN_MS)
     }
 
+    async function detachDedicatedBillboardAnimation(current: DedicatedBinding) {
+      await Promise.all([
+        runtimeBridge.write32(current.handleAddress + HANDLE_ANIMS, 0),
+        runtimeBridge.write16(current.handleAddress + HANDLE_ANIM_COUNT, 0),
+        runtimeBridge.write16(current.handleAddress + HANDLE_ANIM, 0),
+        runtimeBridge.write16(current.handleAddress + HANDLE_STEP, 0),
+        runtimeBridge.write16(current.handleAddress + HANDLE_WAIT, 0),
+        runtimeBridge.write16(current.handleAddress + HANDLE_LOOPS, 0),
+        runtimeBridge.write32(current.handleAddress + HANDLE_ANIMATE, 0),
+      ])
+    }
+
+    async function bindDedicatedActor(actorAddress: number, remote: MultiplayerPlayerState) {
+      const rawBinding = await resolveActorBinding(runtimeBridge, actorAddress, POKERUN_NATIVE_TEST_UID)
+      const next: DedicatedBinding = { ...rawBinding, nativeRender: await readRenderProfile(runtimeBridge, rawBinding) }
+      await detachDedicatedBillboardAnimation(next)
+      const world = remote.worldPosition
+      if (!world) return null
+      const initialProfile = remoteProfile(Date.now(), remote)
+      latestRemoteProfile = initialProfile
+      await applyRemoteFrame(next, remote, world, initialProfile)
+      renderedWorld = { ...world }
+      lastRenderAdvanceAt = Date.now()
+      binding = next
+      ownsActor = true
+      return next
+    }
+
     async function ensureActor(remote: MultiplayerPlayerState) {
       if (binding) {
         if (await bindingStillValid(runtimeBridge, binding)) return binding
@@ -855,6 +894,23 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       resetRemoteAnimation()
       if (Date.now() < reacquireAfter) return null
 
+      // A local field reload can preserve or recreate the PokéRun UID before
+      // this runtime has a binding. Reuse a live actor instead of failing the
+      // duplicate-UID safety check or creating a second remote trainer.
+      const liveScan = await new White2ActorSystemProbe(runtimeBridge).scanHeap()
+      const existing = liveScan.entries.find(entry =>
+        entry.uid === POKERUN_NATIVE_TEST_UID
+        && entry.state === 'active'
+        && entry.actorSystemBackptr === liveScan.actorSystem
+      )
+      if (existing) {
+        console.info('[PokéRun lifecycle] REBIND EXISTING REMOTE', {
+          actor: existing.address,
+          actorSystem: liveScan.actorSystem,
+        })
+        return bindDedicatedActor(existing.address, remote)
+      }
+
       const spawned = await nativeActors.spawnTestActor()
       ownsActor = true
       if (cancelled) {
@@ -862,35 +918,12 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         return null
       }
       try {
-        const rawBinding = await resolveActorBinding(runtimeBridge, spawned.actorAddress, POKERUN_NATIVE_TEST_UID)
-        const next: DedicatedBinding = { ...rawBinding, nativeRender: await readRenderProfile(runtimeBridge, rawBinding) }
-
-        // The BlAct billboard owns its own face animation independently of the
-        // FieldActor movement system. White 2's scene-node update repeatedly
-        // enables that animation, which can overwrite PokéRun's faceIndex for
-        // one rendered frame. Detach the native animation set entirely; the
-        // dedicated remote's frames are driven exclusively by PokéRun.
-        await Promise.all([
-          runtimeBridge.write32(next.handleAddress + HANDLE_ANIMS, 0),
-          runtimeBridge.write16(next.handleAddress + HANDLE_ANIM_COUNT, 0),
-          runtimeBridge.write16(next.handleAddress + HANDLE_ANIM, 0),
-          runtimeBridge.write16(next.handleAddress + HANDLE_STEP, 0),
-          runtimeBridge.write16(next.handleAddress + HANDLE_WAIT, 0),
-          runtimeBridge.write16(next.handleAddress + HANDLE_LOOPS, 0),
-          runtimeBridge.write32(next.handleAddress + HANDLE_ANIMATE, 0),
-        ])
-
-        const world = remote.worldPosition
-        if (!world) {
+        const next = await bindDedicatedActor(spawned.actorAddress, remote)
+        if (!next) {
           await releaseActor()
           return null
         }
-        const initialProfile = remoteProfile(Date.now(), remote)
-        latestRemoteProfile = initialProfile
-        await applyRemoteFrame(next, remote, world, initialProfile)
-        renderedWorld = { ...world }
-        lastRenderAdvanceAt = Date.now()
-        binding = next
+        console.info('[PokéRun lifecycle] SPAWNED REMOTE', { actor: spawned.actorAddress })
         return next
       } catch (error) {
         if (error instanceof White2NativeActorUnsafeStateError) throw error
@@ -901,16 +934,52 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
     async function tick() {
       const now = Date.now()
+      const presence = presenceRef.current
+      const local = presence.local
+      const remote = presence.remote
+
+      // Detect the local map change before touching the old FieldActorSystem.
+      // This avoids racing render learning or DeleteActor against an unloading field.
+      if (local) {
+        const currentLocalMapId = local.location.mapId
+        const localMapChanged = lastLocalMapId !== null && lastLocalMapId !== currentLocalMapId
+        lastLocalMapId = currentLocalMapId
+        if (localMapChanged) {
+          console.info('[PokéRun lifecycle] LOCAL MAP CHANGED', {
+            mapId: currentLocalMapId,
+            remoteMapId: remote?.location.mapId ?? null,
+          })
+          rangeLatched = false
+          stableMapId = currentLocalMapId
+          stableMapSince = now
+          resetPlayerBinding()
+          abandonActorForLocalMapTransition()
+          return
+        }
+      }
+
       if (now - lastLearnAt >= LEARN_SAMPLE_MS) {
         lastLearnAt = now
         await learnLocalRender(now)
       }
 
-      const presence = presenceRef.current
-      const local = presence.local
-      const remote = presence.remote
+      if (!local?.worldPosition) {
+        if (ownsActor && now - lastCompletePresenceAt > MISSING_STATE_GRACE_MS) {
+          // Local position disappearing is a field-transition signal. Native
+          // DeleteActor is unsafe here because White 2 may already be tearing
+          // down the old field task manager. Drop PokéRun's references and let
+          // the field teardown own destruction of the old dedicated actor.
+          rangeLatched = false
+          stableMapId = null
+          stableMapSince = 0
+          resetPlayerBinding()
+          abandonActorForLocalMapTransition()
+          console.info('[PokéRun lifecycle] ABANDON REMOTE • LOCAL POSITION UNAVAILABLE')
+        }
+        return
+      }
 
-      if (!local?.worldPosition || !remote?.worldPosition) {
+      if (!remote?.worldPosition) {
         if (ownsActor && now - lastCompletePresenceAt > MISSING_STATE_GRACE_MS) {
           rangeLatched = false
           stableMapId = null
@@ -998,21 +1067,28 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
             console.warn('White 2 dedicated trainer runtime stopped native calls:', reason)
             break
           }
+          const failedLocal = presenceRef.current.local
+
+          // A generic renderer/read failure is not a safe place to schedule a
+          // White 2 field task. During map transitions, JS presence can still
+          // look completely healthy for a short window after the native field
+          // task manager has begun teardown. Calling DeleteActor from this catch
+          // can therefore deadlock until the 900-frame native safety timeout.
+          //
+          // Drop only PokéRun's references here. On the next healthy tick,
+          // ensureActor() will either rebind the still-live dedicated UID or
+          // spawn a fresh actor if White 2 destroyed it with the old field.
           rangeLatched = false
-          stableMapId = null
-          stableMapSince = 0
+          stableMapId = failedLocal?.location.mapId ?? null
+          stableMapSince = Date.now()
           resetPlayerBinding()
-          try {
-            await releaseActor()
-          } catch (cleanupError) {
-            if (cleanupError instanceof White2ActorSystemUnavailableError) {
-              await delay(200)
-              continue
-            }
-            nativeStateUnsafe = true
-            console.warn('White 2 dedicated trainer runtime stopped after actor cleanup failed:', cleanupError)
-            break
-          }
+          abandonActorForLocalMapTransition()
+          console.info('[PokéRun lifecycle] ABANDON REMOTE • GENERIC FIELD ERROR', {
+            mapId: failedLocal?.location.mapId ?? null,
+            transition: failedLocal?.transition?.id ?? null,
+            reason,
+          })
+
           const message = reason instanceof Error ? reason.message : String(reason)
           if (message !== lastError) {
             lastError = message
