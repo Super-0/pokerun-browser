@@ -1,5 +1,5 @@
 import ReactDOM from 'react-dom/client'
-import { FakeRemotePeerPanel } from './multiplayer/debug/FakeRemotePeerPanel'
+import { FakeRemoteDoorPeerPanel } from './multiplayer/debug/FakeRemoteDoorPeerPanel'
 
 const DEV_ROOM_KEY = 'pokerun-multiplayer-dev-room-v1'
 const params = new URLSearchParams(window.location.search)
@@ -11,7 +11,7 @@ function mountFakePeerPanel() {
   const mount = document.createElement('div')
   mount.id = 'fake-remote-peer-root'
   document.body.appendChild(mount)
-  ReactDOM.createRoot(mount).render(<FakeRemotePeerPanel roomCodeStorageKey={DEV_ROOM_KEY} />)
+  ReactDOM.createRoot(mount).render(<FakeRemoteDoorPeerPanel roomCodeStorageKey={DEV_ROOM_KEY} />)
 }
 
 function mountLauncherButton() {
