@@ -56,9 +56,15 @@ const REACQUIRE_COOLDOWN_MS = 250
 const BIND_TIMEOUT_MS = 1800
 const TURN_CAPTURE_MS = 240
 const MAX_STEP_HOLD_MS = 250
-const SMOOTHING_ALPHA = 0.72
-const SMOOTHING_SNAP_FX32 = 16 * 4096
-const SMOOTHING_EPSILON_FX32 = 64
+// Measured White 2 protagonist speeds from movement traces. The renderer moves
+// slightly faster than the source so it can absorb packet/tick jitter without
+// building an ever-growing visual tail behind the authoritative remote state.
+const REMOTE_WALK_SPEED_FX32_PER_MS = 248
+const REMOTE_RUN_SPEED_FX32_PER_MS = 482
+const REMOTE_RENDER_SPEED_SCALE = 1.15
+const REMOTE_MAX_RENDER_DT_MS = 60
+const REMOTE_POSITION_EPSILON_FX32 = 64
+const REMOTE_TELEPORT_SNAP_FX32 = 2 * 0x10000
 // Trace data shows White 2 walking at roughly 248 FX32 units/ms and running at
 // roughly 482 FX32 units/ms. Keep the threshold between those two stable bands.
 const RUN_SPEED_THRESHOLD_FX32_PER_MS = 360
@@ -157,12 +163,58 @@ function hex(value: number) {
   return `0x${value.toString(16).padStart(8, '0').toUpperCase()}`
 }
 
-function smoothFx32(current: number, target: number) {
+function advanceFx32(current: number, target: number, budget: number) {
   const currentSigned = signed32(current)
   const targetSigned = signed32(target)
   const delta = targetSigned - currentSigned
-  if (Math.abs(delta) >= SMOOTHING_SNAP_FX32 || Math.abs(delta) <= SMOOTHING_EPSILON_FX32) return target >>> 0
-  return Math.round(currentSigned + delta * SMOOTHING_ALPHA) >>> 0
+  const distance = Math.abs(delta)
+  if (distance <= REMOTE_POSITION_EPSILON_FX32) return { value: target >>> 0, budget }
+  const step = Math.min(distance, budget)
+  return {
+    value: Math.round(currentSigned + Math.sign(delta) * step) >>> 0,
+    budget: Math.max(0, budget - step),
+  }
+}
+
+function advanceRemoteWorld(
+  current: MultiplayerWorldPosition,
+  target: MultiplayerWorldPosition,
+  direction: Direction,
+  motionKind: MotionKind,
+  moving: boolean,
+  elapsedMs: number,
+): MultiplayerWorldPosition {
+  // Once the authoritative peer says it stopped, land exactly on its final
+  // position. Exponential smoothing used to leave the avatar visibly coasting.
+  if (!moving) return { ...target }
+
+  const dx = signed32(target.x) - signed32(current.x)
+  const dz = signed32(target.z) - signed32(current.z)
+  if (Math.hypot(dx, dz) >= REMOTE_TELEPORT_SNAP_FX32) return { ...target }
+
+  const speed = motionKind === 'run' ? REMOTE_RUN_SPEED_FX32_PER_MS : REMOTE_WALK_SPEED_FX32_PER_MS
+  let budget = speed * REMOTE_RENDER_SPEED_SCALE * Math.min(REMOTE_MAX_RENDER_DT_MS, Math.max(1, elapsedMs))
+  let nextX = current.x
+  let nextZ = current.z
+
+  // If we're behind when the player turns 90 degrees, finish the old axis first.
+  // That produces a cardinal L-shaped catch-up path instead of smoothing
+  // diagonally through the inside corner of a wall.
+  if (direction === 'east' || direction === 'west') {
+    const z = advanceFx32(nextZ, target.z, budget)
+    nextZ = z.value
+    budget = z.budget
+    const x = advanceFx32(nextX, target.x, budget)
+    nextX = x.value
+  } else {
+    const x = advanceFx32(nextX, target.x, budget)
+    nextX = x.value
+    budget = x.budget
+    const z = advanceFx32(nextZ, target.z, budget)
+    nextZ = z.value
+  }
+
+  return { x: nextX, y: target.y, z: nextZ }
 }
 
 function isMainRamPointer(value: number) {
@@ -498,6 +550,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     let lastRemoteWorld: MultiplayerWorldPosition | null = null
     let lastRemoteWorldAt = 0
     let renderedWorld: MultiplayerWorldPosition | null = null
+    let lastRenderAdvanceAt = 0
     let remoteMovingUntil = 0
     let remoteMotionKind: MotionKind = 'walk'
     let activeRemoteDirection: Direction | null = null
@@ -557,6 +610,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       lastRemoteWorld = null
       lastRemoteWorldAt = 0
       renderedWorld = null
+      lastRenderAdvanceAt = 0
       remoteMovingUntil = 0
       remoteMotionKind = 'walk'
       activeRemoteDirection = null
@@ -835,6 +889,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         latestRemoteProfile = initialProfile
         await applyRemoteFrame(next, remote, world, initialProfile)
         renderedWorld = { ...world }
+        lastRenderAdvanceAt = Date.now()
         binding = next
         return next
       } catch (error) {
@@ -904,11 +959,16 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       if (!current) return
       const profile = remoteProfile(now, remote)
       const targetWorld = remote.worldPosition
-      renderedWorld = renderedWorld ? {
-        x: smoothFx32(renderedWorld.x, targetWorld.x),
-        y: targetWorld.y,
-        z: smoothFx32(renderedWorld.z, targetWorld.z),
-      } : { ...targetWorld }
+      const moving = remote.movementState === 'moving'
+        ? true
+        : remote.movementState === 'idle'
+          ? false
+          : now < remoteMovingUntil
+      const elapsedMs = lastRenderAdvanceAt > 0 ? now - lastRenderAdvanceAt : UPDATE_MS
+      lastRenderAdvanceAt = now
+      renderedWorld = renderedWorld
+        ? advanceRemoteWorld(renderedWorld, targetWorld, remote.direction, remoteMotionKind, moving, elapsedMs)
+        : { ...targetWorld }
       const world = renderedWorld
       latestRemoteProfile = profile
       await applyRemoteFrame(current, remote, world, profile)
