@@ -39,11 +39,17 @@ if (source.includes(frameGuardBefore)) {
   throw new Error('Off-map frame-hide guard did not match the expected ownership patch.')
 }
 
+// IMPORTANT: there is also a same-looking map-mismatch check in the emulated-frame
+// callback. Scope this replacement to tick() so we never splice async tick code into
+// a synchronous callback again.
+const tickAnchor = '    async function tick() {'
+const tickIndex = source.indexOf(tickAnchor)
+if (tickIndex < 0) throw new Error('tick() anchor not found.')
 const mismatchStart = '      if (local.location.mapId !== remote.location.mapId) {'
 const mismatchEndMarker = '      const currentMapId = local.location.mapId\n'
-const mismatchIndex = source.indexOf(mismatchStart)
+const mismatchIndex = source.indexOf(mismatchStart, tickIndex)
 const mismatchEnd = source.indexOf(mismatchEndMarker, mismatchIndex)
-if (mismatchIndex < 0 || mismatchEnd < 0) throw new Error('Remote-map mismatch branch not found.')
+if (mismatchIndex < 0 || mismatchEnd < 0) throw new Error('tick() remote-map mismatch branch not found.')
 
 const mismatchReplacement = `      if (local.location.mapId !== remote.location.mapId) {\n        stableMapId = local.location.mapId\n        stableMapSince = now\n        if (binding) {\n          const transition = remote.transition\n          const age = transition ? now - transition.detectedAt : Number.POSITIVE_INFINITY\n          const fromWorld = transition?.fromWorldPosition ?? renderedWorld\n          const holdingDoorDeparture = Boolean(\n            transition\n            && transition.fromMapId === local.location.mapId\n            && transition.toMapId === remote.location.mapId\n            && fromWorld\n            && age >= 0\n            && age < REMOTE_DOOR_DEPARTURE_HOLD_MS\n          )\n\n          if (holdingDoorDeparture && transition && fromWorld) {\n            if (remoteActorHidden) await setRemoteActorHidden(binding, false)\n            const progress = Math.min(1, Math.max(0, age / REMOTE_DOOR_DEPARTURE_HOLD_MS))\n            const distance = Math.round(REMOTE_DOOR_DEPARTURE_TRAVEL_FX32 * progress)\n            let nextX = signed32(fromWorld.x)\n            let nextZ = signed32(fromWorld.z)\n            if (transition.fromDirection === 'north') nextZ -= distance\n            else if (transition.fromDirection === 'south') nextZ += distance\n            else if (transition.fromDirection === 'west') nextX -= distance\n            else nextX += distance\n\n            const visualWorld: MultiplayerWorldPosition = {\n              x: nextX >>> 0,\n              y: fromWorld.y >>> 0,\n              z: nextZ >>> 0,\n            }\n            const visualRemote: MultiplayerPlayerState = {\n              ...remote,\n              location: { ...local.location },\n              x: transition.fromX,\n              y: transition.fromY,\n              direction: transition.fromDirection,\n              movementState: 'moving',\n              worldPosition: visualWorld,\n            }\n            const profile = remoteProfile(now, visualRemote)\n            latestRemoteProfile = profile\n            renderedWorld = visualWorld\n            lastRenderAdvanceAt = now\n            await runtimeBridge.write8(binding.actorAddress + ACTOR_SHADOW_GROUP, 0)\n            await applyRemoteFrame(binding, visualRemote, visualWorld, profile)\n            rangeLatched = true\n            return\n          }\n\n          if (!remoteActorHidden) {\n            await setRemoteActorHidden(binding, true)\n            console.info('[PokéRun lifecycle] HIDE REMOTE • DOOR DEPARTURE COMPLETE', {\n              actor: binding.actorAddress,\n              transition: transition?.id ?? null,\n            })\n          }\n          rangeLatched = true\n          resetRemoteAnimation()\n        } else {\n          rangeLatched = false\n          remoteActorHidden = false\n        }\n        return\n      }\n\n`
 
