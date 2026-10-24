@@ -93,6 +93,16 @@ export function DevConsolePanel() {
   const [copied, setCopied] = useState(false)
   const bodyRef = useRef<HTMLDivElement>(null)
   const current = store()
+  const buttonStyle: React.CSSProperties = {
+    padding: '7px 10px',
+    border: '1px solid #78a7c2',
+    background: '#12202a',
+    color: '#e8f4fa',
+    fontFamily: 'inherit',
+    fontWeight: 700,
+    cursor: 'pointer',
+    boxShadow: 'none',
+  }
 
   useEffect(() => {
     const listener = () => setVersion(value => value + 1)
@@ -139,16 +149,23 @@ export function DevConsolePanel() {
   return <div style={{
     position: 'fixed',
     left: 10,
-    bottom: 10,
+    top: 10,
     zIndex: 2147483647,
     fontFamily: 'monospace',
   }}>
+    <button onClick={() => setOpen(value => !value)} style={{
+      ...buttonStyle,
+      marginBottom: open ? 8 : 0,
+      boxShadow: '0 4px 18px rgba(0, 0, 0, 0.5)',
+    }}>
+      {open ? 'HIDE CONSOLE' : `CONSOLE (${current.entries.length})`}
+    </button>
+
     {open && <section style={{
       width: 'min(760px, calc(100vw - 20px))',
       height: 'min(430px, 58vh)',
       display: 'flex',
       flexDirection: 'column',
-      marginBottom: 8,
       background: 'rgba(8, 15, 20, 0.98)',
       border: '2px solid #78a7c2',
       boxShadow: '0 10px 36px rgba(0, 0, 0, 0.6)',
@@ -156,10 +173,10 @@ export function DevConsolePanel() {
     }}>
       <header style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid #35546b', flexWrap: 'wrap' }}>
         <strong style={{ marginRight: 'auto' }}>POKÉRUN DEV CONSOLE • {entries.length}</strong>
-        <button onClick={() => setPokerunOnly(value => !value)}>{pokerunOnly ? 'POKÉRUN ONLY' : 'ALL LOGS'}</button>
-        <button onClick={() => void copyVisible()} disabled={entries.length === 0}>{copied ? 'COPIED!' : 'COPY'}</button>
-        <button onClick={clear} disabled={current.entries.length === 0}>CLEAR</button>
-        <button onClick={() => setOpen(false)}>CLOSE</button>
+        <button style={buttonStyle} onClick={() => setPokerunOnly(value => !value)}>{pokerunOnly ? 'POKÉRUN ONLY' : 'ALL LOGS'}</button>
+        <button style={{ ...buttonStyle, opacity: entries.length === 0 ? 0.45 : 1 }} onClick={() => void copyVisible()} disabled={entries.length === 0}>{copied ? 'COPIED!' : 'COPY'}</button>
+        <button style={{ ...buttonStyle, opacity: current.entries.length === 0 ? 0.45 : 1 }} onClick={clear} disabled={current.entries.length === 0}>CLEAR</button>
+        <button style={buttonStyle} onClick={() => setOpen(false)}>CLOSE</button>
       </header>
       <div ref={bodyRef} style={{ flex: 1, overflow: 'auto', padding: 10, fontSize: 11, lineHeight: 1.45, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
         {entries.length === 0
@@ -171,12 +188,5 @@ export function DevConsolePanel() {
           </div>)}
       </div>
     </section>}
-    <button onClick={() => setOpen(value => !value)} style={{
-      padding: '8px 12px',
-      fontWeight: 700,
-      boxShadow: '0 4px 18px rgba(0, 0, 0, 0.5)',
-    }}>
-      {open ? 'HIDE CONSOLE' : `CONSOLE (${current.entries.length})`}
-    </button>
   </div>
 }
