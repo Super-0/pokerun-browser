@@ -159,6 +159,13 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
           toMapId: transition.toMapId,
           fromWorldPosition: transition.fromWorldPosition ?? null,
         })
+        if (activeDoor && sameMap(activeDoor.mapId, local.location.mapId)) {
+          console.info('[PokéRun door] REUSE PREOPENED DOOR', {
+            id: transition.id,
+            handle: activeDoor.handle,
+          })
+          return
+        }
         await playDoor(transition.fromWorldPosition, local.location.mapId, now)
         return
       }
@@ -180,10 +187,33 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
         return
       }
 
+      const priorRemote = previousRemote
+
+      // DEV replay gets one short idle beat at the captured threshold before its
+      // map-change packet. Probe the real door there so it begins opening during
+      // that beat instead of waiting for the transition packet. Misses are safe:
+      // CreateHandleAtPos simply returns no handle away from an actual door.
+      if (
+        import.meta.env.DEV
+        && !activeDoor
+        && sameMap(local.location.mapId, remote.location.mapId)
+        && remote.movementState === 'idle'
+        && priorRemote?.movementState === 'moving'
+        && remote.worldPosition
+      ) {
+        await playDoor(remote.worldPosition, local.location.mapId, now)
+        if (activeDoor) {
+          console.info('[PokéRun door] PREOPENED AT REMOTE THRESHOLD', {
+            mapId: local.location.mapId,
+            world: remote.worldPosition,
+          })
+        }
+      }
+
       // Prefer explicit transition metadata when available. The inferred path
       // keeps this compatible with peers that only publish ordinary state.
       const transition = remote.transition
-        ?? (previousRemote ? inferredTransition(previousRemote, remote, now) : null)
+        ?? (priorRemote ? inferredTransition(priorRemote, remote, now) : null)
       previousRemote = remote
       if (transition) await handleTransition(transition, local, now)
     }
