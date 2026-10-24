@@ -136,16 +136,22 @@ export function DevConsolePanel() {
 
   if (!import.meta.env.DEV) return null
 
-  return <div style={{ position: 'fixed', right: 14, bottom: 14, zIndex: 20000, fontFamily: 'monospace' }}>
+  return <div style={{
+    position: 'fixed',
+    left: 10,
+    bottom: 10,
+    zIndex: 2147483647,
+    fontFamily: 'monospace',
+  }}>
     {open && <section style={{
-      width: 'min(760px, calc(100vw - 28px))',
+      width: 'min(760px, calc(100vw - 20px))',
       height: 'min(430px, 58vh)',
       display: 'flex',
       flexDirection: 'column',
       marginBottom: 8,
-      background: 'rgba(8, 15, 20, 0.97)',
+      background: 'rgba(8, 15, 20, 0.98)',
       border: '2px solid #78a7c2',
-      boxShadow: '0 10px 36px rgba(0, 0, 0, 0.45)',
+      boxShadow: '0 10px 36px rgba(0, 0, 0, 0.6)',
       color: '#e8f4fa',
     }}>
       <header style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 10px', borderBottom: '1px solid #35546b', flexWrap: 'wrap' }}>
@@ -165,7 +171,11 @@ export function DevConsolePanel() {
           </div>)}
       </div>
     </section>}
-    <button onClick={() => setOpen(value => !value)} style={{ padding: '8px 12px', fontWeight: 700 }}>
+    <button onClick={() => setOpen(value => !value)} style={{
+      padding: '8px 12px',
+      fontWeight: 700,
+      boxShadow: '0 4px 18px rgba(0, 0, 0, 0.5)',
+    }}>
       {open ? 'HIDE CONSOLE' : `CONSOLE (${current.entries.length})`}
     </button>
   </div>
