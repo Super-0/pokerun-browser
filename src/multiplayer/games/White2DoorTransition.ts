@@ -2,17 +2,12 @@ import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity, MultiplayerWorldPosition } from '../core/protocol'
 import { White2ActorSystemProbe } from './White2ActorSystem'
 
-// Exact Pokémon White 2 US (IRDO) field/prop symbols. This module is only used
-// behind White2ActorSystemProbe.supportsRom(), so none of these addresses are
-// allowed to run against an unverified revision.
+// Exact Pokemon White 2 US (IRDO) symbols from the matched w2_us overlay-36 map.
 const WHITE2_G_GAME_SYSTEM = 0x02141134
 const GAME_SYSTEM_FIELD = 0x20
 const FIELD_GET_G3D_MAPPER = 0x02180514
 const FIELD_G3D_MAPPER_GET_BM_SYSTEM = 0x02185330
-const FIELD_PROP_HOLDER_GET_PROP_TYPE = 0x02183f68
-const FIELD_PROP_CREATE_HANDLE_FROM_EXISTING = 0x02183fe8
-const FIELD_PROP_HOLDER_GET_POS_ABS = 0x02183fc4
-const FIELD_PROP_HOLDER_CALL_ANM_CMD = 0x02183f90
+const FIELD_PROP_CREATE_HANDLE_AT_POS = 0x0218409c
 const FIELD_PROP_HANDLE_FREE = 0x02184124
 const FIELD_PROP_HANDLE_CALL_ANM_CMD = 0x02184150
 const FIELD_PROP_HANDLE_IS_ANM_FINISHED = 0x02184174
@@ -20,34 +15,14 @@ const FIELD_PROP_HANDLE_IS_ANM_FINISHED = 0x02184174
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
 const NATIVE_STACK_RESERVE = 0x1000
-const DOOR_PROP_TYPE = 2
-
-// Swan's FieldPropSystem layout for White 2:
-//   +0x04 m_G3DMapper
-//   +0x268 m_ChunkPropHolders[288]
-// Each FieldChunkPropHolder is 0x10 bytes and +0x0C is m_PropInstance.
 const PROP_SYSTEM_MAPPER = 0x04
-const PROP_SYSTEM_HOLDERS = 0x268
-const PROP_HOLDER_SIZE = 0x10
-const PROP_HOLDER_INSTANCE = 0x0c
-const PROP_HOLDER_COUNT = 288
-
-// One overworld tile is 0x10000 FX32 in the tested field. A building-model
-// origin can sit several tiles away from its visible doorway, so do not require
-// the old +/-2-tile area match. Still reject a type-2 prop that is implausibly
-// far away so non-door warps cannot open an unrelated building across the map.
-const MAX_DOOR_ORIGIN_DISTANCE_FX32 = 0x80000
 const SCRATCH_SIZE = 0x20
 const SCRATCH_OFFSET = 0xc0
-const POS_OFFSET = 0x00
+const DOOR_PROP_ID = 1
 
 export type White2DoorAnimation = {
   matched: boolean
   handle: number | null
-}
-
-function signed32(value: number) {
-  return value | 0
 }
 
 function isMainRamPointer(value: number) {
@@ -59,13 +34,9 @@ function hex(value: number) {
 }
 
 /**
- * Replays the native building-door prop animation near a remote map transition.
- *
- * White 2 keeps a fixed array of loaded FieldChunkPropHolders. We inspect that
- * native array directly instead of relying on a small area search around the
- * player's feet: a building prop's origin can be several tiles away from the
- * visible door. Only White 2's type-2 prop class is eligible, and a generous but
- * bounded distance check prevents unrelated map props from being animated.
+ * Replays White 2's real entrance-door path.
+ * The retail game does not classify doors by a generic prop type here; it calls
+ * FieldPropSystem_CreateHandleAtPos(system, 1, position), then animation 0/command 0.
  */
 export class White2DoorTransitionPlayer {
   constructor(private readonly bridge: MelonDsBridge, private readonly rom: MultiplayerRomIdentity) {}
@@ -94,10 +65,6 @@ export class White2DoorTransitionPlayer {
     if (!isMainRamPointer(mapper)) throw new Error(`White 2 G3D mapper pointer is invalid (${hex(mapper)}).`)
     const propSystem = await this.call(FIELD_G3D_MAPPER_GET_BM_SYSTEM, mapper, 0, 0, 0, 'FieldG3DMapper_GetBMSystem')
     if (!isMainRamPointer(propSystem)) throw new Error(`White 2 field-prop system pointer is invalid (${hex(propSystem)}).`)
-
-    // Swan documents FieldPropSystem::m_G3DMapper at +0x04. Validate the native
-    // getter before we ever walk the holder array; this catches a bad symbol or
-    // wrong intermediate object without touching unrelated RAM.
     const ownerMapper = await this.bridge.read32(propSystem + PROP_SYSTEM_MAPPER)
     if (ownerMapper !== mapper) {
       throw new Error(`White 2 field-prop system failed mapper back-pointer validation (${hex(ownerMapper)} != ${hex(mapper)}).`)
@@ -119,93 +86,32 @@ export class White2DoorTransitionPlayer {
     }
   }
 
-  private async findNearestLoadedDoor(propSystem: number, world: MultiplayerWorldPosition, scratch: number) {
-    let loadedCount = 0
-    let type2Count = 0
-    let bestHolder = 0
-    let bestDistance = Number.POSITIVE_INFINITY
-
-    for (let index = 0; index < PROP_HOLDER_COUNT; index += 1) {
-      const holder = propSystem + PROP_SYSTEM_HOLDERS + index * PROP_HOLDER_SIZE
-      const propInstance = await this.bridge.read32(holder + PROP_HOLDER_INSTANCE)
-      if (!isMainRamPointer(propInstance)) continue
-      loadedCount += 1
-
-      const propType = await this.call(
-        FIELD_PROP_HOLDER_GET_PROP_TYPE,
-        holder,
-        0,
-        0,
-        0,
-        'FieldChunkPropHolder_GetPropType',
-      )
-      if (propType !== DOOR_PROP_TYPE) continue
-      type2Count += 1
-
-      await this.call(
-        FIELD_PROP_HOLDER_GET_POS_ABS,
-        holder,
-        scratch + POS_OFFSET,
-        0,
-        0,
-        'FieldChunkPropHolder_GetPosAbs',
-      )
-      const [x, z] = await Promise.all([
-        this.bridge.read32(scratch + POS_OFFSET + 0x00),
-        this.bridge.read32(scratch + POS_OFFSET + 0x08),
-      ])
-      const distance = Math.abs(signed32(x) - signed32(world.x)) + Math.abs(signed32(z) - signed32(world.z))
-      if (distance < bestDistance) {
-        bestDistance = distance
-        bestHolder = holder
-      }
-    }
-
-    if (!bestHolder || bestDistance > MAX_DOOR_ORIGIN_DISTANCE_FX32) {
-      console.debug('[PokéRun] White 2 door lookup found no nearby type-2 prop.', {
-        loadedCount,
-        type2Count,
-        nearestDistanceFx32: Number.isFinite(bestDistance) ? bestDistance : null,
-        remoteWorld: world,
-      })
-      return 0
-    }
-
-    console.debug('[PokéRun] White 2 door lookup selected loaded type-2 prop.', {
-      loadedCount,
-      type2Count,
-      distanceFx32: bestDistance,
-      holder: hex(bestHolder),
-      remoteWorld: world,
-    })
-    return bestHolder
-  }
-
   async playNearestDoor(world: MultiplayerWorldPosition): Promise<White2DoorAnimation> {
     const propSystem = await this.getPropSystem()
-
     return this.withScratch(async scratch => {
-      const bestHolder = await this.findNearestLoadedDoor(propSystem, world, scratch)
-      if (!bestHolder) return { matched: false, handle: null }
+      await Promise.all([
+        this.bridge.write32(scratch + 0x00, world.x >>> 0),
+        this.bridge.write32(scratch + 0x04, world.y >>> 0),
+        this.bridge.write32(scratch + 0x08, world.z >>> 0),
+      ])
 
       const handle = await this.call(
-        FIELD_PROP_CREATE_HANDLE_FROM_EXISTING,
+        FIELD_PROP_CREATE_HANDLE_AT_POS,
         propSystem,
-        bestHolder,
+        DOOR_PROP_ID,
+        scratch,
         0,
-        0,
-        'FieldPropSystem_CreateHandleFromExisting',
+        'FieldPropSystem_CreateHandleAtPos',
       )
-      if (isMainRamPointer(handle)) {
-        await this.call(FIELD_PROP_HANDLE_CALL_ANM_CMD, handle, 0, 0, 0, 'FieldPropHandle_CallAnmCmd')
-        return { matched: true, handle }
+
+      if (!isMainRamPointer(handle)) {
+        console.info('[PokéRun door] HANDLE AT POS MISS', { propId: DOOR_PROP_ID, world })
+        return { matched: false, handle: null }
       }
 
-      // A field can have all seven temporary prop handles occupied. In that case
-      // still animate the matched static resource; there is simply no per-door
-      // handle to service/free later.
-      await this.call(FIELD_PROP_HOLDER_CALL_ANM_CMD, propSystem, bestHolder, 0, 0, 'FieldChunkPropHolder_CallAnmCmd')
-      return { matched: true, handle: null }
+      console.info('[PokéRun door] HANDLE AT POS MATCH', { propId: DOOR_PROP_ID, handle: hex(handle), world })
+      await this.call(FIELD_PROP_HANDLE_CALL_ANM_CMD, handle, 0, 0, 0, 'FieldPropHandle_CallAnmCmd')
+      return { matched: true, handle }
     })
   }
 

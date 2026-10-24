@@ -10,6 +10,8 @@ const ACTOR_MODEL_ID = 0x0c
 const ACTOR_FACE_DIR = 0x18
 const ACTOR_GPOS = 0x3c
 const ACTOR_WPOS = 0x44
+const ACTOR_SHADOW_GROUP = 0x81
+const ACTOR_TCB = 0x84
 const ACTOR_SYSTEM_BACKPTR = 0x88
 const ACTOR_SCENE_NODE_VTABLE = 0x90
 const SCENE_NODE_GET_BLACT_INDEX = 0x14
@@ -27,6 +29,7 @@ const BLACT_GEOM_FLAGS = 0x00
 const BLACT_POSITION = 0x04
 const BLACT_FACE_INDEX = 0x10
 const BLACT_MAT_FLAGS = 0x18
+const BLACT_VISIBLE_MASK = 0x0200
 const HANDLE_SIZE = 0x28
 const HANDLE_BLACT_INDEX = 0x00
 const HANDLE_MAT_ENTRY = 0x04
@@ -39,6 +42,9 @@ const HANDLE_LOOPS = 0x14
 const HANDLE_ANIMATE = 0x18
 
 const FLDACT_GET_BLACT_IDX = 0x02167240
+const GFL_TCB_REMOVE = 0x0203a6d4
+const FLDACT_SET_SHADOW_GROUP = 0x0216784c
+const FLDACT_SET_FORCE_OFF_SHADOW = 0x0216787c
 const NATIVE_STACK_RESERVE = 0x400
 const BLACT_NONE = 0xffff
 const PLAYER_UID = 0x00ff
@@ -65,6 +71,9 @@ const REMOTE_RENDER_SPEED_SCALE = 1.15
 const REMOTE_MAX_RENDER_DT_MS = 60
 const REMOTE_POSITION_EPSILON_FX32 = 64
 const REMOTE_TELEPORT_SNAP_FX32 = 2 * 0x10000
+const REMOTE_DOOR_DEPARTURE_LEAD_MS = 430
+const REMOTE_DOOR_DEPARTURE_TRAVEL_MS = 260
+const REMOTE_DOOR_DEPARTURE_TRAVEL_FX32 = 0x9000
 // Trace data shows White 2 walking at roughly 248 FX32 units/ms and running at
 // roughly 482 FX32 units/ms. Keep the threshold between those two stable bands.
 const RUN_SPEED_THRESHOLD_FX32_PER_MS = 360
@@ -560,12 +569,14 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     let remoteWasMoving = false
     let remoteTurn: RemoteTurnPlayback | null = null
     let latestRemoteProfile: RenderProfile | null = null
+    let lastVisibleRemoteProfile: RenderProfile | null = null
 
     let stableMapId: MultiplayerPlayerState['location']['mapId'] | null = null
     let stableMapSince = 0
     let lastLocalMapId: MultiplayerPlayerState['location']['mapId'] | null = null
     let lastCompletePresenceAt = 0
     let rangeLatched = false
+    let remoteActorHidden = false
     let reacquireAfter = 0
     let lastError = ''
     let unavailableSince = 0
@@ -629,6 +640,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       // against it. Drop PokéRun's references and let White 2 own teardown.
       binding = null
       ownsActor = false
+      remoteActorHidden = false
       resetRemoteAnimation()
       reacquireAfter = 0
     }
@@ -824,11 +836,53 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       const local = presenceRef.current.local
       const remote = presenceRef.current.remote
       const world = renderedWorld
-      if (!current || !local || !remote || !world || local.location.mapId !== remote.location.mapId) return
+      if (!current || !local || !remote) return
+      if (local.location.mapId !== remote.location.mapId) {
+        const transition = remote.transition
+        const age = transition ? Date.now() - transition.detectedAt : Number.POSITIVE_INFINITY
+        const holdingDoorDeparture = Boolean(
+          transition
+          && transition.fromMapId === local.location.mapId
+          && transition.toMapId === remote.location.mapId
+          && age >= 0
+          && age < REMOTE_DOOR_DEPARTURE_LEAD_MS + REMOTE_DOOR_DEPARTURE_TRAVEL_MS
+        )
+        // During the short entrance hold the main tick intentionally keeps the
+        // protagonist visible and walks its PokéRun-owned billboard into the door.
+        // After that window, visibility belongs to the off-map hide path.
+        if (!holdingDoorDeparture) void forceRemoteBillboardHidden(current)
+        return
+      }
+      if (!world || remoteActorHidden) return
       void applyRemoteFrame(current, remote, world, latestRemoteProfile)
     })
 
-    async function releaseActor(cooldown = true) {
+    async function forceRemoteBillboardHidden(current: DedicatedBinding) {
+      // White 2's native FieldActor update can rewrite BlAct::visible after a
+      // one-time hide. Reassert only the visible bit after every emulated frame
+      // while the authoritative remote is on another map. Do not touch actor
+      // position, material, UID, animation, or lifecycle.
+      const address = current.blActAddress + BLACT_MAT_FLAGS
+      const flags = await runtimeBridge.read16(address)
+      if ((flags & BLACT_VISIBLE_MASK) !== 0) {
+        await runtimeBridge.write16(address, flags & ~BLACT_VISIBLE_MASK)
+      }
+    }
+
+    async function setRemoteActorHidden(current: DedicatedBinding, hidden: boolean) {
+      // BlAct::visible is bit 9 of the 16-bit flags word at +0x18. Toggle only
+      // that render bit: do not mutate FieldActor flags, position, UID, binding,
+      // material, or animation state.
+      const address = current.blActAddress + BLACT_MAT_FLAGS
+      const flags = await runtimeBridge.read16(address)
+      const nextFlags = hidden
+        ? (flags & ~BLACT_VISIBLE_MASK)
+        : (flags | BLACT_VISIBLE_MASK)
+      await runtimeBridge.write16(address, nextFlags)
+      remoteActorHidden = hidden
+    }
+
+    async function releaseActor(cooldown = true, restoreNativeRender = true) {
       const current = binding
       const hadActor = ownsActor || current !== null
       if (!hadActor) return
@@ -843,14 +897,66 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
           return
         }
       }
-      if (current && await bindingStillValid(runtimeBridge, current)) {
+      if (restoreNativeRender && current && await bindingStillValid(runtimeBridge, current)) {
         await writeRenderProfile(runtimeBridge, current, current.nativeRender)
       }
       await nativeActors.deleteTestActor()
       binding = null
       ownsActor = false
+      remoteActorHidden = false
       resetRemoteAnimation()
       if (cooldown) reacquireAfter = Math.max(reacquireAfter, Date.now() + REACQUIRE_COOLDOWN_MS)
+    }
+
+    async function detachDedicatedActorNativeUpdate(current: DedicatedBinding) {
+      // PokéRun already owns the dedicated remote actor's position and BlAct.
+      // Remove White 2's per-actor TCB so its native move/draw callback cannot
+      // restore the underlying NPC model after the remote changes maps.
+      const forceShadow = await runtimeBridge.callArm9Thumb4(
+        FLDACT_SET_FORCE_OFF_SHADOW,
+        current.actorAddress,
+        1,
+        0,
+        0,
+        NATIVE_STACK_RESERVE,
+      )
+      if (forceShadow.status !== 1) {
+        throw new Error(`FldAct_SetForceOffShadow failed with status ${forceShadow.status} at PC ${hex(forceShadow.pc)}.`)
+      }
+
+      const shadowGroup = await runtimeBridge.callArm9Thumb4(
+        FLDACT_SET_SHADOW_GROUP,
+        current.actorAddress,
+        0,
+        0,
+        0,
+        NATIVE_STACK_RESERVE,
+      )
+      if (shadowGroup.status !== 1) {
+        throw new Error(`FldAct_SetShadowGroup failed with status ${shadowGroup.status} at PC ${hex(shadowGroup.pc)}.`)
+      }
+      await runtimeBridge.write8(current.actorAddress + ACTOR_SHADOW_GROUP, 0)
+
+      const tcb = await runtimeBridge.read32(current.actorAddress + ACTOR_TCB)
+      if (isMainRamPointer(tcb)) {
+        const removed = await runtimeBridge.callArm9Thumb4(
+          GFL_TCB_REMOVE,
+          tcb,
+          0,
+          0,
+          0,
+          NATIVE_STACK_RESERVE,
+        )
+        if (removed.status !== 1) {
+          throw new Error(`GFL_TCBRemove failed with status ${removed.status} at PC ${hex(removed.pc)}.`)
+        }
+        await runtimeBridge.write32(current.actorAddress + ACTOR_TCB, 0)
+      }
+
+      console.info('[PokéRun lifecycle] REMOTE NATIVE UPDATE DETACHED', {
+        actor: current.actorAddress,
+        tcb,
+      })
     }
 
     async function detachDedicatedBillboardAnimation(current: DedicatedBinding) {
@@ -869,6 +975,7 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       const rawBinding = await resolveActorBinding(runtimeBridge, actorAddress, POKERUN_NATIVE_TEST_UID)
       const next: DedicatedBinding = { ...rawBinding, nativeRender: await readRenderProfile(runtimeBridge, rawBinding) }
       await detachDedicatedBillboardAnimation(next)
+      await detachDedicatedActorNativeUpdate(next)
       const world = remote.worldPosition
       if (!world) return null
       const initialProfile = remoteProfile(Date.now(), remote)
@@ -884,11 +991,22 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     async function ensureActor(remote: MultiplayerPlayerState) {
       if (binding) {
         if (await bindingStillValid(runtimeBridge, binding)) return binding
-        await releaseActor()
+
+        // A binding becoming invalid is not proof that the native FieldActor
+        // needs deletion. During White 2 field/BlAct rebuilds the scene handle
+        // can disappear before the actor system is ready for scheduled tasks.
+        // Drop PokéRun's stale pointers and let the next healthy heap scan either
+        // rebind the live UID or observe that White 2 already destroyed it.
+        console.info('[PokéRun lifecycle] ABANDON REMOTE • INVALID BINDING')
+        abandonActorForLocalMapTransition()
         return null
       }
       if (ownsActor) {
-        await releaseActor()
+        // Ownership without a usable binding is the same uncertain state: do not
+        // schedule DeleteActor from here. Reacquire from the current field on the
+        // next tick instead.
+        console.info('[PokéRun lifecycle] ABANDON REMOTE • OWNER WITHOUT BINDING')
+        abandonActorForLocalMapTransition()
         return null
       }
       resetRemoteAnimation()
@@ -991,10 +1109,71 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       lastCompletePresenceAt = now
 
       if (local.location.mapId !== remote.location.mapId) {
-        rangeLatched = false
-        stableMapId = null
-        stableMapSince = 0
-        await releaseActor()
+        stableMapId = local.location.mapId
+        stableMapSince = now
+        if (binding) {
+          const transition = remote.transition
+          const age = transition ? now - transition.detectedAt : Number.POSITIVE_INFINITY
+          const fromWorld = transition?.fromWorldPosition ?? renderedWorld
+          const holdingDoorDeparture = Boolean(
+            transition
+            && transition.fromMapId === local.location.mapId
+            && transition.toMapId === remote.location.mapId
+            && fromWorld
+            && age >= 0
+            && age < REMOTE_DOOR_DEPARTURE_LEAD_MS + REMOTE_DOOR_DEPARTURE_TRAVEL_MS
+          )
+
+          if (holdingDoorDeparture && transition && fromWorld) {
+            if (remoteActorHidden) await setRemoteActorHidden(binding, false)
+            const travelAge = Math.max(0, age - REMOTE_DOOR_DEPARTURE_LEAD_MS)
+            const progress = Math.min(1, travelAge / REMOTE_DOOR_DEPARTURE_TRAVEL_MS)
+            const distance = Math.round(REMOTE_DOOR_DEPARTURE_TRAVEL_FX32 * progress)
+            let nextX = signed32(fromWorld.x)
+            let nextZ = signed32(fromWorld.z)
+            if (transition.fromDirection === 'north') nextZ -= distance
+            else if (transition.fromDirection === 'south') nextZ += distance
+            else if (transition.fromDirection === 'west') nextX -= distance
+            else nextX += distance
+
+            const visualWorld: MultiplayerWorldPosition = {
+              x: nextX >>> 0,
+              y: fromWorld.y >>> 0,
+              z: nextZ >>> 0,
+            }
+            const visualRemote: MultiplayerPlayerState = {
+              ...remote,
+              location: { ...local.location },
+              x: transition.fromX,
+              y: transition.fromY,
+              direction: transition.fromDirection,
+              movementState: 'moving',
+              worldPosition: visualWorld,
+            }
+            // Doorway motion is synthetic: keep the last known-good trainer
+            // renderer instead of advancing learned/fallback walk profiles.
+            const departureProfile = lastVisibleRemoteProfile ?? latestRemoteProfile
+            renderedWorld = visualWorld
+            lastRenderAdvanceAt = now
+            await runtimeBridge.write8(binding.actorAddress + ACTOR_SHADOW_GROUP, 0)
+            await applyRemoteFrame(binding, visualRemote, visualWorld, departureProfile)
+            rangeLatched = true
+            return
+          }
+
+          if (!remoteActorHidden) {
+            await setRemoteActorHidden(binding, true)
+            console.info('[PokéRun lifecycle] HIDE REMOTE • DOOR DEPARTURE COMPLETE', {
+              actor: binding.actorAddress,
+              transition: transition?.id ?? null,
+            })
+          }
+          rangeLatched = true
+          resetRemoteAnimation()
+        } else {
+          rangeLatched = false
+          remoteActorHidden = false
+        }
         return
       }
 
@@ -1040,7 +1219,15 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
         : { ...targetWorld }
       const world = renderedWorld
       latestRemoteProfile = profile
-      await applyRemoteFrame(current, remote, world, profile)
+      if (profile) lastVisibleRemoteProfile = { ...profile }
+      const frameProfile = remoteActorHidden && profile
+        ? { ...profile, matFlags: profile.matFlags & ~BLACT_VISIBLE_MASK }
+        : profile
+      await applyRemoteFrame(current, remote, world, frameProfile)
+      if (remoteActorHidden) {
+        await setRemoteActorHidden(current, false)
+        console.info('[PokéRun lifecycle] SHOW REMOTE • SAME MAP', { actor: current.actorAddress })
+      }
     }
 
     async function run() {

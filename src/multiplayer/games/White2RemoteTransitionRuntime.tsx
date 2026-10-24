@@ -102,7 +102,14 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
       if (!world) return
       await dropActiveDoor(localMapId, true)
       try {
+        console.info('[PokéRun door] PLAY NEAREST DOOR', { mapId: localMapId, world })
         const animation = await doors.playNearestDoor(world)
+        console.info('[PokéRun door] DOOR RESULT', {
+          mapId: localMapId,
+          matched: animation.matched,
+          handle: animation.handle,
+          world,
+        })
         if (animation.handle) activeDoor = { handle: animation.handle, mapId: localMapId, startedAt: now }
         lastWarning = ''
       } catch (reason) {
@@ -121,6 +128,12 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
       // Departure: open the door in the map this client is still displaying as
       // the dedicated actor reaches it and disappears into the other map.
       if (sameMap(local.location.mapId, transition.fromMapId)) {
+        console.info('[PokéRun door] REMOTE DEPARTURE', {
+          id: transition.id,
+          fromMapId: transition.fromMapId,
+          toMapId: transition.toMapId,
+          fromWorldPosition: transition.fromWorldPosition ?? null,
+        })
         await playDoor(transition.fromWorldPosition, local.location.mapId, now)
         return
       }
