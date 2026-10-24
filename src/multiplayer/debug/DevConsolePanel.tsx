@@ -69,9 +69,10 @@ function installConsoleCapture() {
   if (current.installed || !import.meta.env.DEV) return
   current.installed = true
 
+  const methods = console as unknown as Record<ConsoleLevel, (...args: unknown[]) => void>
   for (const level of LEVELS) {
-    const original = console[level].bind(console)
-    console[level] = (...args: unknown[]) => {
+    const original = methods[level].bind(console)
+    methods[level] = (...args: unknown[]) => {
       original(...args)
       append(level, args)
     }
@@ -112,7 +113,18 @@ export function DevConsolePanel() {
 
   async function copyVisible() {
     const text = entries.map(formatEntry).join('\n\n')
-    await navigator.clipboard.writeText(text)
+    try {
+      await navigator.clipboard.writeText(text)
+    } catch {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      textarea.remove()
+    }
     setCopied(true)
     window.setTimeout(() => setCopied(false), 1200)
   }
