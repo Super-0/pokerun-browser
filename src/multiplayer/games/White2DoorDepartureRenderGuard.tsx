@@ -19,6 +19,7 @@ const BLACT_SIZE = 0x1c
 const BLACT_GEOM_FLAGS = 0x00
 const BLACT_FACE_INDEX = 0x10
 const BLACT_MAT_FLAGS = 0x18
+const BLACT_VISIBLE_MASK = 0x0200
 const HANDLE_SIZE = 0x28
 const HANDLE_BLACT_INDEX = 0x00
 const HANDLE_MAT_ENTRY = 0x04
@@ -39,6 +40,8 @@ const FACE_START = {
   west: 6,
   east: 9,
 } as const
+
+type Direction = keyof typeof FACE_START
 
 type Binding = {
   blActAddress: number
@@ -116,16 +119,7 @@ async function readFamily(bridge: MelonDsBridge, binding: Binding): Promise<Rend
   return { matEntry, geomFlags, matFlags }
 }
 
-async function writeDepartureFrame(bridge: MelonDsBridge, binding: Binding, family: RenderFamily, faceIndex: number) {
-  await Promise.all([
-    bridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, family.matEntry),
-    bridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, family.geomFlags),
-    bridge.write16(binding.blActAddress + BLACT_FACE_INDEX, faceIndex),
-    bridge.write16(binding.blActAddress + BLACT_MAT_FLAGS, family.matFlags),
-  ])
-}
-
-function departureFace(direction: keyof typeof FACE_START, age: number) {
+function departureFace(direction: Direction, age: number) {
   const base = FACE_START[direction]
   if (age < DEPARTURE_LEAD_MS) return base
   const travelAge = age - DEPARTURE_LEAD_MS
@@ -139,11 +133,11 @@ function departureFace(direction: keyof typeof FACE_START, age: number) {
 /**
  * Replay-only safety layer for the short synthetic remote door departure.
  *
- * The dedicated actor's native base is model 11. During replay the normal
- * cached departure profile can momentarily expose that native/rival renderer.
- * Sample the protagonist render family that is visibly correct in the local
- * field at replay start, then keep only that material/geometry family on the
- * remote while its synthetic walk into the door is active.
+ * White2DedicatedTrainerRuntime owns the remote actor, but its historical
+ * departure fallback can still try to write the model-11/rival render family
+ * during this short replay. Lock the render family that is visibly correct on
+ * the local protagonist, and temporarily normalize every competing write to the
+ * remote billboard so there is exactly one visible render family per frame.
  */
 export function White2DoorDepartureRenderGuard({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -156,20 +150,74 @@ export function White2DoorDepartureRenderGuard({ bridge, rom }: { bridge: MelonD
     if (!bridge || !White2ActorSystemProbe.supportsRom(rom)) return
     const runtimeBridge = bridge
     const probe = new White2ActorSystemProbe(runtimeBridge)
+    const originalWrite16 = runtimeBridge.write16.bind(runtimeBridge)
+
     let cancelled = false
     let reading = false
     let activeTransitionId = ''
+    let activeDetectedAt = 0
+    let activeDirection: Direction = 'north'
     let lockedFamily: RenderFamily | null = null
     let remoteBinding: Binding | null = null
+
+    function clearLock() {
+      activeTransitionId = ''
+      activeDetectedAt = 0
+      lockedFamily = null
+      remoteBinding = null
+    }
+
+    function activeAge() {
+      return activeDetectedAt > 0 ? Date.now() - activeDetectedAt : Number.POSITIVE_INFINITY
+    }
+
+    // The normal trainer loop continues to own position/lifecycle. During the
+    // departure window only, make this guard authoritative for the four fields
+    // that determine which 2D trainer renderer is visible.
+    runtimeBridge.write16 = async (address: number, value: number) => {
+      const binding = remoteBinding
+      const family = lockedFamily
+      const age = activeAge()
+      if (!binding || !family || !activeTransitionId || age < 0 || age >= DEPARTURE_TOTAL_MS) {
+        return originalWrite16(address, value)
+      }
+
+      if (address === binding.handleAddress + HANDLE_MAT_ENTRY) {
+        return originalWrite16(address, family.matEntry)
+      }
+      if (address === binding.blActAddress + BLACT_GEOM_FLAGS) {
+        return originalWrite16(address, family.geomFlags)
+      }
+      if (address === binding.blActAddress + BLACT_FACE_INDEX) {
+        return originalWrite16(address, departureFace(activeDirection, age))
+      }
+      if (address === binding.blActAddress + BLACT_MAT_FLAGS) {
+        // Preserve visibility ownership from the caller while keeping the locked
+        // protagonist material flags for every other bit.
+        const normalized = (family.matFlags & ~BLACT_VISIBLE_MASK) | (value & BLACT_VISIBLE_MASK)
+        return originalWrite16(address, normalized)
+      }
+      return originalWrite16(address, value)
+    }
+
+    async function writeLockedFrame(age: number) {
+      const binding = remoteBinding
+      const family = lockedFamily
+      if (!binding || !family) return
+      await Promise.all([
+        originalWrite16(binding.handleAddress + HANDLE_MAT_ENTRY, family.matEntry),
+        originalWrite16(binding.blActAddress + BLACT_GEOM_FLAGS, family.geomFlags),
+        originalWrite16(binding.blActAddress + BLACT_FACE_INDEX, departureFace(activeDirection, age)),
+        originalWrite16(binding.blActAddress + BLACT_MAT_FLAGS, family.matFlags),
+      ])
+    }
 
     async function service() {
       if (cancelled || reading || runtimeBridge.status !== 'running') return
       const { local, remote } = presenceRef.current
       const transition = remote?.transition
       if (!local || !remote || !transition) {
-        activeTransitionId = ''
-        lockedFamily = null
-        remoteBinding = null
+        clearLock()
         return
       }
 
@@ -179,9 +227,7 @@ export function White2DoorDepartureRenderGuard({ bridge, rom }: { bridge: MelonD
         && age >= 0
         && age < DEPARTURE_TOTAL_MS
       if (!departure) {
-        activeTransitionId = ''
-        lockedFamily = null
-        remoteBinding = null
+        clearLock()
         return
       }
 
@@ -202,6 +248,8 @@ export function White2DoorDepartureRenderGuard({ bridge, rom }: { bridge: MelonD
           lockedFamily = await readFamily(runtimeBridge, playerBinding)
           remoteBinding = nextRemoteBinding
           activeTransitionId = transition.id
+          activeDetectedAt = transition.detectedAt
+          activeDirection = transition.fromDirection
           console.info('[PokéRun door] LOCKED DEPARTURE RENDER', {
             id: transition.id,
             direction: transition.fromDirection,
@@ -209,9 +257,7 @@ export function White2DoorDepartureRenderGuard({ bridge, rom }: { bridge: MelonD
           })
         }
 
-        if (!lockedFamily || !remoteBinding) return
-        const faceIndex = departureFace(transition.fromDirection, age)
-        await writeDepartureFrame(runtimeBridge, remoteBinding, lockedFamily, faceIndex)
+        await writeLockedFrame(age)
       } finally {
         reading = false
       }
@@ -226,6 +272,7 @@ export function White2DoorDepartureRenderGuard({ bridge, rom }: { bridge: MelonD
       cancelled = true
       unsubscribeFrame()
       window.clearInterval(timer)
+      runtimeBridge.write16 = originalWrite16
     }
   }, [bridge, rom.gameId, rom.sha256])
 
