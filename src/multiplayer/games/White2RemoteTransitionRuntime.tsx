@@ -3,17 +3,19 @@ import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerMapTransition, MultiplayerPlayerState, MultiplayerRomIdentity, MultiplayerWorldPosition } from '../core/protocol'
 import { White2DedicatedTrainerRuntime } from './White2DedicatedTrainerRuntime'
-import { White2DoorDepartureRenderGuard } from './White2DoorDepartureRenderGuard'
+import { White2DoorDepartureRenderGuardV2 } from './White2DoorDepartureRenderGuardV2'
 import { White2DoorTransitionPlayer } from './White2DoorTransition'
 import { White2ActorSystemProbe } from './White2ActorSystem'
 
 const UPDATE_MS = 20
-const HANDLE_TIMEOUT_MS = 1400
+const HANDLE_TIMEOUT_MS = 1800
+const DOOR_OPEN_HOLD_MS = 450
 
 type ActiveDoor = {
   handle: number
   mapId: number | string
   startedAt: number
+  finishedAt: number | null
 }
 
 function delay(ms: number) {
@@ -88,15 +90,30 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
         activeDoor = null
         return
       }
-      let finished = now - current.startedAt >= HANDLE_TIMEOUT_MS
-      if (!finished) {
-        try {
-          finished = await doors.isAnimationFinished(current.handle)
-        } catch {
-          finished = true
+
+      if (current.finishedAt !== null) {
+        if (now - current.finishedAt >= DOOR_OPEN_HOLD_MS) {
+          await dropActiveDoor(localMapId, true)
         }
+        return
       }
-      if (finished) await dropActiveDoor(localMapId, true)
+
+      if (now - current.startedAt >= HANDLE_TIMEOUT_MS) {
+        await dropActiveDoor(localMapId, true)
+        return
+      }
+
+      try {
+        if (await doors.isAnimationFinished(current.handle)) {
+          current.finishedAt = now
+          console.info('[PokéRun door] HOLD OPEN', {
+            mapId: current.mapId,
+            holdMs: DOOR_OPEN_HOLD_MS,
+          })
+        }
+      } catch {
+        await dropActiveDoor(localMapId, true)
+      }
     }
 
     async function playDoor(world: MultiplayerWorldPosition | undefined, localMapId: number | string, now: number) {
@@ -111,7 +128,14 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
           handle: animation.handle,
           world,
         })
-        if (animation.handle) activeDoor = { handle: animation.handle, mapId: localMapId, startedAt: now }
+        if (animation.handle) {
+          activeDoor = {
+            handle: animation.handle,
+            mapId: localMapId,
+            startedAt: now,
+            finishedAt: null,
+          }
+        }
         lastWarning = ''
       } catch (reason) {
         const message = reason instanceof Error ? reason.message : String(reason)
@@ -196,7 +220,7 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
 export function White2RemoteTransitionRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   return <>
     <White2DedicatedTrainerRuntime bridge={bridge} rom={rom}/>
-    <White2DoorDepartureRenderGuard bridge={bridge} rom={rom}/>
+    <White2DoorDepartureRenderGuardV2 bridge={bridge} rom={rom}/>
     <White2RemoteDoorRuntime bridge={bridge} rom={rom}/>
   </>
 }
