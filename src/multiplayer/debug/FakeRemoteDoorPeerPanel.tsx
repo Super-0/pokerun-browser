@@ -14,6 +14,9 @@ import { BroadcastChannelTransport } from '../transports/BroadcastChannelTranspo
 
 const TILE_WORLD = 0x10000
 const MAX_REPLAY_IDLE_GAP_MS = 1000
+const DOOR_APPROACH_STEP_MS = 40
+const DOOR_APPROACH_MIN_STEPS = 6
+const DOOR_APPROACH_READY_HOLD_MS = 120
 
 type RecordedPathFrame = {
   elapsedMs: number
@@ -271,8 +274,45 @@ class FakeRemoteDoorPeer {
     const toWorld = transition.toWorldPosition ?? worldFromGrid(transition.toX, transition.toY, fromWorld.y)
     const replayTransition = cloneTransition(transition)
     replayTransition.id = `fake-door:${this.playerId}:${Date.now()}`
-    replayTransition.detectedAt = Date.now()
 
+    const current = this.fakeState
+    if (current && current.location.mapId === transition.fromMapId && current.worldPosition) {
+      const startWorld = current.worldPosition
+      const deltaX = (fromWorld.x | 0) - (startWorld.x | 0)
+      const deltaZ = (fromWorld.z | 0) - (startWorld.z | 0)
+      const distanceTiles = Math.max(Math.abs(deltaX), Math.abs(deltaZ)) / TILE_WORLD
+      const steps = Math.max(DOOR_APPROACH_MIN_STEPS, Math.ceil(distanceTiles * 6))
+
+      for (let step = 1; step <= steps; step += 1) {
+        if (generation !== this.scriptGeneration) return
+        const fraction = step / steps
+        const finalStep = step === steps
+        this.publish({
+          location: { mapId: transition.fromMapId },
+          x: finalStep ? transition.fromX : current.x,
+          y: finalStep ? transition.fromY : current.y,
+          direction: transition.fromDirection,
+          movementState: 'moving',
+          worldPosition: {
+            x: Math.round((startWorld.x | 0) + deltaX * fraction) >>> 0,
+            y: fromWorld.y >>> 0,
+            z: Math.round((startWorld.z | 0) + deltaZ * fraction) >>> 0,
+          },
+        })
+        await sleep(DOOR_APPROACH_STEP_MS)
+      }
+    } else {
+      this.publish({
+        location: { mapId: transition.fromMapId },
+        x: transition.fromX,
+        y: transition.fromY,
+        direction: transition.fromDirection,
+        movementState: 'moving',
+        worldPosition: { ...fromWorld },
+      })
+    }
+
+    if (generation !== this.scriptGeneration) return
     this.publish({
       location: { mapId: transition.fromMapId },
       x: transition.fromX,
@@ -282,9 +322,14 @@ class FakeRemoteDoorPeer {
       worldPosition: { ...fromWorld },
     })
 
-    await sleep(450)
+    await sleep(DOOR_APPROACH_READY_HOLD_MS)
     if (generation !== this.scriptGeneration) return
 
+    // This timestamp must describe the actual remote map-change packet, not the
+    // earlier staging/approach. The renderer intentionally gives the door ~430 ms
+    // to open before moving the trainer through it; pre-stamping this transition
+    // used to consume that entire lead before the transition was even published.
+    replayTransition.detectedAt = Date.now()
     this.publish({
       location: { mapId: transition.toMapId },
       x: transition.toX,
@@ -296,7 +341,7 @@ class FakeRemoteDoorPeer {
     })
 
     console.info('[PokéRun fake door] REPLAYED REMOTE DEPARTURE', replayTransition)
-    await sleep(900)
+    await sleep(1100)
     if (generation === this.scriptGeneration) {
       this.finishScript(`REMOTE DOOR DEPARTURE COMPLETE • NOW ON MAP ${String(transition.toMapId)}`)
     }
