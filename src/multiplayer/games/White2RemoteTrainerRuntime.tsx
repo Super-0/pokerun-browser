@@ -1,5 +1,6 @@
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import { DevConsolePanel } from '../debug/DevConsolePanel'
+import { White2LocalRenderDiagnostics } from '../debug/White2LocalRenderDiagnostics'
 import { White2RenderTransitionDiagnostics } from '../debug/White2RenderTransitionDiagnostics'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import { White2RemoteTransitionRuntime } from './White2RemoteTransitionRuntime'
@@ -13,6 +14,7 @@ export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBri
     <White2RemoteTransitionRuntime bridge={bridge} rom={rom}/>
     {import.meta.env.DEV && <>
       <White2RenderTransitionDiagnostics bridge={bridge} rom={rom}/>
+      <White2LocalRenderDiagnostics bridge={bridge} rom={rom}/>
       <DevConsolePanel/>
     </>}
   </>
