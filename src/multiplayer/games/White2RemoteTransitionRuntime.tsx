@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerMapTransition, MultiplayerPlayerState, MultiplayerRomIdentity, MultiplayerWorldPosition } from '../core/protocol'
@@ -8,6 +8,10 @@ import { White2ActorSystemProbe } from './White2ActorSystem'
 
 const UPDATE_MS = 20
 const HANDLE_TIMEOUT_MS = 1400
+const LEGACY_RENDER_CACHE_VERSION = 4
+const MAP_RENDER_CACHE_VERSION = 1
+
+type MapId = MultiplayerPlayerState['location']['mapId']
 
 type ActiveDoor = {
   handle: number
@@ -21,6 +25,78 @@ function delay(ms: number) {
 
 function sameMap(a: number | string | undefined, b: number | string | undefined) {
   return a !== undefined && b !== undefined && a === b
+}
+
+function globalRenderCachePrefix(rom: MultiplayerRomIdentity) {
+  return `pokerun-white2-trainer-render-v${LEGACY_RENDER_CACHE_VERSION}:${rom.sha256 ?? 'unknown'}:`
+}
+
+function scopedRenderCachePrefix(rom: MultiplayerRomIdentity, mapId: MapId) {
+  return `pokerun-white2-trainer-render-map-v${MAP_RENDER_CACHE_VERSION}:${rom.sha256 ?? 'unknown'}:${encodeURIComponent(String(mapId))}:`
+}
+
+function storageKeys() {
+  const keys: string[] = []
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index)
+      if (key) keys.push(key)
+    }
+  } catch {
+    // Renderer caching is optional; live learning still works without storage.
+  }
+  return keys
+}
+
+/** Preserve the current runtime cache before its map-scoped instance unmounts. */
+function snapshotRenderCacheForMap(rom: MultiplayerRomIdentity, mapId: MapId) {
+  try {
+    const globalPrefix = globalRenderCachePrefix(rom)
+    const scopedPrefix = scopedRenderCachePrefix(rom, mapId)
+    for (const key of storageKeys()) {
+      if (!key.startsWith(globalPrefix)) continue
+      const modelId = key.slice(globalPrefix.length)
+      if (!modelId) continue
+      const value = localStorage.getItem(key)
+      if (value !== null) localStorage.setItem(`${scopedPrefix}${modelId}`, value)
+    }
+  } catch {
+    // Multiplayer continues if localStorage is unavailable.
+  }
+}
+
+/**
+ * Activate only the render knowledge learned on this map.
+ *
+ * White 2 legitimately uses different billboard material/geometry families in
+ * different fields (for example map 427 uses 13/13 while map 428 uses 0/0).
+ * White2DedicatedTrainerRuntime historically cached only by protagonist model,
+ * so entering a building could teach the indoor renderer and replay it onto the
+ * outdoor remote actor later. Keep the existing runtime untouched and swap its
+ * legacy cache slot as the local field changes.
+ */
+function restoreRenderCacheForMap(rom: MultiplayerRomIdentity, mapId: MapId) {
+  try {
+    const globalPrefix = globalRenderCachePrefix(rom)
+    const scopedPrefix = scopedRenderCachePrefix(rom, mapId)
+
+    // Remove the legacy/unscoped cache first. On the first run after this fix,
+    // that deliberately discards any already-contaminated v4 data.
+    for (const key of storageKeys()) {
+      if (key.startsWith(globalPrefix)) localStorage.removeItem(key)
+    }
+
+    // Rehydrate only cache entries previously learned on this exact map.
+    for (const key of storageKeys()) {
+      if (!key.startsWith(scopedPrefix)) continue
+      const modelId = key.slice(scopedPrefix.length)
+      if (!modelId) continue
+      const value = localStorage.getItem(key)
+      if (value !== null) localStorage.setItem(`${globalPrefix}${modelId}`, value)
+    }
+  } catch {
+    // Multiplayer continues if localStorage is unavailable.
+  }
 }
 
 function inferredTransition(previous: MultiplayerPlayerState, current: MultiplayerPlayerState, now: number): MultiplayerMapTransition | null {
@@ -39,6 +115,50 @@ function inferredTransition(previous: MultiplayerPlayerState, current: Multiplay
     toDirection: current.direction,
     toWorldPosition: current.worldPosition ? { ...current.worldPosition } : undefined,
   }
+}
+
+/**
+ * Owns one dedicated-trainer runtime per local field/render family.
+ *
+ * The previous map is removed for one React commit before the next map mounts.
+ * That guarantees the old runtime has finished cleanup before its legacy cache
+ * slot is replaced with the next map's scoped copy.
+ */
+function White2MapScopedTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
+  const [desiredMapId, setDesiredMapId] = useState<MapId | null>(null)
+  const [activeMapId, setActiveMapId] = useState<MapId | null>(null)
+  const activeMapRef = useRef<MapId | null>(null)
+
+  useEffect(() => multiplayerPresence.subscribe(snapshot => {
+    const nextMapId = snapshot.local?.location.mapId ?? null
+    const currentMapId = activeMapRef.current
+    if (currentMapId !== null && nextMapId !== currentMapId) {
+      // Snapshot synchronously, before React unmounts the old runtime and its
+      // cleanup can save a transition frame into the legacy cache slot.
+      snapshotRenderCacheForMap(rom, currentMapId)
+    }
+    setDesiredMapId(previous => previous === nextMapId ? previous : nextMapId)
+  }), [rom.gameId, rom.sha256])
+
+  useEffect(() => {
+    if (desiredMapId === activeMapId) return
+    if (desiredMapId === null) {
+      activeMapRef.current = null
+      setActiveMapId(null)
+      return
+    }
+
+    // This effect runs after the old keyed runtime has unmounted. Its cleanup may
+    // have rewritten the legacy cache slot, so replace that slot now with only
+    // the cache belonging to the field we're about to mount.
+    restoreRenderCacheForMap(rom, desiredMapId)
+    activeMapRef.current = desiredMapId
+    setActiveMapId(desiredMapId)
+    console.info('[PokéRun rendercache] MAP SCOPE ACTIVE', { mapId: desiredMapId })
+  }, [activeMapId, desiredMapId, rom.gameId, rom.sha256])
+
+  if (desiredMapId === null || activeMapId === null || desiredMapId !== activeMapId) return null
+  return <White2DedicatedTrainerRuntime key={String(activeMapId)} bridge={bridge} rom={rom}/>
 }
 
 /**
@@ -194,7 +314,7 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
 /** Production White 2 remote-player stack: real FieldActor + local transition visuals. */
 export function White2RemoteTransitionRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   return <>
-    <White2DedicatedTrainerRuntime bridge={bridge} rom={rom}/>
+    <White2MapScopedTrainerRuntime bridge={bridge} rom={rom}/>
     <White2RemoteDoorRuntime bridge={bridge} rom={rom}/>
   </>
 }
