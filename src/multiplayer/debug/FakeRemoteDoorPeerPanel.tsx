@@ -325,11 +325,10 @@ class FakeRemoteDoorPeer {
     await sleep(DOOR_APPROACH_READY_HOLD_MS)
     if (generation !== this.scriptGeneration) return
 
-    // This timestamp must describe the actual remote map-change packet, not the
-    // earlier staging/approach. The renderer intentionally gives the door ~430 ms
-    // to open before moving the trainer through it; pre-stamping this transition
-    // used to consume that entire lead before the transition was even published.
-    replayTransition.detectedAt = Date.now()
+    // The real door has already been opening throughout the threshold hold.
+    // Count that pre-open beat as part of the dedicated runtime's 430 ms lead
+    // instead of adding another full lead after the map-change packet.
+    replayTransition.detectedAt = Date.now() - DOOR_APPROACH_READY_HOLD_MS
     this.publish({
       location: { mapId: transition.toMapId },
       x: transition.toX,
