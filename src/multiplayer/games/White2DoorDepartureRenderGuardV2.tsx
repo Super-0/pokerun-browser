@@ -37,11 +37,10 @@ const DEPARTURE_TOTAL_MS = DEPARTURE_LEAD_MS + DEPARTURE_TRAVEL_MS
 // UID or map. Revalidate often enough that a captured door never starts with a
 // stale billboard binding from an earlier transition cycle.
 const PREPARED_BINDING_REVALIDATE_MS = 100
-// The fake/real peer reaches the threshold and briefly reports idle before its
-// map-change packet. Door pre-open happens inside this beat, so hold the known
-// protagonist renderer across it rather than letting the native NPC billboard
-// surface for a frame before the formal departure guard activates.
-const THRESHOLD_PRELOCK_MS = 220
+// Same-map door intent exists only while the controller is deliberately walking
+// P2 into a captured doorway. Keep the family locked during that approach, but
+// leave face-index writes alone so the ordinary walking animation still plays.
+const DOOR_INTENT_MAX_MS = 1200
 
 const FACE_START = {
   north: 0,
@@ -150,8 +149,8 @@ function departureFace(direction: Direction, age: number) {
 
 /**
  * Pre-locks the protagonist render while the remote is still on the local map.
- * That removes the one-frame race at the exact moment the replay packet changes
- * the remote map and White2DedicatedTrainerRuntime enters its synthetic departure.
+ * Door intent is explicit transition metadata, not a moving→idle guess, so
+ * ordinary manual movement can never activate this guard.
  */
 export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -175,9 +174,6 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
     let activeTransitionId = ''
     let activeDetectedAt = 0
     let activeDirection: Direction = 'north'
-    let previousRemoteMovementState: string | null = presenceRef.current.remote?.movementState ?? null
-    let thresholdPrelockUntil = 0
-    let thresholdPrelockDirection: Direction = presenceRef.current.remote?.direction ?? 'north'
 
     function clearPrepared() {
       preparedFamily = null
@@ -191,6 +187,18 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       activeDetectedAt = 0
     }
 
+    function doorIntentSnapshot() {
+      const { local, remote } = presenceRef.current
+      const transition = remote?.transition
+      if (!local || !remote || !transition) return null
+      if (local.location.mapId !== remote.location.mapId) return null
+      if (transition.fromMapId !== local.location.mapId) return null
+      if (transition.toMapId === transition.fromMapId) return null
+      const age = Date.now() - transition.detectedAt
+      if (age < 0 || age >= DOOR_INTENT_MAX_MS) return null
+      return { transition, age }
+    }
+
     function departureSnapshot() {
       const { local, remote } = presenceRef.current
       const transition = remote?.transition
@@ -200,16 +208,6 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       const age = Date.now() - transition.detectedAt
       if (age < 0 || age >= DEPARTURE_TOTAL_MS) return null
       return { transition, age }
-    }
-
-    function thresholdPrelockActive() {
-      const { local, remote } = presenceRef.current
-      return Boolean(
-        local
-        && remote
-        && local.location.mapId === remote.location.mapId
-        && Date.now() < thresholdPrelockUntil,
-      )
     }
 
     function promotePreparedDeparture() {
@@ -240,12 +238,13 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
     }
 
     runtimeBridge.write16 = async (address: number, value: number) => {
+      const intent = doorIntentSnapshot()
       const age = activeAge()
-      const thresholdActive = thresholdPrelockActive()
       const binding = preparedRemoteBinding
       const family = preparedFamily
       const departureActive = Boolean(activeTransitionId && age >= 0 && age < DEPARTURE_TOTAL_MS)
-      if (!binding || !family || (!departureActive && !thresholdActive)) {
+      const intentActive = Boolean(intent)
+      if (!binding || !family || (!departureActive && !intentActive)) {
         return originalWrite16(address, value)
       }
 
@@ -255,13 +254,8 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       if (address === binding.blActAddress + BLACT_GEOM_FLAGS) {
         return originalWrite16(address, family.geomFlags)
       }
-      if (address === binding.blActAddress + BLACT_FACE_INDEX) {
-        return originalWrite16(
-          address,
-          thresholdActive && !departureActive
-            ? FACE_START[thresholdPrelockDirection]
-            : departureFace(activeDirection, age),
-        )
+      if (address === binding.blActAddress + BLACT_FACE_INDEX && departureActive) {
+        return originalWrite16(address, departureFace(activeDirection, age))
       }
       if (address === binding.blActAddress + BLACT_MAT_FLAGS) {
         const normalized = (family.matFlags & ~BLACT_VISIBLE_MASK) | (value & BLACT_VISIBLE_MASK)
@@ -346,15 +340,16 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       ])
     }
 
-    async function writeThresholdPrelockFrame() {
+    async function writeIntentFamily() {
       const binding = preparedRemoteBinding
       const family = preparedFamily
       if (!binding || !family) return
+      const currentFlags = await runtimeBridge.read16(binding.blActAddress + BLACT_MAT_FLAGS)
+      const normalizedFlags = (family.matFlags & ~BLACT_VISIBLE_MASK) | (currentFlags & BLACT_VISIBLE_MASK)
       await Promise.all([
         originalWrite16(binding.handleAddress + HANDLE_MAT_ENTRY, family.matEntry),
         originalWrite16(binding.blActAddress + BLACT_GEOM_FLAGS, family.geomFlags),
-        originalWrite16(binding.blActAddress + BLACT_FACE_INDEX, FACE_START[thresholdPrelockDirection]),
-        originalWrite16(binding.blActAddress + BLACT_MAT_FLAGS, family.matFlags),
+        originalWrite16(binding.blActAddress + BLACT_MAT_FLAGS, normalizedFlags),
       ])
     }
 
@@ -378,9 +373,9 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
         const { local, remote } = presenceRef.current
         if (!local || !remote || local.location.mapId !== remote.location.mapId) return
 
-        if (thresholdPrelockActive()) {
+        if (doorIntentSnapshot()) {
           await prepareStableFamily(true)
-          await writeThresholdPrelockFrame()
+          await writeIntentFamily()
           return
         }
 
@@ -392,25 +387,7 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
 
     const unsubscribePresence = multiplayerPresence.subscribe(snapshot => {
       presenceRef.current = snapshot
-      const { local, remote } = snapshot
-      if (
-        local
-        && remote
-        && !remote.transition
-        && local.location.mapId === remote.location.mapId
-        && previousRemoteMovementState === 'moving'
-        && remote.movementState === 'idle'
-      ) {
-        thresholdPrelockDirection = remote.direction
-        thresholdPrelockUntil = Date.now() + THRESHOLD_PRELOCK_MS
-        console.info('[PokéRun door] THRESHOLD RENDER PRELOCK', {
-          mapId: local.location.mapId,
-          direction: remote.direction,
-          holdMs: THRESHOLD_PRELOCK_MS,
-        })
-        void service()
-      }
-      previousRemoteMovementState = remote?.movementState ?? null
+      if (doorIntentSnapshot()) void service()
     })
 
     const unsubscribeFrame = runtimeBridge.subscribeEmulatedFrame(() => {
