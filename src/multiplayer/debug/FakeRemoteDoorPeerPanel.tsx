@@ -13,7 +13,10 @@ import {
 import { BroadcastChannelTransport } from '../transports/BroadcastChannelTransport'
 
 const TILE_WORLD = 0x10000
-const MAX_REPLAY_IDLE_GAP_MS = 1000
+const WALK_STEP_MS = 40
+const WALK_STEPS = 6
+const RUN_STEP_MS = 24
+const RUN_STEPS = 6
 const DOOR_APPROACH_STEP_MS = 40
 const DOOR_APPROACH_MIN_STEPS = 6
 const DOOR_APPROACH_READY_HOLD_MS = 120
@@ -21,10 +24,8 @@ const DOOR_ARRIVAL_REVEAL_HOLD_MS = 340
 const DOOR_ARRIVAL_STEP_MS = 40
 const DOOR_ARRIVAL_STEPS = 6
 
-type RecordedPathFrame = {
-  elapsedMs: number
-  state: MultiplayerPlayerState
-}
+type Direction = MultiplayerPlayerState['direction']
+type MovementMode = 'walk' | 'run'
 
 type FakeRemoteSnapshot = {
   connection: MultiplayerConnectionState
@@ -34,9 +35,6 @@ type FakeRemoteSnapshot = {
   hostState: MultiplayerPlayerState | null
   fakeState: MultiplayerPlayerState | null
   script: string | null
-  recordingPath: boolean
-  recordedFrames: number
-  recordedDurationMs: number
   doorCaptureArmed: boolean
   capturedDoorTransition: MultiplayerMapTransition | null
 }
@@ -78,21 +76,21 @@ function sameRom(a: MultiplayerRomIdentity, b: MultiplayerRomIdentity) {
   return a.status === b.status && a.gameId === b.gameId && a.sha256 === b.sha256
 }
 
-function oppositeDirection(direction: MultiplayerPlayerState['direction']): MultiplayerPlayerState['direction'] {
+function oppositeDirection(direction: Direction): Direction {
   if (direction === 'north') return 'south'
   if (direction === 'south') return 'north'
   if (direction === 'west') return 'east'
   return 'west'
 }
 
-function stepGrid(x: number, y: number, direction: MultiplayerPlayerState['direction']) {
+function stepGrid(x: number, y: number, direction: Direction) {
   if (direction === 'north') return { x, y: y - 1 }
   if (direction === 'south') return { x, y: y + 1 }
   if (direction === 'west') return { x: x - 1, y }
   return { x: x + 1, y }
 }
 
-function stepWorld(world: MultiplayerWorldPosition, direction: MultiplayerPlayerState['direction']): MultiplayerWorldPosition {
+function stepWorld(world: MultiplayerWorldPosition, direction: Direction): MultiplayerWorldPosition {
   if (direction === 'north') return { ...world, z: (world.z - TILE_WORLD) >>> 0 }
   if (direction === 'south') return { ...world, z: (world.z + TILE_WORLD) >>> 0 }
   if (direction === 'west') return { ...world, x: (world.x - TILE_WORLD) >>> 0 }
@@ -115,10 +113,6 @@ class FakeRemoteDoorPeer {
   private readyRequested = false
   private scriptGeneration = 0
   private script: string | null = null
-  private recordingPath = false
-  private recordingStartedAt = 0
-  private recordingMapId: MultiplayerPlayerState['location']['mapId'] | null = null
-  private recordedPath: RecordedPathFrame[] = []
   private doorCaptureArmed = false
   private capturedDoorTransition: MultiplayerMapTransition | null = null
   private snapshot: FakeRemoteSnapshot = {
@@ -129,9 +123,6 @@ class FakeRemoteDoorPeer {
     hostState: null,
     fakeState: null,
     script: null,
-    recordingPath: false,
-    recordedFrames: 0,
-    recordedDurationMs: 0,
     doorCaptureArmed: false,
     capturedDoorTransition: null,
   }
@@ -147,7 +138,6 @@ class FakeRemoteDoorPeer {
 
   dispose() {
     this.stopScript()
-    this.recordingPath = false
     if (this.roomCode) this.send({ type: 'PLAYER_LEAVE', roomCode: this.roomCode, playerId: this.playerId })
     this.unsubscribeMessage?.()
     this.unsubscribeConnection?.()
@@ -168,7 +158,6 @@ class FakeRemoteDoorPeer {
     if (this.roomCode) this.send({ type: 'PLAYER_LEAVE', roomCode: this.roomCode, playerId: this.playerId })
 
     this.stopScript()
-    this.clearRecordedPath()
     this.roomCode = normalized
     this.room = null
     this.startId = ''
@@ -196,64 +185,51 @@ class FakeRemoteDoorPeer {
     })
   }
 
-  startPathRecording() {
-    if (!this.hostState || !this.startId) {
-      this.update({ phase: 'WAITING FOR HOST GAME STATE' })
-      return
-    }
-    this.stopScript()
-    const initial = clonePlayerState(this.hostState)
-    this.recordingPath = true
-    this.recordingStartedAt = performance.now()
-    this.recordingMapId = initial.location.mapId
-    this.recordedPath = [{ elapsedMs: 0, state: initial }]
-    this.update({
-      recordingPath: true,
-      recordedFrames: 1,
-      recordedDurationMs: 0,
-      phase: `RECORDING LEGAL PATH • MAP ${String(initial.location.mapId)}`,
-    })
-  }
-
-  stopPathRecording(phase = 'LEGAL PATH RECORDING STOPPED') {
-    if (!this.recordingPath) return
-    this.recordingPath = false
-    const duration = this.recordedPath[this.recordedPath.length - 1]?.elapsedMs ?? 0
-    this.update({
-      recordingPath: false,
-      recordedFrames: this.recordedPath.length,
-      recordedDurationMs: duration,
-      phase,
-    })
-  }
-
-  clearRecordedPath() {
-    this.recordingPath = false
-    this.recordingStartedAt = 0
-    this.recordingMapId = null
-    this.recordedPath = []
-    this.update({ recordingPath: false, recordedFrames: 0, recordedDurationMs: 0 })
-  }
-
-  async replayRecordedPath() {
-    if (this.recordingPath) this.stopPathRecording()
-    if (!this.startId || this.recordedPath.length < 2) {
-      this.update({ phase: 'RECORD AT LEAST TWO HOST STATES FIRST' })
+  async moveOneTile(direction: Direction, mode: MovementMode) {
+    const current = this.fakeState
+    if (!current || !this.startId) {
+      this.update({ phase: 'WAITING FOR FAKE REMOTE STATE' })
       return
     }
 
-    const frames = this.recordedPath.map(frame => ({ elapsedMs: frame.elapsedMs, state: clonePlayerState(frame.state) }))
-    const generation = this.beginScript(`REPLAY LEGAL PATH • ${frames.length} STATES`)
-    this.publish(frames[0].state)
+    const generation = this.beginScript(`${mode.toUpperCase()} ${direction.toUpperCase()}`)
+    const startWorld = current.worldPosition ?? worldFromGrid(current.x, current.y)
+    const targetGrid = stepGrid(current.x, current.y, direction)
+    const targetWorld = stepWorld(startWorld, direction)
+    const steps = mode === 'run' ? RUN_STEPS : WALK_STEPS
+    const stepMs = mode === 'run' ? RUN_STEP_MS : WALK_STEP_MS
+    const deltaX = (targetWorld.x | 0) - (startWorld.x | 0)
+    const deltaZ = (targetWorld.z | 0) - (startWorld.z | 0)
 
-    for (let index = 1; index < frames.length; index += 1) {
-      const gap = Math.max(0, frames[index].elapsedMs - frames[index - 1].elapsedMs)
-      await sleep(Math.min(MAX_REPLAY_IDLE_GAP_MS, gap))
+    for (let step = 1; step <= steps; step += 1) {
       if (generation !== this.scriptGeneration) return
-      this.publish(frames[index].state)
+      const fraction = step / steps
+      const finalStep = step === steps
+      this.publish({
+        location: { ...current.location },
+        x: finalStep ? targetGrid.x : current.x,
+        y: finalStep ? targetGrid.y : current.y,
+        direction,
+        movementState: 'moving',
+        worldPosition: {
+          x: Math.round((startWorld.x | 0) + deltaX * fraction) >>> 0,
+          y: startWorld.y >>> 0,
+          z: Math.round((startWorld.z | 0) + deltaZ * fraction) >>> 0,
+        },
+      })
+      await sleep(stepMs)
     }
 
-    if (generation === this.scriptGeneration) this.finishScript(`LEGAL PATH REPLAY COMPLETE • ${frames.length} STATES`)
+    if (generation !== this.scriptGeneration) return
+    this.publish({
+      location: { ...current.location },
+      x: targetGrid.x,
+      y: targetGrid.y,
+      direction,
+      movementState: 'idle',
+      worldPosition: { ...targetWorld },
+    })
+    this.finishScript(`FAKE REMOTE • ${mode.toUpperCase()} ${direction.toUpperCase()} • ${targetGrid.x},${targetGrid.y}`)
   }
 
   armDoorTransitionCapture() {
@@ -486,7 +462,6 @@ class FakeRemoteDoorPeer {
   }
 
   private beginScript(label: string) {
-    if (this.recordingPath) this.stopPathRecording()
     this.stopScript()
     const generation = ++this.scriptGeneration
     this.script = label
@@ -498,17 +473,6 @@ class FakeRemoteDoorPeer {
     this.script = null
     if (this.fakeState && this.startId) this.publish({ ...this.fakeState, movementState: 'idle' })
     this.update({ script: null, phase })
-  }
-
-  private captureRecordedHostState(state: MultiplayerPlayerState) {
-    if (!this.recordingPath) return
-    if (state.location.mapId !== this.recordingMapId) {
-      this.stopPathRecording('LEGAL PATH RECORDING STOPPED • MAP CHANGED')
-      return
-    }
-    const elapsedMs = Math.max(0, Math.round(performance.now() - this.recordingStartedAt))
-    this.recordedPath.push({ elapsedMs, state: clonePlayerState(state) })
-    this.update({ recordedFrames: this.recordedPath.length, recordedDurationMs: elapsedMs })
   }
 
   private receive(message: MultiplayerMessage) {
@@ -557,7 +521,6 @@ class FakeRemoteDoorPeer {
 
     if (message.type === 'GAME_STATE' && message.playerId !== this.playerId && (!this.startId || message.startId === this.startId)) {
       this.hostState = message.state
-      this.captureRecordedHostState(message.state)
 
       if (this.doorCaptureArmed && message.state.transition) {
         this.doorCaptureArmed = false
@@ -583,7 +546,6 @@ class FakeRemoteDoorPeer {
     this.startId = startId
     this.sequence = 0
     this.fakeState = null
-    this.clearRecordedPath()
     this.doorCaptureArmed = false
     this.capturedDoorTransition = null
     this.update({
@@ -630,6 +592,7 @@ class FakeRemoteDoorPeer {
 
 export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorageKey: string }) {
   const peer = useMemo(() => new FakeRemoteDoorPeer(), [])
+  const [movementMode, setMovementMode] = useState<MovementMode>('walk')
   const [snapshot, setSnapshot] = useState<FakeRemoteSnapshot>({
     connection: 'disconnected',
     phase: 'WAITING FOR HOST ROOM',
@@ -638,9 +601,6 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     hostState: null,
     fakeState: null,
     script: null,
-    recordingPath: false,
-    recordedFrames: 0,
-    recordedDurationMs: 0,
     doorCaptureArmed: false,
     capturedDoorTransition: null,
   })
@@ -660,6 +620,7 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
   }, [peer, roomCodeStorageKey])
 
   const controlsDisabled = !snapshot.gameStarted || !snapshot.hostState
+  const movementDisabled = controlsDisabled || !snapshot.fakeState || Boolean(snapshot.script)
   const fake = snapshot.fakeState
   const host = snapshot.hostState
   const arrivalReady = Boolean(
@@ -667,6 +628,7 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     && fake
     && fake.location.mapId === snapshot.capturedDoorTransition.toMapId,
   )
+  const movementButtonStyle = { minHeight: 30 }
 
   return <aside style={{
     position: 'fixed',
@@ -684,7 +646,7 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     fontSize: 11,
   }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-      <b>FAKE REMOTE PEER</b>
+      <b>REMOTE TEST CONTROLLER</b>
       <span>{snapshot.connection.toUpperCase()}</span>
     </div>
     <div style={{ marginTop: 4 }}>{snapshot.phase}</div>
@@ -693,7 +655,31 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     </div>
     <div style={{ marginTop: 4, opacity: 0.75 }}>
       HOST {host ? `${host.location.mapId} • ${host.x},${host.y}` : 'WAITING'}<br/>
-      FAKE {fake ? `${fake.location.mapId} • ${fake.x},${fake.y} • ${fake.direction.toUpperCase()}` : 'WAITING'}
+      P2 {fake ? `${fake.location.mapId} • ${fake.x},${fake.y} • ${fake.direction.toUpperCase()}` : 'WAITING'}
+    </div>
+
+    <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(53,84,107,0.35)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <b>MANUAL PLAYER 2</b>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button disabled={Boolean(snapshot.script)} onClick={() => setMovementMode('walk')} style={{ fontWeight: movementMode === 'walk' ? 700 : 400 }}>WALK</button>
+          <button disabled={Boolean(snapshot.script)} onClick={() => setMovementMode('run')} style={{ fontWeight: movementMode === 'run' ? 700 : 400 }}>RUN</button>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 42px)', gridTemplateRows: 'repeat(3, 32px)', justifyContent: 'center', gap: 4, marginTop: 8 }}>
+        <span/>
+        <button style={movementButtonStyle} disabled={movementDisabled} onClick={() => void peer.moveOneTile('north', movementMode)}>↑</button>
+        <span/>
+        <button style={movementButtonStyle} disabled={movementDisabled} onClick={() => void peer.moveOneTile('west', movementMode)}>←</button>
+        <span style={{ display: 'grid', placeItems: 'center', opacity: 0.45 }}>P2</span>
+        <button style={movementButtonStyle} disabled={movementDisabled} onClick={() => void peer.moveOneTile('east', movementMode)}>→</button>
+        <span/>
+        <button style={movementButtonStyle} disabled={movementDisabled} onClick={() => void peer.moveOneTile('south', movementMode)}>↓</button>
+        <span/>
+      </div>
+      <div style={{ marginTop: 6, opacity: 0.68, textAlign: 'center' }}>
+        One press = one tile • {movementMode === 'run' ? 'RUN ~144 ms' : 'WALK ~240 ms'}
+      </div>
     </div>
 
     <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(53,84,107,0.35)' }}>
@@ -722,24 +708,7 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
         </button>
       </div>
       <div style={{ marginTop: 5, opacity: 0.68 }}>
-        Arm this, walk the real trainer through a building door once, return outside, then replay departure. Arrival becomes available while the fake remote is on the inside map.
-      </div>
-    </div>
-
-    <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(53,84,107,0.35)' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-        <b>LEGAL PATH</b>
-        <span style={{ opacity: 0.75 }}>
-          {snapshot.recordingPath
-            ? `REC • ${snapshot.recordedFrames}`
-            : `${snapshot.recordedFrames} STATES • ${(snapshot.recordedDurationMs / 1000).toFixed(1)}s`}
-        </span>
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 6 }}>
-        <button disabled={controlsDisabled || snapshot.recordingPath} onClick={() => peer.startPathRecording()}>● RECORD HOST</button>
-        <button disabled={!snapshot.recordingPath} onClick={() => peer.stopPathRecording()}>■ STOP RECORD</button>
-        <button disabled={controlsDisabled || snapshot.recordingPath || snapshot.recordedFrames < 2 || Boolean(snapshot.script)} onClick={() => void peer.replayRecordedPath()}>▶ REPLAY PATH</button>
-        <button disabled={snapshot.recordingPath || snapshot.recordedFrames === 0} onClick={() => peer.clearRecordedPath()}>CLEAR PATH</button>
+        Door replay stays available as a regression test while new map-transition handling is built.
       </div>
     </div>
 
@@ -749,7 +718,7 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     </div>
 
     <div style={{ marginTop: 8, opacity: 0.7 }}>
-      One real emulator. The fake guest sends the same multiplayer protocol packets as Player 2.
+      The fake guest only sends normal multiplayer packets; these controls never poke the rendered actor directly.
       {snapshot.script ? <><br/><b>RUNNING: {snapshot.script}</b></> : null}
     </div>
   </aside>
