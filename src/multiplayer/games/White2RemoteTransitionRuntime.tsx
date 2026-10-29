@@ -3,7 +3,7 @@ import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerMapTransition, MultiplayerPlayerState, MultiplayerRomIdentity, MultiplayerWorldPosition } from '../core/protocol'
 import { White2DedicatedTrainerRuntime } from './White2DedicatedTrainerRuntime'
-import { White2DoorDepartureRenderGuardV2 } from './White2DoorDepartureRenderGuardV2'
+import { White2DoorTransitionRenderGuard } from './White2DoorTransitionRenderGuard'
 import { White2DoorTransitionPlayer } from './White2DoorTransition'
 import { White2ActorSystemProbe } from './White2ActorSystem'
 
@@ -249,8 +249,8 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
 /** Production White 2 remote-player stack: real FieldActor + local transition visuals. */
 export function White2RemoteTransitionRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   return <>
+    <White2DoorTransitionRenderGuard bridge={bridge} rom={rom}/>
     <White2DedicatedTrainerRuntime bridge={bridge} rom={rom}/>
-    <White2DoorDepartureRenderGuardV2 bridge={bridge} rom={rom}/>
     <White2RemoteDoorRuntime bridge={bridge} rom={rom}/>
   </>
 }
