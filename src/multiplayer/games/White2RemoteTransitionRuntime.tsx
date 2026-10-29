@@ -6,6 +6,7 @@ import { White2DedicatedTrainerRuntime } from './White2DedicatedTrainerRuntime'
 import { White2DoorTransitionRenderGuard } from './White2DoorTransitionRenderGuard'
 import { White2DoorTransitionPlayer } from './White2DoorTransition'
 import { White2ActorSystemProbe } from './White2ActorSystem'
+import { White2SameMapRenderFamilyGuard } from './White2SameMapRenderFamilyGuard'
 
 const UPDATE_MS = 20
 const HANDLE_TIMEOUT_MS = 1800
@@ -262,6 +263,7 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
 export function White2RemoteTransitionRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   return <>
     <White2DoorTransitionRenderGuard bridge={bridge} rom={rom}/>
+    <White2SameMapRenderFamilyGuard bridge={bridge} rom={rom}/>
     <White2DedicatedTrainerRuntime bridge={bridge} rom={rom}/>
     <White2RemoteDoorRuntime bridge={bridge} rom={rom}/>
   </>
