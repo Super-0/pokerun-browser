@@ -33,6 +33,10 @@ const MAIN_RAM_END = 0x02400000
 const DEPARTURE_LEAD_MS = 430
 const DEPARTURE_TRAVEL_MS = 260
 const DEPARTURE_TOTAL_MS = DEPARTURE_LEAD_MS + DEPARTURE_TRAVEL_MS
+// White 2 can rebuild a FieldActor's BlAct/handle without changing the actor's
+// UID or map. Revalidate often enough that a captured door never starts with a
+// stale billboard binding from an earlier transition cycle.
+const PREPARED_BINDING_REVALIDATE_MS = 100
 
 const FACE_START = {
   north: 0,
@@ -44,6 +48,7 @@ const FACE_START = {
 type Direction = keyof typeof FACE_START
 
 type Binding = {
+  actorAddress: number
   blActAddress: number
   handleAddress: number
 }
@@ -64,6 +69,13 @@ function isMainRamFunctionPointer(value: number) {
     && address >= MAIN_RAM_START
     && address < MAIN_RAM_END
     && ((value & 1) === 1 || (address & 3) === 0)
+}
+
+function sameBinding(a: Binding | null, b: Binding) {
+  return Boolean(a)
+    && a!.actorAddress === b.actorAddress
+    && a!.blActAddress === b.blActAddress
+    && a!.handleAddress === b.handleAddress
 }
 
 async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actorSystem: number): Promise<Binding | null> {
@@ -105,6 +117,7 @@ async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actor
   if (!handleAddress) return null
 
   return {
+    actorAddress,
     blActAddress: sceneActors + blActIndex * BLACT_SIZE,
     handleAddress,
   }
@@ -153,6 +166,7 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
     let preparedFamily: RenderFamily | null = null
     let preparedRemoteBinding: Binding | null = null
     let preparedMapId: number | string | null = null
+    let lastPreparedValidationAt = 0
     let activeTransitionId = ''
     let activeDetectedAt = 0
     let activeDirection: Direction = 'north'
@@ -161,6 +175,7 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       preparedFamily = null
       preparedRemoteBinding = null
       preparedMapId = null
+      lastPreparedValidationAt = 0
     }
 
     function clearActive() {
@@ -190,6 +205,9 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
         console.info('[PokéRun door] ACTIVATED PRELOCKED DEPARTURE RENDER', {
           id: transition.id,
           direction: transition.fromDirection,
+          actor: preparedRemoteBinding.actorAddress,
+          blActAddress: preparedRemoteBinding.blActAddress,
+          handleAddress: preparedRemoteBinding.handleAddress,
           ...preparedFamily,
         })
       }
@@ -227,29 +245,68 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       return originalWrite16(address, value)
     }
 
-    async function prepareStableFamily() {
-      const { local, remote } = presenceRef.current
-      if (!local || !remote || local.location.mapId !== remote.location.mapId) return
-      if (preparedFamily && preparedRemoteBinding && preparedMapId === local.location.mapId) return
-
+    async function resolveLiveBindings() {
       const scan = await probe.scanHeap()
       const player = scan.entries.find(entry => entry.uid === PLAYER_UID && entry.state === 'player')
       const remoteActor = scan.entries.find(entry => entry.uid === POKERUN_NATIVE_TEST_UID && entry.state === 'active')
-      if (!player || !remoteActor) return
+      if (!player || !remoteActor) return null
 
       const [playerBinding, remoteBinding] = await Promise.all([
         resolveBinding(runtimeBridge, player.address, scan.actorSystem),
         resolveBinding(runtimeBridge, remoteActor.address, scan.actorSystem),
       ])
-      if (!playerBinding || !remoteBinding) return
+      if (!playerBinding || !remoteBinding) return null
+      return { playerBinding, remoteBinding }
+    }
 
-      preparedFamily = await readFamily(runtimeBridge, playerBinding)
-      preparedRemoteBinding = remoteBinding
+    async function prepareStableFamily(force = false) {
+      const { local, remote } = presenceRef.current
+      if (!local || !remote || local.location.mapId !== remote.location.mapId) return
+
+      const now = Date.now()
+      if (
+        !force
+        && preparedFamily
+        && preparedRemoteBinding
+        && preparedMapId === local.location.mapId
+        && now - lastPreparedValidationAt < PREPARED_BINDING_REVALIDATE_MS
+      ) return
+
+      const live = await resolveLiveBindings()
+      lastPreparedValidationAt = now
+      if (!live) return
+
+      const nextFamily = await readFamily(runtimeBridge, live.playerBinding)
+      const bindingChanged = !sameBinding(preparedRemoteBinding, live.remoteBinding)
+      const mapChanged = preparedMapId !== local.location.mapId
+
+      preparedFamily = nextFamily
+      preparedRemoteBinding = live.remoteBinding
       preparedMapId = local.location.mapId
-      console.info('[PokéRun door] PREPARED DEPARTURE RENDER', {
-        mapId: local.location.mapId,
-        ...preparedFamily,
-      })
+
+      if (bindingChanged || mapChanged) {
+        console.info('[PokéRun door] REFRESHED DEPARTURE RENDER BINDING', {
+          mapId: local.location.mapId,
+          actor: live.remoteBinding.actorAddress,
+          blActAddress: live.remoteBinding.blActAddress,
+          handleAddress: live.remoteBinding.handleAddress,
+          ...nextFamily,
+        })
+      }
+    }
+
+    async function refreshRemoteBindingDuringDeparture() {
+      if (!preparedFamily) return
+      const live = await resolveLiveBindings()
+      if (!live) return
+      if (!sameBinding(preparedRemoteBinding, live.remoteBinding)) {
+        preparedRemoteBinding = live.remoteBinding
+        console.info('[PokéRun door] REBOUND DEPARTURE RENDER DURING TRANSITION', {
+          actor: live.remoteBinding.actorAddress,
+          blActAddress: live.remoteBinding.blActAddress,
+          handleAddress: live.remoteBinding.handleAddress,
+        })
+      }
     }
 
     async function writeLockedFrame(age: number) {
@@ -270,6 +327,7 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       try {
         const departure = departureSnapshot()
         if (departure) {
+          await refreshRemoteBindingDuringDeparture()
           const age = promotePreparedDeparture()
           if (age !== null) await writeLockedFrame(age)
           return
