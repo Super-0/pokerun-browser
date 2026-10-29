@@ -1,4 +1,5 @@
 import type { Arm9NativeCallResult, MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
+import { multiplayerPresence } from '../core/MultiplayerPresence'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import {
   White2ActorSystemProbe,
@@ -81,6 +82,11 @@ export type White2NativeSpawn = {
   z: number
 }
 
+type NativeSpawnPosition = {
+  x: number
+  y: number
+}
+
 function hex(value: number) {
   return `0x${(value >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
 }
@@ -116,11 +122,22 @@ function putU16(view: DataView, offset: number, value: number) {
   view.setUint16(offset, value & 0xffff, true)
 }
 
-function buildZoneNpc(player: White2ActorHeapEntry) {
+function currentRemoteSpawnPosition(): NativeSpawnPosition | null {
+  let position: NativeSpawnPosition | null = null
+  const unsubscribe = multiplayerPresence.subscribe(snapshot => {
+    const { local, remote } = snapshot
+    if (!local || !remote || local.location.mapId !== remote.location.mapId) return
+    position = { x: remote.x, y: remote.y }
+  })
+  unsubscribe()
+  return position
+}
+
+function buildZoneNpc(player: White2ActorHeapEntry, spawnPosition: NativeSpawnPosition | null) {
   const bytes = new Uint8Array(ZONE_NPC_SIZE)
   const view = new DataView(bytes.buffer)
-  const x = Math.max(-32768, Math.min(32767, player.x + 1))
-  const z = Math.max(-32768, Math.min(32767, player.y))
+  const x = Math.max(-32768, Math.min(32767, spawnPosition?.x ?? (player.x + 1)))
+  const z = Math.max(-32768, Math.min(32767, spawnPosition?.y ?? player.y))
 
   putU16(view, 0x00, POKERUN_NATIVE_TEST_UID)
   putU16(view, 0x02, UNION_REMOTE_TRAINER_MODEL)
@@ -286,7 +303,8 @@ export class White2NativeActorBridge {
     const createOpcode = await this.bridge.read16(CREATE_ACTOR)
     if (createOpcode === 0 || createOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-create address.')
 
-    const npc = buildZoneNpc(player)
+    const spawnPosition = currentRemoteSpawnPosition()
+    const npc = buildZoneNpc(player, spawnPosition)
     const actorAddress = await this.runFieldTask(
       scan,
       CREATE_ACTOR,
@@ -302,6 +320,12 @@ export class White2NativeActorBridge {
       throw new White2NativeActorUnsafeStateError(`Created actor verification failed: returned ${hex(actorAddress)}, FindFieldActor saw ${hex(found)}. Reload the tab before retrying.`)
     }
 
+    console.info('[PokéRun lifecycle] NATIVE REMOTE CREATED', {
+      actor: actorAddress,
+      x: npc.x,
+      y: npc.z,
+      authoritativeRemotePosition: Boolean(spawnPosition),
+    })
     return { actorAddress, uid: POKERUN_NATIVE_TEST_UID, modelId: npc.modelId, zoneId: player.zoneId, x: npc.x, z: npc.z }
   }
 
