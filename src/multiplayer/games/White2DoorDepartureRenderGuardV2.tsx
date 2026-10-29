@@ -41,6 +41,11 @@ const PREPARED_BINDING_REVALIDATE_MS = 100
 // P2 into a captured doorway. Keep the family locked during that approach, but
 // leave face-index writes alone so the ordinary walking animation still plays.
 const DOOR_INTENT_MAX_MS = 1200
+// When Player 1 follows an already-off-map P2 onto the same field, keep the
+// dedicated actor invisible while White 2 rebuilds its actor/billboard binding.
+// The normal runtime may write visibility during this window; the write guard
+// below makes the quarantine authoritative until the new binding is stable.
+const SAME_MAP_REBIND_QUARANTINE_MS = 700
 
 const FACE_START = {
   north: 0,
@@ -174,6 +179,8 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
     let activeTransitionId = ''
     let activeDetectedAt = 0
     let activeDirection: Direction = 'north'
+    let previousLocalMapId: number | string | null = presenceRef.current.local?.location.mapId ?? null
+    let sameMapRebindQuarantineUntil = 0
 
     function clearPrepared() {
       preparedFamily = null
@@ -191,6 +198,10 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       const { local, remote } = presenceRef.current
       if (!local || !remote || local.location.mapId !== remote.location.mapId) return null
       return { local, remote }
+    }
+
+    function sameMapRebindQuarantineActive() {
+      return Boolean(sameMapSnapshot() && Date.now() < sameMapRebindQuarantineUntil)
     }
 
     function doorIntentSnapshot() {
@@ -244,6 +255,7 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
 
     runtimeBridge.write16 = async (address: number, value: number) => {
       const sameMapActive = Boolean(sameMapSnapshot())
+      const quarantineActive = sameMapRebindQuarantineActive()
       const intent = doorIntentSnapshot()
       const age = activeAge()
       const binding = preparedRemoteBinding
@@ -267,9 +279,9 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       if (departureActive && address === binding.blActAddress + BLACT_FACE_INDEX) {
         return originalWrite16(address, departureFace(activeDirection, age))
       }
-      if ((intentActive || departureActive) && address === binding.blActAddress + BLACT_MAT_FLAGS) {
+      if ((quarantineActive || intentActive || departureActive) && address === binding.blActAddress + BLACT_MAT_FLAGS) {
         const normalized = (family.matFlags & ~BLACT_VISIBLE_MASK) | (value & BLACT_VISIBLE_MASK)
-        return originalWrite16(address, normalized)
+        return originalWrite16(address, quarantineActive ? (normalized & ~BLACT_VISIBLE_MASK) : normalized)
       }
       return originalWrite16(address, value)
     }
@@ -354,10 +366,15 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       const binding = preparedRemoteBinding
       const family = preparedFamily
       if (!binding || !family) return
-      await Promise.all([
+      const writes: Promise<void>[] = [
         originalWrite16(binding.handleAddress + HANDLE_MAT_ENTRY, family.matEntry),
         originalWrite16(binding.blActAddress + BLACT_GEOM_FLAGS, family.geomFlags),
-      ])
+      ]
+      if (sameMapRebindQuarantineActive()) {
+        const flags = await runtimeBridge.read16(binding.blActAddress + BLACT_MAT_FLAGS)
+        writes.push(originalWrite16(binding.blActAddress + BLACT_MAT_FLAGS, flags & ~BLACT_VISIBLE_MASK))
+      }
+      await Promise.all(writes)
     }
 
     async function writeIntentFamily() {
@@ -393,7 +410,7 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
           return
         }
 
-        await prepareStableFamily(Boolean(doorIntentSnapshot()))
+        await prepareStableFamily(Boolean(doorIntentSnapshot()) || sameMapRebindQuarantineActive())
         if (doorIntentSnapshot()) {
           await writeIntentFamily()
           return
@@ -407,6 +424,19 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
 
     const unsubscribePresence = multiplayerPresence.subscribe(snapshot => {
       presenceRef.current = snapshot
+      const localMapId = snapshot.local?.location.mapId ?? null
+      const remoteMapId = snapshot.remote?.location.mapId ?? null
+      const localChanged = previousLocalMapId !== null && localMapId !== null && previousLocalMapId !== localMapId
+
+      if (localChanged && localMapId === remoteMapId) {
+        sameMapRebindQuarantineUntil = Date.now() + SAME_MAP_REBIND_QUARANTINE_MS
+        clearPrepared()
+        console.info('[PokéRun render] SAME-MAP REBIND QUARANTINE', {
+          mapId: localMapId,
+          holdMs: SAME_MAP_REBIND_QUARANTINE_MS,
+        })
+      }
+      previousLocalMapId = localMapId
       void service()
     })
 
