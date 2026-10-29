@@ -10,10 +10,12 @@ import { White2ActorSystemProbe } from './White2ActorSystem'
 const UPDATE_MS = 20
 const HANDLE_TIMEOUT_MS = 1800
 const DOOR_OPEN_HOLD_MS = 450
+const LOCAL_DOOR_PRIORITY_RADIUS_FX32 = 0x18000
 
 type ActiveDoor = {
   handle: number
   mapId: number | string
+  world: MultiplayerWorldPosition
   startedAt: number
   finishedAt: number | null
 }
@@ -24,6 +26,12 @@ function delay(ms: number) {
 
 function sameMap(a: number | string | undefined, b: number | string | undefined) {
   return a !== undefined && b !== undefined && a === b
+}
+
+function nearDoor(world: MultiplayerWorldPosition | undefined, doorWorld: MultiplayerWorldPosition) {
+  if (!world) return false
+  return Math.abs((world.x | 0) - (doorWorld.x | 0)) <= LOCAL_DOOR_PRIORITY_RADIUS_FX32
+    && Math.abs((world.z | 0) - (doorWorld.z | 0)) <= LOCAL_DOOR_PRIORITY_RADIUS_FX32
 }
 
 function inferredTransition(previous: MultiplayerPlayerState, current: MultiplayerPlayerState, now: number): MultiplayerMapTransition | null {
@@ -132,6 +140,7 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
           activeDoor = {
             handle: animation.handle,
             mapId: localMapId,
+            world: { ...world },
             startedAt: now,
             finishedAt: null,
           }
@@ -181,6 +190,24 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
     async function tick() {
       const now = Date.now()
       const { local, remote } = presenceRef.current
+
+      // PokéRun door animation is cosmetic. If the real trainer starts moving
+      // into the same doorway, release our temporary prop handle immediately so
+      // White 2's native door script owns the door exclusively.
+      if (
+        activeDoor
+        && local
+        && sameMap(activeDoor.mapId, local.location.mapId)
+        && local.movementState === 'moving'
+        && nearDoor(local.worldPosition, activeDoor.world)
+      ) {
+        console.info('[PokéRun door] LOCAL PLAYER PRIORITY • RELEASE REMOTE DOOR', {
+          mapId: activeDoor.mapId,
+          handle: activeDoor.handle,
+        })
+        await dropActiveDoor(local.location.mapId, true)
+      }
+
       await serviceActiveDoor(local?.location.mapId, now)
       if (!local || !remote) {
         previousRemote = remote
@@ -189,26 +216,11 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
 
       const priorRemote = previousRemote
 
-      // DEV replay gets one short idle beat at the captured threshold before its
-      // map-change packet. Probe the real door there so it begins opening during
-      // that beat instead of waiting for the transition packet. Misses are safe:
-      // CreateHandleAtPos simply returns no handle away from an actual door.
-      if (
-        import.meta.env.DEV
-        && !activeDoor
-        && sameMap(local.location.mapId, remote.location.mapId)
-        && remote.movementState === 'idle'
-        && priorRemote?.movementState === 'moving'
-        && remote.worldPosition
-      ) {
-        await playDoor(remote.worldPosition, local.location.mapId, now)
-        if (activeDoor) {
-          console.info('[PokéRun door] PREOPENED AT REMOTE THRESHOLD', {
-            mapId: local.location.mapId,
-            world: remote.worldPosition,
-          })
-        }
-      }
+      // Do not infer a door from ordinary remote movement. The previous DEV-only
+      // moving→idle probe caused manual Player 2 movement near a real doorway to
+      // open that door and could leave a cosmetic prop handle active while the
+      // local trainer tried to use it. Doors now play only for actual transition
+      // metadata (or an inferred map change), never for a same-map stop.
 
       // Prefer explicit transition metadata when available. The inferred path
       // keeps this compatible with peers that only publish ordinary state.
