@@ -298,11 +298,18 @@ class FakeRemoteDoorPeer {
     const transition = this.capturedDoorTransition
     if (!transition) return null
 
+    const entryApproach = stepGrid(
+      transition.fromX,
+      transition.fromY,
+      oppositeDirection(transition.fromDirection),
+    )
+    const onEntryApproach = current.x === entryApproach.x && current.y === entryApproach.y
+    const alreadyOnDoorTile = current.x === transition.fromX && current.y === transition.fromY
+
     if (
       current.location.mapId === transition.fromMapId
-      && current.x === transition.fromX
-      && current.y === transition.fromY
       && direction === transition.fromDirection
+      && (onEntryApproach || alreadyOnDoorTile)
     ) return 'forward'
 
     const exitDirection = oppositeDirection(transition.fromDirection)
@@ -349,7 +356,6 @@ class FakeRemoteDoorPeer {
           toWorldPosition: { ...outsideWorld },
         }
 
-    const sourceWorld = forward ? exteriorWorld : interiorWorld
     const destination = forward
       ? {
           location: { mapId: transition.toMapId },
@@ -372,34 +378,74 @@ class FakeRemoteDoorPeer {
         : `EXIT DOOR • ${String(transition.toMapId)} → ${String(transition.fromMapId)}`,
     )
 
-    // Intent frame: locks the fake remote into the through-door direction rather
-    // than allowing this D-pad press to become an ordinary one-tile move.
-    this.publish({
-      location: { ...current.location },
-      x: current.x,
-      y: current.y,
-      direction: replayTransition.fromDirection,
-      movementState: 'moving',
-      worldPosition: { ...sourceWorld },
-    })
-    await sleep(DOOR_INTENT_MS)
-    if (generation !== this.scriptGeneration) return
+    if (forward) {
+      const startWorld = current.worldPosition ?? worldFromGrid(current.x, current.y, exteriorWorld.y)
+      const deltaX = (exteriorWorld.x | 0) - (startWorld.x | 0)
+      const deltaZ = (exteriorWorld.z | 0) - (startWorld.z | 0)
+      const alreadyOnDoorTile = current.x === transition.fromX && current.y === transition.fromY
+      const steps = alreadyOnDoorTile ? 1 : WALK_STEPS
 
-    // Same-map transition metadata is an explicit pre-open signal. The door
-    // runtime may animate the local prop, while the dedicated actor remains on
-    // this map until the actual map-change packet below.
-    this.publish({
-      location: { ...current.location },
-      x: current.x,
-      y: current.y,
-      direction: replayTransition.fromDirection,
-      movementState: 'idle',
-      worldPosition: { ...sourceWorld },
-      transition: replayTransition,
-    })
+      for (let step = 1; step <= steps; step += 1) {
+        if (generation !== this.scriptGeneration) return
+        const fraction = step / steps
+        const finalStep = step === steps
+        this.publish({
+          location: { mapId: transition.fromMapId },
+          x: finalStep ? transition.fromX : current.x,
+          y: finalStep ? transition.fromY : current.y,
+          direction: transition.fromDirection,
+          movementState: 'moving',
+          worldPosition: {
+            x: Math.round((startWorld.x | 0) + deltaX * fraction) >>> 0,
+            y: exteriorWorld.y >>> 0,
+            z: Math.round((startWorld.z | 0) + deltaZ * fraction) >>> 0,
+          },
+          transition: replayTransition,
+        })
+        await sleep(WALK_STEP_MS)
+      }
+
+      if (generation !== this.scriptGeneration) return
+      this.publish({
+        location: { mapId: transition.fromMapId },
+        x: transition.fromX,
+        y: transition.fromY,
+        direction: transition.fromDirection,
+        movementState: 'idle',
+        worldPosition: { ...exteriorWorld },
+        transition: replayTransition,
+      })
+    } else {
+      // Exit starts on the captured interior trigger tile. Mark the intent before
+      // changing maps so the interior door can open while P2 remains visible.
+      this.publish({
+        location: { mapId: transition.toMapId },
+        x: transition.toX,
+        y: transition.toY,
+        direction: exitDirection,
+        movementState: 'moving',
+        worldPosition: { ...interiorWorld },
+        transition: replayTransition,
+      })
+      await sleep(DOOR_INTENT_MS)
+      if (generation !== this.scriptGeneration) return
+      this.publish({
+        location: { mapId: transition.toMapId },
+        x: transition.toX,
+        y: transition.toY,
+        direction: exitDirection,
+        movementState: 'idle',
+        worldPosition: { ...interiorWorld },
+        transition: replayTransition,
+      })
+    }
+
     await sleep(DOOR_PREOPEN_MS)
     if (generation !== this.scriptGeneration) return
 
+    // Keep the proven synthetic-departure timing: the pre-open beat counts as
+    // part of the 430 ms lead once the authoritative map-change packet arrives.
+    replayTransition.detectedAt = Date.now() - DOOR_PREOPEN_MS
     this.publish({
       ...destination,
       movementState: 'idle',
@@ -593,6 +639,9 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
   const host = snapshot.hostState
   const door = snapshot.capturedDoorTransition
   const exitDirection = door ? oppositeDirection(door.fromDirection) : null
+  const entryApproach = door
+    ? stepGrid(door.fromX, door.fromY, oppositeDirection(door.fromDirection))
+    : null
   const movementButtonStyle = { minHeight: 30 }
 
   return <aside style={{
@@ -666,10 +715,11 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
           CLEAR DOOR
         </button>
       </div>
-      {door && exitDirection ? <div style={{ marginTop: 6, opacity: 0.72 }}>
-        ENTER: map {String(door.fromMapId)} @ {door.fromX},{door.fromY} {arrowForDirection(door.fromDirection)}<br/>
+      {door && exitDirection && entryApproach ? <div style={{ marginTop: 6, opacity: 0.72 }}>
+        ENTER: map {String(door.fromMapId)} @ {entryApproach.x},{entryApproach.y} {arrowForDirection(door.fromDirection)}<br/>
+        DOOR TILE: {door.fromX},{door.fromY} (included in animation)<br/>
         EXIT: map {String(door.toMapId)} @ {door.toX},{door.toY} {arrowForDirection(exitDirection)}<br/>
-        Stand P2 on the trigger tile and press that direction. The D-pad input becomes the door transition.
+        Stand P2 on ENTER and press that direction. The doorway tile is consumed by the transition instead of ordinary movement.
       </div> : <div style={{ marginTop: 5, opacity: 0.68 }}>
         Capture the real trainer using this door once. After that, P2 can enter and exit it directly with the D-pad.
       </div>}
@@ -681,7 +731,7 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     </div>
 
     <div style={{ marginTop: 8, opacity: 0.7 }}>
-      P2 only sends normal multiplayer packets. Door use is now driven by intentional movement input, never proximity.
+      P2 only sends normal multiplayer packets. Door use is driven by intentional movement input, never proximity.
       {snapshot.script ? <><br/><b>RUNNING: {snapshot.script}</b></> : null}
     </div>
   </aside>
