@@ -18,7 +18,6 @@ const BLACT_SCENE_ACTORS = 0x08
 const BLACT_SCENE_CONFIG_ACTOR_COUNT = 0x0e
 const BLACT_SIZE = 0x1c
 const BLACT_GEOM_FLAGS = 0x00
-const BLACT_FACE_INDEX = 0x10
 const BLACT_MAT_FLAGS = 0x18
 const BLACT_VISIBLE_MASK = 0x0200
 const HANDLE_SIZE = 0x28
@@ -30,15 +29,8 @@ const BLACT_NONE = 0xffff
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
 const ARRIVAL_VISIBILITY_GATE_MS = 1200
-const FIELD_FAMILY_STABLE_SAMPLES = 12
+const FIELD_FAMILY_STABLE_SAMPLES = 6
 const FIELD_FAMILY_CHECK_MS = 40
-
-const FACE_START = {
-  north: 0,
-  south: 3,
-  west: 6,
-  east: 9,
-} as const
 
 type Binding = {
   actorAddress: number
@@ -49,7 +41,6 @@ type Binding = {
 type RenderFamily = {
   matEntry: number
   geomFlags: number
-  matFlags: number
 }
 
 function isMainRamPointer(value: number) {
@@ -110,37 +101,24 @@ async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actor
 }
 
 async function readFamily(bridge: MelonDsBridge, binding: Binding): Promise<RenderFamily> {
-  const [matEntry, geomFlags, matFlags] = await Promise.all([
+  const [matEntry, geomFlags] = await Promise.all([
     bridge.read16(binding.handleAddress + HANDLE_MAT_ENTRY),
     bridge.read16(binding.blActAddress + BLACT_GEOM_FLAGS),
-    bridge.read16(binding.blActAddress + BLACT_MAT_FLAGS),
   ])
-  return { matEntry, geomFlags, matFlags }
+  return { matEntry, geomFlags }
 }
 
 function sameFamily(a: RenderFamily, b: RenderFamily) {
-  return a.matEntry === b.matEntry
-    && a.geomFlags === b.geomFlags
-    && (a.matFlags & ~BLACT_VISIBLE_MASK) === (b.matFlags & ~BLACT_VISIBLE_MASK)
+  return a.matEntry === b.matEntry && a.geomFlags === b.geomFlags
 }
 
-async function writeFamilyPreservingVisibility(
-  bridge: MelonDsBridge,
-  binding: Binding,
-  family: RenderFamily,
-  idleFaceIndex?: number,
-) {
-  const currentFlags = await bridge.read16(binding.blActAddress + BLACT_MAT_FLAGS)
-  const normalizedFlags = (family.matFlags & ~BLACT_VISIBLE_MASK) | (currentFlags & BLACT_VISIBLE_MASK)
-  const writes: Promise<unknown>[] = [
-    bridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, family.matEntry),
-    bridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, family.geomFlags),
-    bridge.write16(binding.blActAddress + BLACT_MAT_FLAGS, normalizedFlags),
-  ]
-  if (idleFaceIndex !== undefined) {
-    writes.push(bridge.write16(binding.blActAddress + BLACT_FACE_INDEX, idleFaceIndex))
-  }
-  await Promise.all(writes)
+async function setBindingVisible(bridge: MelonDsBridge, binding: Binding, visible: boolean) {
+  const flagsAddress = binding.blActAddress + BLACT_MAT_FLAGS
+  const flags = await bridge.read16(flagsAddress)
+  const next = visible
+    ? flags | BLACT_VISIBLE_MASK
+    : flags & ~BLACT_VISIBLE_MASK
+  if (next !== flags) await bridge.write16(flagsAddress, next)
 }
 
 /**
@@ -183,11 +161,7 @@ function White2DoorArrivalVisibilityGate({ bridge, rom }: { bridge: MelonDsBridg
           const family = await readFamily(runtimeBridge, binding)
           if (sameFamily(family, protagonistFamily)) continue
 
-          const flagsAddress = binding.blActAddress + BLACT_MAT_FLAGS
-          const flags = await runtimeBridge.read16(flagsAddress)
-          if ((flags & BLACT_VISIBLE_MASK) !== 0) {
-            await runtimeBridge.write16(flagsAddress, flags & ~BLACT_VISIBLE_MASK)
-          }
+          await setBindingVisible(runtimeBridge, binding, false)
           if (!hiddenActors.has(actor.address)) {
             hiddenActors.add(actor.address)
             console.info('[PokéRun arrival] HID NON-PROTAGONIST REMOTE ACTOR', {
@@ -249,13 +223,12 @@ function White2DoorArrivalVisibilityGate({ bridge, rom }: { bridge: MelonDsBridg
 }
 
 /**
- * When the local player follows an already-off-map remote into its field, White 2
- * can rebuild the billboard atlas with a different material family. The remote
- * animation cache may still contain the previous field's family for a few ticks,
- * which renders as a black box on some interiors. Normalize only material/geometry
- * against the live local protagonist until the dedicated runtime stays correct on
- * its own. Face animation remains untouched except for idle, where the canonical
- * directional idle face removes any stale-atlas frame.
+ * When the local player follows an already-off-map remote into its field, the
+ * dedicated actor can briefly be rebound with the wrong billboard atlas. Never
+ * repair that by rewriting animation data: normal walk frames may legitimately
+ * differ from idle. Instead, keep only a mismatched actor invisible until the
+ * dedicated runtime naturally produces the same material/geometry family as the
+ * live local protagonist, then reveal it after several stable samples.
  */
 function White2SameMapFieldFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -269,7 +242,7 @@ function White2SameMapFieldFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge 
     let previousLocalMapId: number | string | null = null
     let activeMapId: number | string | null = null
     let stableSamples = 0
-    const correctedActors = new Set<number>()
+    const hiddenActors = new Set<number>()
 
     async function service() {
       if (cancelled || reading || runtimeBridge.status !== 'running' || activeMapId === null) return
@@ -277,7 +250,7 @@ function White2SameMapFieldFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge 
       if (!local || !remote || local.location.mapId !== remote.location.mapId || local.location.mapId !== activeMapId) {
         activeMapId = null
         stableSamples = 0
-        correctedActors.clear()
+        hiddenActors.clear()
         return
       }
 
@@ -297,12 +270,14 @@ function White2SameMapFieldFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge 
           return
         }
         const protagonistFamily = await readFamily(runtimeBridge, playerBinding)
+        const matchedBindings: Binding[] = []
         let allMatched = true
 
         for (const actor of remoteActors) {
           const binding = await resolveBinding(runtimeBridge, actor.address, scan.actorSystem)
           if (!binding) {
             allMatched = false
+            stableSamples = 0
             continue
           }
 
@@ -311,45 +286,46 @@ function White2SameMapFieldFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge 
           if (!matched) {
             allMatched = false
             stableSamples = 0
-          }
-
-          if (!matched || remote.movementState === 'idle') {
-            await writeFamilyPreservingVisibility(
-              runtimeBridge,
-              binding,
-              protagonistFamily,
-              remote.movementState === 'idle' ? FACE_START[remote.direction] : undefined,
-            )
-          }
-
-          if (!matched && !correctedActors.has(actor.address)) {
-            correctedActors.add(actor.address)
-            console.info('[PokéRun field] NORMALIZED REMOTE RENDER FAMILY', {
+            hiddenActors.add(actor.address)
+            await setBindingVisible(runtimeBridge, binding, false)
+            console.info('[PokéRun field] HID UNSTABLE REMOTE RENDER FAMILY', {
               mapId: activeMapId,
               actor: actor.address,
               protagonistFamily,
               remoteFamily,
             })
+            continue
+          }
+
+          matchedBindings.push(binding)
+          if (hiddenActors.has(actor.address)) {
+            // Once an actor has been quarantined, keep it invisible until the
+            // family remains valid for several consecutive samples.
+            await setBindingVisible(runtimeBridge, binding, false)
           }
         }
 
-        if (allMatched) {
-          stableSamples += 1
-          if (stableSamples >= FIELD_FAMILY_STABLE_SAMPLES) {
-            console.info('[PokéRun field] REMOTE RENDER FAMILY STABLE', {
-              mapId: activeMapId,
-              samples: stableSamples,
-            })
-            activeMapId = null
-            stableSamples = 0
-            correctedActors.clear()
-          }
-        } else {
-          stableSamples = 0
+        if (!allMatched) return
+
+        stableSamples += 1
+        if (stableSamples < FIELD_FAMILY_STABLE_SAMPLES) return
+
+        for (const binding of matchedBindings) {
+          if (!hiddenActors.has(binding.actorAddress)) continue
+          await setBindingVisible(runtimeBridge, binding, true)
+          console.info('[PokéRun field] RELEASED STABLE REMOTE RENDER FAMILY', {
+            mapId: activeMapId,
+            actor: binding.actorAddress,
+            samples: stableSamples,
+          })
         }
+
+        activeMapId = null
+        stableSamples = 0
+        hiddenActors.clear()
       } catch {
         stableSamples = 0
-        // Best-effort bootstrap. Dedicated runtime remains authoritative.
+        // Best-effort visibility quarantine. Dedicated runtime remains authoritative.
       } finally {
         reading = false
       }
@@ -364,8 +340,8 @@ function White2SameMapFieldFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge 
       if (localChanged && localMapId === remoteMapId) {
         activeMapId = localMapId
         stableSamples = 0
-        correctedActors.clear()
-        console.info('[PokéRun field] REMOTE RENDER FAMILY BOOTSTRAP', { mapId: localMapId })
+        hiddenActors.clear()
+        console.info('[PokéRun field] REMOTE RENDER FAMILY QUARANTINE', { mapId: localMapId })
         void service()
       }
       previousLocalMapId = localMapId
@@ -389,7 +365,7 @@ function White2SameMapFieldFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge 
 
 /**
  * Keeps the proven departure renderer intact and layers narrowly-scoped arrival
- * and local-field bootstrap guards beside it. The V2 departure guard mounts one
+ * and local-field visibility guards beside it. The V2 departure guard mounts one
  * effect turn later so its ordering matches the stable pre-bidirectional setup.
  */
 export function White2DoorTransitionRenderGuard({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
