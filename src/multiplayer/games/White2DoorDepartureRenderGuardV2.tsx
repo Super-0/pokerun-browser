@@ -148,9 +148,9 @@ function departureFace(direction: Direction, age: number) {
 }
 
 /**
- * Pre-locks the protagonist render while the remote is still on the local map.
- * Door intent is explicit transition metadata, not a moving→idle guess, so
- * ordinary manual movement can never activate this guard.
+ * Keeps the dedicated remote on the live protagonist's material/geometry family
+ * whenever both players share a map. Ordinary animation still owns face indices
+ * and flags; the stronger lock is used only during an actual door departure.
  */
 export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -187,12 +187,17 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       activeDetectedAt = 0
     }
 
-    function doorIntentSnapshot() {
+    function sameMapSnapshot() {
       const { local, remote } = presenceRef.current
-      const transition = remote?.transition
-      if (!local || !remote || !transition) return null
-      if (local.location.mapId !== remote.location.mapId) return null
-      if (transition.fromMapId !== local.location.mapId) return null
+      if (!local || !remote || local.location.mapId !== remote.location.mapId) return null
+      return { local, remote }
+    }
+
+    function doorIntentSnapshot() {
+      const sameMap = sameMapSnapshot()
+      const transition = sameMap?.remote.transition
+      if (!sameMap || !transition) return null
+      if (transition.fromMapId !== sameMap.local.location.mapId) return null
       if (transition.toMapId === transition.fromMapId) return null
       const age = Date.now() - transition.detectedAt
       if (age < 0 || age >= DOOR_INTENT_MAX_MS) return null
@@ -238,26 +243,31 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
     }
 
     runtimeBridge.write16 = async (address: number, value: number) => {
+      const sameMapActive = Boolean(sameMapSnapshot())
       const intent = doorIntentSnapshot()
       const age = activeAge()
       const binding = preparedRemoteBinding
       const family = preparedFamily
       const departureActive = Boolean(activeTransitionId && age >= 0 && age < DEPARTURE_TOTAL_MS)
       const intentActive = Boolean(intent)
-      if (!binding || !family || (!departureActive && !intentActive)) {
-        return originalWrite16(address, value)
+
+      if (!binding || !family) return originalWrite16(address, value)
+
+      // Same-map invariant: animation may choose any face index/flags, but it may
+      // never move the dedicated remote onto another actor's material family.
+      if (sameMapActive || intentActive || departureActive) {
+        if (address === binding.handleAddress + HANDLE_MAT_ENTRY) {
+          return originalWrite16(address, family.matEntry)
+        }
+        if (address === binding.blActAddress + BLACT_GEOM_FLAGS) {
+          return originalWrite16(address, family.geomFlags)
+        }
       }
 
-      if (address === binding.handleAddress + HANDLE_MAT_ENTRY) {
-        return originalWrite16(address, family.matEntry)
-      }
-      if (address === binding.blActAddress + BLACT_GEOM_FLAGS) {
-        return originalWrite16(address, family.geomFlags)
-      }
-      if (address === binding.blActAddress + BLACT_FACE_INDEX && departureActive) {
+      if (departureActive && address === binding.blActAddress + BLACT_FACE_INDEX) {
         return originalWrite16(address, departureFace(activeDirection, age))
       }
-      if (address === binding.blActAddress + BLACT_MAT_FLAGS) {
+      if ((intentActive || departureActive) && address === binding.blActAddress + BLACT_MAT_FLAGS) {
         const normalized = (family.matFlags & ~BLACT_VISIBLE_MASK) | (value & BLACT_VISIBLE_MASK)
         return originalWrite16(address, normalized)
       }
@@ -279,15 +289,15 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
     }
 
     async function prepareStableFamily(force = false) {
-      const { local, remote } = presenceRef.current
-      if (!local || !remote || local.location.mapId !== remote.location.mapId) return
+      const sameMap = sameMapSnapshot()
+      if (!sameMap) return
 
       const now = Date.now()
       if (
         !force
         && preparedFamily
         && preparedRemoteBinding
-        && preparedMapId === local.location.mapId
+        && preparedMapId === sameMap.local.location.mapId
         && now - lastPreparedValidationAt < PREPARED_BINDING_REVALIDATE_MS
       ) return
 
@@ -297,15 +307,15 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
 
       const nextFamily = await readFamily(runtimeBridge, live.playerBinding)
       const bindingChanged = !sameBinding(preparedRemoteBinding, live.remoteBinding)
-      const mapChanged = preparedMapId !== local.location.mapId
+      const mapChanged = preparedMapId !== sameMap.local.location.mapId
 
       preparedFamily = nextFamily
       preparedRemoteBinding = live.remoteBinding
-      preparedMapId = local.location.mapId
+      preparedMapId = sameMap.local.location.mapId
 
       if (bindingChanged || mapChanged) {
-        console.info('[PokéRun door] REFRESHED DEPARTURE RENDER BINDING', {
-          mapId: local.location.mapId,
+        console.info('[PokéRun render] REFRESHED SAME-MAP REMOTE FAMILY', {
+          mapId: sameMap.local.location.mapId,
           actor: live.remoteBinding.actorAddress,
           blActAddress: live.remoteBinding.blActAddress,
           handleAddress: live.remoteBinding.handleAddress,
@@ -340,6 +350,16 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
       ])
     }
 
+    async function writeSameMapFamily() {
+      const binding = preparedRemoteBinding
+      const family = preparedFamily
+      if (!binding || !family) return
+      await Promise.all([
+        originalWrite16(binding.handleAddress + HANDLE_MAT_ENTRY, family.matEntry),
+        originalWrite16(binding.blActAddress + BLACT_GEOM_FLAGS, family.geomFlags),
+      ])
+    }
+
     async function writeIntentFamily() {
       const binding = preparedRemoteBinding
       const family = preparedFamily
@@ -365,21 +385,21 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
           return
         }
 
-        if (activeTransitionId) {
-          clearActive()
+        if (activeTransitionId) clearActive()
+
+        const sameMap = sameMapSnapshot()
+        if (!sameMap) {
           clearPrepared()
+          return
         }
 
-        const { local, remote } = presenceRef.current
-        if (!local || !remote || local.location.mapId !== remote.location.mapId) return
-
+        await prepareStableFamily(Boolean(doorIntentSnapshot()))
         if (doorIntentSnapshot()) {
-          await prepareStableFamily(true)
           await writeIntentFamily()
           return
         }
 
-        await prepareStableFamily()
+        await writeSameMapFamily()
       } finally {
         reading = false
       }
@@ -387,7 +407,7 @@ export function White2DoorDepartureRenderGuardV2({ bridge, rom }: { bridge: Melo
 
     const unsubscribePresence = multiplayerPresence.subscribe(snapshot => {
       presenceRef.current = snapshot
-      if (doorIntentSnapshot()) void service()
+      void service()
     })
 
     const unsubscribeFrame = runtimeBridge.subscribeEmulatedFrame(() => {
