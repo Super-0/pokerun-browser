@@ -17,6 +17,9 @@ const MAX_REPLAY_IDLE_GAP_MS = 1000
 const DOOR_APPROACH_STEP_MS = 40
 const DOOR_APPROACH_MIN_STEPS = 6
 const DOOR_APPROACH_READY_HOLD_MS = 120
+const DOOR_ARRIVAL_REVEAL_HOLD_MS = 340
+const DOOR_ARRIVAL_STEP_MS = 40
+const DOOR_ARRIVAL_STEPS = 6
 
 type RecordedPathFrame = {
   elapsedMs: number
@@ -73,6 +76,27 @@ function worldFromGrid(x: number, y: number, height = 0x1000f): MultiplayerWorld
 
 function sameRom(a: MultiplayerRomIdentity, b: MultiplayerRomIdentity) {
   return a.status === b.status && a.gameId === b.gameId && a.sha256 === b.sha256
+}
+
+function oppositeDirection(direction: MultiplayerPlayerState['direction']): MultiplayerPlayerState['direction'] {
+  if (direction === 'north') return 'south'
+  if (direction === 'south') return 'north'
+  if (direction === 'west') return 'east'
+  return 'west'
+}
+
+function stepGrid(x: number, y: number, direction: MultiplayerPlayerState['direction']) {
+  if (direction === 'north') return { x, y: y - 1 }
+  if (direction === 'south') return { x, y: y + 1 }
+  if (direction === 'west') return { x: x - 1, y }
+  return { x: x + 1, y }
+}
+
+function stepWorld(world: MultiplayerWorldPosition, direction: MultiplayerPlayerState['direction']): MultiplayerWorldPosition {
+  if (direction === 'north') return { ...world, z: (world.z - TILE_WORLD) >>> 0 }
+  if (direction === 'south') return { ...world, z: (world.z + TILE_WORLD) >>> 0 }
+  if (direction === 'west') return { ...world, x: (world.x - TILE_WORLD) >>> 0 }
+  return { ...world, x: (world.x + TILE_WORLD) >>> 0 }
 }
 
 class FakeRemoteDoorPeer {
@@ -346,6 +370,98 @@ class FakeRemoteDoorPeer {
     }
   }
 
+  async replayCapturedDoorArrival() {
+    const transition = this.capturedDoorTransition
+    const host = this.hostState
+    const current = this.fakeState
+    if (!transition || !this.startId || !host) {
+      this.update({ phase: 'CAPTURE A HOST DOOR TRANSITION FIRST' })
+      return
+    }
+    if (host.location.mapId !== transition.fromMapId) {
+      this.update({ phase: `RETURN HOST TO MAP ${String(transition.fromMapId)} BEFORE ARRIVAL` })
+      return
+    }
+    if (!current || current.location.mapId !== transition.toMapId) {
+      this.update({ phase: `REPLAY DEPARTURE FIRST • FAKE MUST BE ON MAP ${String(transition.toMapId)}` })
+      return
+    }
+
+    const generation = this.beginScript(`REMOTE DOOR ARRIVAL • ${String(transition.toMapId)} → ${String(transition.fromMapId)}`)
+    const doorWorld = transition.fromWorldPosition ?? worldFromGrid(transition.fromX, transition.fromY)
+    const insideWorld = transition.toWorldPosition ?? worldFromGrid(transition.toX, transition.toY, doorWorld.y)
+    const outwardDirection = oppositeDirection(transition.fromDirection)
+    const outsideGrid = stepGrid(transition.fromX, transition.fromY, outwardDirection)
+    const outsideWorld = stepWorld(doorWorld, outwardDirection)
+    const replayTransition: MultiplayerMapTransition = {
+      id: `fake-door-arrival:${this.playerId}:${Date.now()}`,
+      detectedAt: Date.now(),
+      fromMapId: transition.toMapId,
+      toMapId: transition.fromMapId,
+      fromX: transition.toX,
+      fromY: transition.toY,
+      fromDirection: outwardDirection,
+      fromWorldPosition: { ...insideWorld },
+      toX: transition.fromX,
+      toY: transition.fromY,
+      toDirection: outwardDirection,
+      toWorldPosition: { ...doorWorld },
+    }
+
+    // Publish the real map-change first. White2RemoteDoorRuntime opens the local
+    // door immediately, while the dedicated trainer's existing stable-map gate
+    // keeps the hidden remote from popping in before the doorway is ready.
+    this.publish({
+      location: { mapId: transition.fromMapId },
+      x: transition.fromX,
+      y: transition.fromY,
+      direction: outwardDirection,
+      movementState: 'idle',
+      worldPosition: { ...doorWorld },
+      transition: replayTransition,
+    })
+    console.info('[PokéRun fake door] REPLAYED REMOTE ARRIVAL', replayTransition)
+
+    await sleep(DOOR_ARRIVAL_REVEAL_HOLD_MS)
+    if (generation !== this.scriptGeneration) return
+
+    const deltaX = (outsideWorld.x | 0) - (doorWorld.x | 0)
+    const deltaZ = (outsideWorld.z | 0) - (doorWorld.z | 0)
+    for (let step = 1; step <= DOOR_ARRIVAL_STEPS; step += 1) {
+      if (generation !== this.scriptGeneration) return
+      const fraction = step / DOOR_ARRIVAL_STEPS
+      const finalStep = step === DOOR_ARRIVAL_STEPS
+      this.publish({
+        location: { mapId: transition.fromMapId },
+        x: finalStep ? outsideGrid.x : transition.fromX,
+        y: finalStep ? outsideGrid.y : transition.fromY,
+        direction: outwardDirection,
+        movementState: 'moving',
+        worldPosition: {
+          x: Math.round((doorWorld.x | 0) + deltaX * fraction) >>> 0,
+          y: doorWorld.y >>> 0,
+          z: Math.round((doorWorld.z | 0) + deltaZ * fraction) >>> 0,
+        },
+      })
+      await sleep(DOOR_ARRIVAL_STEP_MS)
+    }
+
+    if (generation !== this.scriptGeneration) return
+    this.publish({
+      location: { mapId: transition.fromMapId },
+      x: outsideGrid.x,
+      y: outsideGrid.y,
+      direction: outwardDirection,
+      movementState: 'idle',
+      worldPosition: { ...outsideWorld },
+    })
+
+    await sleep(300)
+    if (generation === this.scriptGeneration) {
+      this.finishScript(`REMOTE DOOR ARRIVAL COMPLETE • NOW ON MAP ${String(transition.fromMapId)}`)
+    }
+  }
+
   resetBesideHost() {
     if (!this.hostState || !this.startId) return
     this.stopScript()
@@ -546,6 +662,11 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
   const controlsDisabled = !snapshot.gameStarted || !snapshot.hostState
   const fake = snapshot.fakeState
   const host = snapshot.hostState
+  const arrivalReady = Boolean(
+    snapshot.capturedDoorTransition
+    && fake
+    && fake.location.mapId === snapshot.capturedDoorTransition.toMapId,
+  )
 
   return <aside style={{
     position: 'fixed',
@@ -593,13 +714,15 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
         <button disabled={controlsDisabled || !snapshot.capturedDoorTransition || snapshot.doorCaptureArmed || Boolean(snapshot.script)} onClick={() => void peer.replayCapturedDoorDeparture()}>
           REPLAY DEPARTURE
         </button>
+        <button disabled={controlsDisabled || !arrivalReady || snapshot.doorCaptureArmed || Boolean(snapshot.script)} onClick={() => void peer.replayCapturedDoorArrival()}>
+          REPLAY ARRIVAL
+        </button>
         <button disabled={!snapshot.capturedDoorTransition && !snapshot.doorCaptureArmed} onClick={() => peer.clearDoorTransitionCapture()}>
           CLEAR DOOR
         </button>
-        <span/>
       </div>
       <div style={{ marginTop: 5, opacity: 0.68 }}>
-        Arm this, walk the real trainer through a building door once, return outside, then replay that exact transition as Player 2.
+        Arm this, walk the real trainer through a building door once, return outside, then replay departure. Arrival becomes available while the fake remote is on the inside map.
       </div>
     </div>
 
