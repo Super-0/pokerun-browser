@@ -61,7 +61,8 @@ function isMainRamPointer(value: number) {
 function isMainRamFunctionPointer(value: number) {
   const address = value & ~1
   return Number.isInteger(value)
-    && address >= MAIN_RAM_START && address < MAIN_RAM_END
+    && address >= MAIN_RAM_START
+    && address < MAIN_RAM_END
     && ((value & 1) === 1 || (address & 3) === 0)
 }
 
@@ -140,12 +141,18 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
       lastLogKey = ''
     }
 
-    function sameMapSnapshot() {
+    function sameMapIdsSnapshot() {
       const { local, remote } = presenceRef.current
       if (!local || !remote) return null
       if (local.location.mapId !== remote.location.mapId) return null
-      if (local.transition || remote.transition) return null
       return { local, remote }
+    }
+
+    function sameMapSnapshot() {
+      const sameMap = sameMapIdsSnapshot()
+      if (!sameMap) return null
+      if (sameMap.local.transition || sameMap.remote.transition) return null
+      return sameMap
     }
 
     function sameMapStable() {
@@ -221,7 +228,7 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
     }
 
     async function quarantineLiveRemote() {
-      if (cancelled || !bootstrapQuarantine || !sameMapSnapshot()) return
+      if (cancelled || !bootstrapQuarantine || !sameMapIdsSnapshot()) return
       const live = await resolveLiveActors()
       if (!live) return
       const flagsAddress = live.remoteBinding.blActAddress + BLACT_MAT_FLAGS
@@ -233,6 +240,22 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
 
     async function prepareLiveFamily(force = false) {
       if (cancelled) return
+
+      const sameMapIds = sameMapIdsSnapshot()
+      if (!sameMapIds) {
+        clearPrepared()
+        return
+      }
+
+      // Player 1 can already report P2's destination map while its own door
+      // transition metadata is still active. Keep P2 hidden for that whole beat;
+      // do not wait for sameMapSnapshot(), which intentionally rejects transitions.
+      if (bootstrapQuarantine && (sameMapIds.local.transition || sameMapIds.remote.transition)) {
+        await quarantineLiveRemote()
+        clearPrepared()
+        return
+      }
+
       const sameMap = sameMapSnapshot()
       if (!sameMap) {
         clearPrepared()
@@ -262,9 +285,6 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
         }
         const { playerBinding, remoteBinding: nextRemoteBinding } = live
 
-        // If this is a local-map bootstrap, hide the newly created native actor
-        // before reading/writing the protagonist family. This closes the small
-        // window where the native billboard could otherwise appear as a black box.
         if (bootstrapQuarantine) {
           const flagsAddress = nextRemoteBinding.blActAddress + BLACT_MAT_FLAGS
           const flags = await runtimeBridge.read16(flagsAddress)
@@ -342,11 +362,9 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
       }
       previousLocalMapId = localMapId
 
-      // Preserve a pending local-map quarantine while the real trainer's own
-      // transition metadata is still active. It will be consumed as soon as the
-      // transition clears and the new field is safe to bind.
       if (transitionActive) {
         clearPrepared()
+        if (bootstrapQuarantine && sameMapIds && !reading) void quarantineLiveRemote()
         return
       }
 
