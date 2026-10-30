@@ -30,6 +30,29 @@ type CompactState = {
   y: number
 }
 
+const STALE_RENDER_CACHE_PREFIX = 'pokerun-white2-trainer-render-v4:'
+
+// The dedicated runtime's v4 render cache predates the current authoritative
+// same-map renderer. During a cold dev load, a stale cached material family can
+// be selected before the live protagonist family has been sampled, leaving P2
+// rendered as the old native/orange trainer. Invalidate only that old cache here
+// while the direct-ROM boundary harness is under development. Once the dedicated
+// binder always seeds from the live player, this temporary invalidation can go.
+try {
+  let removed = 0
+  for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+    const key = localStorage.key(index)
+    if (!key?.startsWith(STALE_RENDER_CACHE_PREFIX)) continue
+    localStorage.removeItem(key)
+    removed += 1
+  }
+  if (removed > 0) {
+    console.info('[PokéRun render] INVALIDATED STALE V4 TRAINER CACHE', { removed })
+  }
+} catch {
+  // localStorage is optional in the dev harness.
+}
+
 let boundaryIndex: BoundaryIndex | null = null
 const lastFakeState = new Map<string, CompactState>()
 
