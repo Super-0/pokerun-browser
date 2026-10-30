@@ -144,24 +144,22 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
     async function suppressShadow(current: Binding) {
       const key = `${current.actorAddress}:${current.actorSystem}`
       if (shadowSuppressedKey !== key) {
-        const [forceShadow, shadowGroup] = await Promise.all([
-          runtimeBridge.callArm9Thumb4(
-            FLDACT_SET_FORCE_OFF_SHADOW,
-            current.actorAddress,
-            1,
-            0,
-            0,
-            NATIVE_STACK_RESERVE,
-          ),
-          runtimeBridge.callArm9Thumb4(
-            FLDACT_SET_SHADOW_GROUP,
-            current.actorAddress,
-            0,
-            0,
-            0,
-            NATIVE_STACK_RESERVE,
-          ),
-        ])
+        const forceShadow = await runtimeBridge.callArm9Thumb4(
+          FLDACT_SET_FORCE_OFF_SHADOW,
+          current.actorAddress,
+          1,
+          0,
+          0,
+          NATIVE_STACK_RESERVE,
+        )
+        const shadowGroup = await runtimeBridge.callArm9Thumb4(
+          FLDACT_SET_SHADOW_GROUP,
+          current.actorAddress,
+          0,
+          0,
+          0,
+          NATIVE_STACK_RESERVE,
+        )
         if (forceShadow.status === 1 && shadowGroup.status === 1) {
           shadowSuppressedKey = key
         }
