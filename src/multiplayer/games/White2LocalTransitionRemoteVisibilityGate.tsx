@@ -29,6 +29,7 @@ const NATIVE_STACK_RESERVE = 0x400
 const BLACT_NONE = 0xffff
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
+const LOCAL_TRANSITION_VISIBILITY_BLOCK_MS = 800
 
 type Binding = {
   actorAddress: number
@@ -98,13 +99,12 @@ async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actor
 }
 
 /**
- * Hard visibility gate for the short window where Player 1 has already entered
- * P2's map but White 2 is still finishing Player 1's own door transition.
+ * Hard visibility gate for the short arrival-bootstrap window where Player 1
+ * has already entered P2's map but White 2 may still be rebuilding the field.
  *
- * During this window the dedicated remote actor may exist before the destination
- * field has a stable protagonist render family. Keep both its billboard and its
- * native shadow suppressed. Once local transition metadata clears, this component
- * becomes completely passive and the normal same-map renderer owns P2 again.
+ * Transition metadata can linger until the local player moves again, so this
+ * gate is intentionally time-bounded from transition.detectedAt rather than
+ * staying active for the entire lifetime of local.transition.
  */
 export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -122,12 +122,10 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
 
     function active() {
       const { local, remote } = presenceRef.current
-      return Boolean(
-        local
-        && remote
-        && local.location.mapId === remote.location.mapId
-        && local.transition,
-      )
+      const transition = local?.transition
+      if (!local || !remote || local.location.mapId !== remote.location.mapId || !transition) return false
+      const age = Date.now() - transition.detectedAt
+      return age >= 0 && age < LOCAL_TRANSITION_VISIBILITY_BLOCK_MS
     }
 
     async function bindingStillOwned(current: Binding) {
@@ -164,8 +162,6 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
           shadowSuppressedKey = key
         }
       }
-      // Reassert the backing byte cheaply on every refresh in case the field is
-      // still finishing native initialization around this actor.
       await runtimeBridge.write8(current.actorAddress + ACTOR_SHADOW_GROUP, 0)
     }
 
@@ -244,6 +240,10 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
 
     const unsubscribeFrame = runtimeBridge.subscribeEmulatedFrame(() => {
       if (active()) void refreshBinding()
+      else if (binding) {
+        binding = null
+        shadowSuppressedKey = ''
+      }
     })
 
     return () => {
