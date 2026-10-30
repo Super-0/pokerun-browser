@@ -1,10 +1,14 @@
 import { useEffect } from 'react'
 import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
-import { White2ActorSystemProbe, type White2ActorHeapEntry } from '../multiplayer/games/White2ActorSystem'
+import { White2ActorSystemProbe, type White2ActorHeapEntry, type White2ActorHeapScan } from '../multiplayer/games/White2ActorSystem'
 import { POKERUN_NATIVE_TEST_UID } from '../multiplayer/games/White2NativeActor'
 
 const FIELD_ACTOR_SIZE = 0x100
+const ACTOR_FLAGS = 0x00
+const ACTOR_MOVEMENT_FLAGS = 0x04
+const ACTOR_MOVE_CODE = 0x0e
+const ACTOR_WPOS = 0x44
 const ACTOR_SCENE_NODE_VTABLE = 0x90
 const SCENE_NODE_GET_BLACT_INDEX = 0x14
 const ACTOR_SYSTEM_FIELD_BLACT = 0x28
@@ -15,10 +19,20 @@ const BLACT_SYSTEM_ACTOR_COUNT = 0x1c
 const BLACT_SCENE_ACTORS = 0x08
 const BLACT_SCENE_CONFIG_ACTOR_COUNT = 0x0e
 const BLACT_SIZE = 0x1c
+const BLACT_MATERIAL = 0x00
+const BLACT_POSITION = 0x04
+const BLACT_FACE = 0x10
+const BLACT_RENDER_FLAGS = 0x18
 const HANDLE_SIZE = 0x28
 const HANDLE_BLACT_INDEX = 0x00
-const HANDLE_MAT_ENTRY = 0x04
+const HANDLE_TEX_MAT = 0x04
 const HANDLE_ANIMS = 0x08
+const HANDLE_ANIM_COUNT = 0x0c
+const HANDLE_ANIM = 0x0e
+const HANDLE_STEP = 0x10
+const HANDLE_WAIT = 0x12
+const HANDLE_LOOPS = 0x14
+const HANDLE_ANIMATE = 0x18
 const FLDACT_GET_BLACT_IDX = 0x02167240
 const NATIVE_STACK_RESERVE = 0x400
 const BLACT_NONE = 0xffff
@@ -60,6 +74,10 @@ function offsetHex(offset: number) {
 
 function bytesHex(bytes: Uint8Array) {
   return [...bytes].map(value => value.toString(16).toUpperCase().padStart(2, '0')).join(' ')
+}
+
+function signed32(value: number) {
+  return value | 0
 }
 
 function readWord(bytes: Uint8Array, offset: number) {
@@ -154,7 +172,7 @@ async function resolveBinding(bridge: MelonDsBridge, actor: White2ActorHeapEntry
     blActIndex,
     blActAddress: sceneActors + blActIndex * BLACT_SIZE,
     handleAddress,
-    matEntry: await bridge.read16(handleAddress + HANDLE_MAT_ENTRY),
+    matEntry: await bridge.read16(handleAddress + HANDLE_TEX_MAT),
     anims: await bridge.read32(handleAddress + HANDLE_ANIMS),
   }
 }
@@ -171,13 +189,89 @@ async function captureBlock(bridge: MelonDsBridge, address: number, length: numb
   }
 }
 
+async function captureActorBillboardCensus(bridge: MelonDsBridge, scan: White2ActorHeapScan) {
+  const actors: Array<Record<string, unknown>> = []
+
+  for (const actor of scan.entries) {
+    if (actor.state === 'zeroed' || actor.actorSystemBackptr !== scan.actorSystem) continue
+
+    const [moveCode, wX, wY, wZ, flags, movementFlags] = await Promise.all([
+      bridge.read16(actor.address + ACTOR_MOVE_CODE),
+      bridge.read32(actor.address + ACTOR_WPOS + 0x00),
+      bridge.read32(actor.address + ACTOR_WPOS + 0x04),
+      bridge.read32(actor.address + ACTOR_WPOS + 0x08),
+      bridge.read32(actor.address + ACTOR_FLAGS),
+      bridge.read32(actor.address + ACTOR_MOVEMENT_FLAGS),
+    ])
+
+    const binding = await resolveBinding(bridge, actor)
+    let billboard: Record<string, unknown> | null = null
+    if (binding) {
+      const [materialAndType, blX, blY, blZ, face, renderFlags, texMat, animCount, anim, step, wait, loops, animate] = await Promise.all([
+        bridge.read16(binding.blActAddress + BLACT_MATERIAL),
+        bridge.read32(binding.blActAddress + BLACT_POSITION + 0x00),
+        bridge.read32(binding.blActAddress + BLACT_POSITION + 0x04),
+        bridge.read32(binding.blActAddress + BLACT_POSITION + 0x08),
+        bridge.read16(binding.blActAddress + BLACT_FACE),
+        bridge.read16(binding.blActAddress + BLACT_RENDER_FLAGS),
+        bridge.read16(binding.handleAddress + HANDLE_TEX_MAT),
+        bridge.read16(binding.handleAddress + HANDLE_ANIM_COUNT),
+        bridge.read16(binding.handleAddress + HANDLE_ANIM),
+        bridge.read16(binding.handleAddress + HANDLE_STEP),
+        bridge.read16(binding.handleAddress + HANDLE_WAIT),
+        bridge.read16(binding.handleAddress + HANDLE_LOOPS),
+        bridge.read32(binding.handleAddress + HANDLE_ANIMATE),
+      ])
+      billboard = {
+        blActIndex: binding.blActIndex,
+        blActAddress: hex(binding.blActAddress),
+        handleAddress: hex(binding.handleAddress),
+        material: materialAndType & 0x3fff,
+        type: materialAndType >>> 14,
+        position: { x: signed32(blX), y: signed32(blY), z: signed32(blZ) },
+        face,
+        renderFlags: `0x${renderFlags.toString(16).toUpperCase().padStart(4, '0')}`,
+        texMat,
+        anims: hex(binding.anims),
+        animCount,
+        anim,
+        step,
+        wait,
+        loops,
+        animate,
+      }
+    }
+
+    actors.push({
+      slot: actor.index,
+      state: actor.state,
+      actor: hex(actor.address),
+      uid: actor.uid,
+      zoneId: actor.zoneId,
+      modelId: actor.modelId,
+      moveCode,
+      flags: hex(flags),
+      movementFlags: hex(movementFlags),
+      faceDir: actor.faceDir,
+      grid: { x: actor.x, height: actor.height, y: actor.y },
+      world: { x: signed32(wX), y: signed32(wY), z: signed32(wZ) },
+      tcb: hex(actor.tcb),
+      moveCodeVTable: hex(actor.moveCodeVTable),
+      sceneNodeVTable: hex(actor.sceneNodeVTable),
+      billboard,
+    })
+  }
+
+  return actors
+}
+
 /**
- * Dev-only, read-only renderer resource graph probe.
+ * Dev-only renderer resource research probe.
  *
- * It intentionally does not mutate White 2 state. Once P1 and PokéRun's P2 actor
- * are both stable and billboard-bound, it captures their FieldActor, BLAct and
- * handle structures plus one-level RAM pointer targets. The goal is to locate the
- * resource identity that can still differ even when modelId/matEntry/flags match.
+ * It does not mutate White 2 state. Once P1 and PokéRun's P2 actor are stable
+ * and billboard-bound, it captures their resource structures and a census of
+ * every allocated FieldActor/BLAct so the visible sprite can be tied to the
+ * actor that actually owns its screen position/material.
  */
 export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   useEffect(() => {
@@ -237,6 +331,7 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
         const remoteAnims = isMainRamPointer(remoteBinding.anims)
           ? await captureBlock(runtimeBridge, remoteBinding.anims, Math.min(ANIMS_DUMP_BYTES, MAIN_RAM_END - remoteBinding.anims))
           : null
+        const census = await captureActorBillboardCensus(runtimeBridge, scan)
 
         capturedKey = key
         console.info('[PokéRun resdiag] RESOURCE GRAPH SNAPSHOT', {
@@ -292,6 +387,10 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
             handle: { address: remoteHandle.address, raw: remoteHandle.raw, words: remoteHandle.words, pointerHeads: remoteHandle.pointerHeads },
             anims: remoteAnims ? { address: remoteAnims.address, raw: remoteAnims.raw, words: remoteAnims.words, pointerHeads: remoteAnims.pointerHeads } : null,
           },
+        })
+        console.info('[PokéRun resdiag] ACTOR/BILLBOARD CENSUS', {
+          purpose: 'identify which allocated actor/billboard owns the visible orange sprite',
+          actors: census,
         })
       } catch (reason) {
         console.info('[PokéRun resdiag] PROBE WAITING', {
