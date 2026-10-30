@@ -30,9 +30,8 @@ const NATIVE_STACK_RESERVE = 0x400
 const BLACT_NONE = 0xffff
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
-const LOCAL_MAP_STABLE_MS = 450
 const TRANSITION_FRESH_MS = 800
-const REFRESH_MS = 32
+const REFRESH_MS = 48
 
 const IDLE_FACE_BY_DIRECTION = {
   north: 0,
@@ -120,6 +119,16 @@ async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actor
   }
 }
 
+/**
+ * Single-owner ordinary render guard.
+ *
+ * The dedicated trainer runtime remains the only code that decides when P2 is
+ * visible and which animation face to play. This guard does not periodically
+ * "correct" the billboard after the fact. Instead it intercepts P2's render
+ * writes and normalizes the material/geometry family before the write reaches
+ * melonDS. That prevents bad/cached frames from ever becoming visible and avoids
+ * the black-square <-> protagonist oscillation caused by two competing writers.
+ */
 export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
 
@@ -130,29 +139,27 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
     const originalWrite16 = runtimeBridge.write16.bind(runtimeBridge)
 
     let cancelled = false
-    let reading = false
+    let refreshing: Promise<void> | null = null
     let previousLocalMapId: number | string | null = null
-    let localMapStableSince = Date.now()
     let remoteBinding: Binding | null = null
     let protagonistFamily: RenderFamily | null = null
     let preparedMapId: number | string | null = null
-    let lastPreparedAt = 0
+    let lastRefreshAt = 0
     let lastLogKey = ''
 
-    function clearPrepared() {
+    function clearPrepared(clearFamily = true) {
       remoteBinding = null
-      protagonistFamily = null
+      if (clearFamily) protagonistFamily = null
       preparedMapId = null
-      lastPreparedAt = 0
+      lastRefreshAt = 0
       lastLogKey = ''
     }
 
-    function sameMapStable() {
+    function activeSnapshot() {
       const { local, remote } = presenceRef.current
       if (!local || !remote) return null
       if (local.location.mapId !== remote.location.mapId) return null
       if (transitionFresh(local.transition) || transitionFresh(remote.transition)) return null
-      if (Date.now() - localMapStableSince < LOCAL_MAP_STABLE_MS) return null
       return { local, remote }
     }
 
@@ -167,65 +174,9 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
         && owner === binding.blActIndex
     }
 
-    runtimeBridge.write16 = async (address: number, value: number) => {
-      const active = sameMapStable()
-      const binding = remoteBinding
-      const family = protagonistFamily
-      if (!active || !binding || !family || preparedMapId !== active.local.location.mapId) {
-        return originalWrite16(address, value)
-      }
-
-      const isMatEntry = address === binding.handleAddress + HANDLE_MAT_ENTRY
-      const isGeomFlags = address === binding.blActAddress + BLACT_GEOM_FLAGS
-      const isFaceIndex = address === binding.blActAddress + BLACT_FACE_INDEX
-      const isMatFlags = address === binding.blActAddress + BLACT_MAT_FLAGS
-      if (!isMatEntry && !isGeomFlags && !isFaceIndex && !isMatFlags) {
-        return originalWrite16(address, value)
-      }
-
-      if (!await bindingStillOwned(binding)) {
-        clearPrepared()
-        return originalWrite16(address, value)
-      }
-
-      if (isMatEntry) return originalWrite16(address, family.matEntry)
-      if (isGeomFlags) return originalWrite16(address, family.geomFlags)
-      if (isMatFlags) {
-        // The dedicated runtime owns visibility. This guard only normalizes the
-        // protagonist material family and preserves the caller's visible bit.
-        const normalized = (family.matFlags & ~BLACT_VISIBLE_MASK) | (value & BLACT_VISIBLE_MASK)
-        return originalWrite16(address, normalized)
-      }
-      if (isFaceIndex && active.remote.movementState === 'idle') {
-        return originalWrite16(address, IDLE_FACE_BY_DIRECTION[active.remote.direction])
-      }
-      return originalWrite16(address, value)
-    }
-
-    async function resolveLiveActors() {
-      const scan = await probe.scanHeap()
-      const player = scan.entries.find(entry => entry.uid === PLAYER_UID && entry.state === 'player')
-      const remoteActor = scan.entries.find(entry =>
-        entry.uid === POKERUN_NATIVE_TEST_UID
-        && entry.state === 'active'
-        && entry.actorSystemBackptr === scan.actorSystem
-      )
-      if (!player || !remoteActor) return null
-
-      const [playerBinding, nextRemoteBinding] = await Promise.all([
-        resolveBinding(runtimeBridge, player.address, scan.actorSystem),
-        resolveBinding(runtimeBridge, remoteActor.address, scan.actorSystem),
-      ])
-      if (!playerBinding || !nextRemoteBinding) return null
-      if (playerBinding.actorAddress === nextRemoteBinding.actorAddress
-        || playerBinding.blActAddress === nextRemoteBinding.blActAddress
-        || playerBinding.handleAddress === nextRemoteBinding.handleAddress) return null
-      return { playerBinding, remoteBinding: nextRemoteBinding }
-    }
-
-    async function prepareLiveFamily(force = false) {
+    async function refresh(force = false) {
       if (cancelled) return
-      const active = sameMapStable()
+      const active = activeSnapshot()
       if (!active) {
         clearPrepared()
         return
@@ -236,78 +187,143 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
         && remoteBinding
         && protagonistFamily
         && preparedMapId === active.local.location.mapId
-        && now - lastPreparedAt < REFRESH_MS) return
+        && now - lastRefreshAt < REFRESH_MS) return
+      if (refreshing) return refreshing
 
-      reading = true
-      try {
-        const live = await resolveLiveActors()
-        if (!live) {
-          clearPrepared()
-          return
+      refreshing = (async () => {
+        try {
+          const scan = await probe.scanHeap()
+          const player = scan.entries.find(entry => entry.uid === PLAYER_UID && entry.state === 'player')
+          const remoteActor = scan.entries.find(entry =>
+            entry.uid === POKERUN_NATIVE_TEST_UID
+            && entry.state === 'active'
+            && entry.actorSystemBackptr === scan.actorSystem
+          )
+          if (!player || !remoteActor) {
+            remoteBinding = null
+            return
+          }
+
+          const [playerBinding, nextRemoteBinding] = await Promise.all([
+            resolveBinding(runtimeBridge, player.address, scan.actorSystem),
+            resolveBinding(runtimeBridge, remoteActor.address, scan.actorSystem),
+          ])
+          if (!playerBinding || !nextRemoteBinding) {
+            remoteBinding = null
+            return
+          }
+          if (playerBinding.actorAddress === nextRemoteBinding.actorAddress
+            || playerBinding.blActAddress === nextRemoteBinding.blActAddress
+            || playerBinding.handleAddress === nextRemoteBinding.handleAddress) {
+            remoteBinding = null
+            return
+          }
+
+          // Prefer a stable/idle local profile. If P1 is moving, keep the last
+          // known family for this map instead of replacing it with a transient
+          // animation family. On first acquisition we still sample immediately.
+          if (!protagonistFamily || preparedMapId !== active.local.location.mapId || active.local.movementState === 'idle') {
+            const [matEntry, geomFlags, matFlags] = await Promise.all([
+              runtimeBridge.read16(playerBinding.handleAddress + HANDLE_MAT_ENTRY),
+              runtimeBridge.read16(playerBinding.blActAddress + BLACT_GEOM_FLAGS),
+              runtimeBridge.read16(playerBinding.blActAddress + BLACT_MAT_FLAGS),
+            ])
+            protagonistFamily = { matEntry, geomFlags, matFlags }
+          }
+
+          remoteBinding = nextRemoteBinding
+          preparedMapId = active.local.location.mapId
+          lastRefreshAt = now
+
+          if (protagonistFamily) {
+            const logKey = `${preparedMapId}:${nextRemoteBinding.actorAddress}:${protagonistFamily.matEntry}:${protagonistFamily.geomFlags}:${protagonistFamily.matFlags}`
+            if (logKey !== lastLogKey) {
+              lastLogKey = logKey
+              console.info('[PokéRun render] PREPARED AUTHORITATIVE REMOTE FAMILY', {
+                mapId: preparedMapId,
+                actor: nextRemoteBinding.actorAddress,
+                blActAddress: nextRemoteBinding.blActAddress,
+                handleAddress: nextRemoteBinding.handleAddress,
+                ...protagonistFamily,
+              })
+            }
+          }
+        } catch {
+          remoteBinding = null
         }
-        const { playerBinding, remoteBinding: nextRemoteBinding } = live
-        const [matEntry, geomFlags, matFlags] = await Promise.all([
-          runtimeBridge.read16(playerBinding.handleAddress + HANDLE_MAT_ENTRY),
-          runtimeBridge.read16(playerBinding.blActAddress + BLACT_GEOM_FLAGS),
-          runtimeBridge.read16(playerBinding.blActAddress + BLACT_MAT_FLAGS),
-        ])
+      })().finally(() => {
+        refreshing = null
+      })
 
-        remoteBinding = nextRemoteBinding
-        protagonistFamily = { matEntry, geomFlags, matFlags }
-        preparedMapId = active.local.location.mapId
-        lastPreparedAt = now
-
-        const currentFlags = await runtimeBridge.read16(nextRemoteBinding.blActAddress + BLACT_MAT_FLAGS)
-        const normalizedFlags = (matFlags & ~BLACT_VISIBLE_MASK) | (currentFlags & BLACT_VISIBLE_MASK)
-        const writes: Promise<void>[] = [
-          originalWrite16(nextRemoteBinding.handleAddress + HANDLE_MAT_ENTRY, matEntry),
-          originalWrite16(nextRemoteBinding.blActAddress + BLACT_GEOM_FLAGS, geomFlags),
-          originalWrite16(nextRemoteBinding.blActAddress + BLACT_MAT_FLAGS, normalizedFlags),
-        ]
-        if (active.remote.movementState === 'idle') {
-          writes.push(originalWrite16(
-            nextRemoteBinding.blActAddress + BLACT_FACE_INDEX,
-            IDLE_FACE_BY_DIRECTION[active.remote.direction],
-          ))
-        }
-        await Promise.all(writes)
-
-        const logKey = `${preparedMapId}:${nextRemoteBinding.actorAddress}:${matEntry}:${geomFlags}:${matFlags}`
-        if (logKey !== lastLogKey) {
-          lastLogKey = logKey
-          console.info('[PokéRun render] VERIFIED SAME-MAP REMOTE OWNER', {
-            mapId: preparedMapId,
-            actor: nextRemoteBinding.actorAddress,
-            blActAddress: nextRemoteBinding.blActAddress,
-            handleAddress: nextRemoteBinding.handleAddress,
-            matEntry,
-            geomFlags,
-            matFlags,
-          })
-        }
-      } catch {
-        clearPrepared()
-      } finally {
-        reading = false
-      }
+      return refreshing
     }
+
+    const wrappedWrite16 = async (address: number, value: number) => {
+      const active = activeSnapshot()
+      if (!active) return originalWrite16(address, value)
+
+      if (!remoteBinding || !protagonistFamily || preparedMapId !== active.local.location.mapId) {
+        // This is the important spawn-time path. P2's first hide/render/reveal
+        // writes wait until the live P2 binding and P1 family are known, so an
+        // old cached or native profile never gets one visible frame first.
+        await refresh(true)
+      }
+
+      let binding = remoteBinding
+      let family = protagonistFamily
+      if (!binding || !family || preparedMapId !== active.local.location.mapId) {
+        return originalWrite16(address, value)
+      }
+
+      if (!await bindingStillOwned(binding)) {
+        clearPrepared(false)
+        await refresh(true)
+        binding = remoteBinding
+        family = protagonistFamily
+        if (!binding || !family || preparedMapId !== active.local.location.mapId) {
+          return originalWrite16(address, value)
+        }
+      }
+
+      const isMatEntry = address === binding.handleAddress + HANDLE_MAT_ENTRY
+      const isGeomFlags = address === binding.blActAddress + BLACT_GEOM_FLAGS
+      const isFaceIndex = address === binding.blActAddress + BLACT_FACE_INDEX
+      const isMatFlags = address === binding.blActAddress + BLACT_MAT_FLAGS
+      if (!isMatEntry && !isGeomFlags && !isFaceIndex && !isMatFlags) {
+        return originalWrite16(address, value)
+      }
+
+      if (isMatEntry) return originalWrite16(address, family.matEntry)
+      if (isGeomFlags) return originalWrite16(address, family.geomFlags)
+      if (isMatFlags) {
+        // Dedicated runtime owns visibility; preserve only its visible bit.
+        const normalized = (family.matFlags & ~BLACT_VISIBLE_MASK) | (value & BLACT_VISIBLE_MASK)
+        return originalWrite16(address, normalized)
+      }
+      if (isFaceIndex && active.remote.movementState === 'idle') {
+        return originalWrite16(address, IDLE_FACE_BY_DIRECTION[active.remote.direction])
+      }
+      return originalWrite16(address, value)
+    }
+
+    runtimeBridge.write16 = wrappedWrite16
 
     const unsubscribePresence = multiplayerPresence.subscribe(snapshot => {
       presenceRef.current = snapshot
       const localMapId = snapshot.local?.location.mapId ?? null
       if (previousLocalMapId !== null && localMapId !== previousLocalMapId) {
-        localMapStableSince = Date.now()
         clearPrepared()
       }
       previousLocalMapId = localMapId
-      if (!reading) void prepareLiveFamily(true)
+      if (activeSnapshot()) void refresh()
     })
 
     const unsubscribeFrame = runtimeBridge.subscribeEmulatedFrame(() => {
-      if (!reading) void prepareLiveFamily()
+      if (activeSnapshot()) void refresh()
     })
+
     const timer = window.setInterval(() => {
-      if (!reading) void prepareLiveFamily()
+      if (activeSnapshot()) void refresh()
     }, REFRESH_MS)
 
     return () => {
@@ -315,7 +331,7 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
       unsubscribePresence()
       unsubscribeFrame()
       window.clearInterval(timer)
-      if (runtimeBridge.write16 !== originalWrite16) runtimeBridge.write16 = originalWrite16
+      if (runtimeBridge.write16 === wrappedWrite16) runtimeBridge.write16 = originalWrite16
     }
   }, [bridge, rom.gameId, rom.sha256])
 
