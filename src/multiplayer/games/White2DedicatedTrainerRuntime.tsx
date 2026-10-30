@@ -62,9 +62,6 @@ const REACQUIRE_COOLDOWN_MS = 250
 const BIND_TIMEOUT_MS = 1800
 const TURN_CAPTURE_MS = 240
 const MAX_STEP_HOLD_MS = 250
-// Measured White 2 protagonist speeds from movement traces. The renderer moves
-// slightly faster than the source so it can absorb packet/tick jitter without
-// building an ever-growing visual tail behind the authoritative remote state.
 const REMOTE_WALK_SPEED_FX32_PER_MS = 248
 const REMOTE_RUN_SPEED_FX32_PER_MS = 482
 const REMOTE_RENDER_SPEED_SCALE = 1.15
@@ -74,11 +71,7 @@ const REMOTE_TELEPORT_SNAP_FX32 = 2 * 0x10000
 const REMOTE_DOOR_DEPARTURE_LEAD_MS = 430
 const REMOTE_DOOR_DEPARTURE_TRAVEL_MS = 260
 const REMOTE_DOOR_DEPARTURE_TRAVEL_FX32 = 0x9000
-// Trace data shows White 2 walking at roughly 248 FX32 units/ms and running at
-// roughly 482 FX32 units/ms. Keep the threshold between those two stable bands.
 const RUN_SPEED_THRESHOLD_FX32_PER_MS = 360
-// V4 separates walk/run animation knowledge and refuses cached frames whose
-// geometry does not match the trusted idle renderer for that direction.
 const CACHE_VERSION = 4
 
 const FIELD_FACE_BY_DIRECTION = { north: 0, south: 1, west: 2, east: 3 } as const
@@ -94,9 +87,6 @@ type Direction = MultiplayerPlayerState['direction']
 type MotionKind = 'walk' | 'run'
 type TurnKey = `${Direction}->${Direction}`
 
-// White 2's normal protagonist walk frames are grouped by direction in the
-// renderer atlas. Learned sequences always win; these indices are only a
-// temporary cold-start fallback until the local protagonist demonstrates them.
 const WALK_FACE_START_BY_DIRECTION: Record<Direction, number> = {
   north: 0,
   south: 3,
@@ -193,8 +183,6 @@ function advanceRemoteWorld(
   moving: boolean,
   elapsedMs: number,
 ): MultiplayerWorldPosition {
-  // Once the authoritative peer says it stopped, land exactly on its final
-  // position. Exponential smoothing used to leave the avatar visibly coasting.
   if (!moving) return { ...target }
 
   const dx = signed32(target.x) - signed32(current.x)
@@ -206,9 +194,6 @@ function advanceRemoteWorld(
   let nextX = current.x
   let nextZ = current.z
 
-  // If we're behind when the player turns 90 degrees, finish the old axis first.
-  // That produces a cardinal L-shaped catch-up path instead of smoothing
-  // diagonally through the inside corner of a wall.
   if (direction === 'east' || direction === 'west') {
     const z = advanceFx32(nextZ, target.z, budget)
     nextZ = z.value
@@ -291,9 +276,6 @@ function bootstrapWalkSequence(knowledge: Record<Direction, DirectionKnowledge>,
   if (!trustedProfile) return []
 
   const baseFaceIndex = WALK_FACE_START_BY_DIRECTION[direction]
-  // The recorded White 2 cadence is step pose -> idle -> opposite step pose -> idle.
-  // West was observed at roughly 7 (117 ms) -> 6 (118 ms) -> 8 (84 ms) -> 6,
-  // so mirror that timing for the other directional frame groups during bootstrap.
   return [
     { ...trustedProfile, faceIndex: baseFaceIndex + 1, holdMs: 120 },
     { ...trustedProfile, faceIndex: baseFaceIndex, holdMs: 120 },
@@ -415,10 +397,6 @@ function saveCachedKnowledge(key: string, knowledge: Record<Direction, Direction
 }
 
 async function getNativeBlActIndex(bridge: MelonDsBridge, actorAddress: number) {
-  // IRDO's FldAct_GetBlActIdx dereferences actor->sceneNodeVTable (+0x90),
-  // then its +0x14 method entry. A loading actor can have a valid UID and
-  // actor-system backpointer before that table is ready; calling the game
-  // routine then raises an ARM9 data abort at 0x02167248.
   const sceneNodeVTable = await bridge.read32(actorAddress + ACTOR_SCENE_NODE_VTABLE)
   if (!isMainRamPointer(sceneNodeVTable)) {
     throw new White2ActorSystemUnavailableError(`White 2 actor ${hex(actorAddress)} scene-node method table is not ready (${hex(sceneNodeVTable)}).`)
@@ -504,8 +482,6 @@ async function readRenderProfile(bridge: MelonDsBridge, binding: ActorBinding): 
 
 async function writeRenderProfile(bridge: MelonDsBridge, binding: ActorBinding, profile: RenderProfile) {
   await Promise.all([
-    // Material and face index are an atomic pair. Never replay a frame against a
-    // different texture atlas; doing so previously corrupted the DS renderer.
     bridge.write16(binding.handleAddress + HANDLE_MAT_ENTRY, profile.matEntry),
     bridge.write16(binding.blActAddress + BLACT_GEOM_FLAGS, profile.geomFlags),
     bridge.write16(binding.blActAddress + BLACT_FACE_INDEX, profile.faceIndex),
@@ -513,15 +489,6 @@ async function writeRenderProfile(bridge: MelonDsBridge, binding: ActorBinding, 
   ])
 }
 
-/**
- * Production White 2 multiplayer avatar bridge.
- *
- * A real game-created FieldActor owns the remote player lifecycle. PokéRun drives
- * its logical/continuous position and replays render states learned from the local
- * protagonist onto that dedicated actor. No map NPC is borrowed. The remote
- * billboard mirrors the local protagonist's native BlAct-Y minus WPos-Y offset
- * instead of assuming those Y coordinates are identical.
- */
 export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
 
@@ -635,9 +602,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     }
 
     function abandonActorForLocalMapTransition() {
-      // The local field owns the dedicated remote FieldActor. If the local map
-      // changes, that field/ActorSystem is unloading, so never enqueue DeleteActor
-      // against it. Drop PokéRun's references and let White 2 own teardown.
       binding = null
       ownsActor = false
       remoteActorHidden = false
@@ -847,9 +811,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
           && age >= 0
           && age < REMOTE_DOOR_DEPARTURE_LEAD_MS + REMOTE_DOOR_DEPARTURE_TRAVEL_MS
         )
-        // During the short entrance hold the main tick intentionally keeps the
-        // protagonist visible and walks its PokéRun-owned billboard into the door.
-        // After that window, visibility belongs to the off-map hide path.
         if (!holdingDoorDeparture) void forceRemoteBillboardHidden(current)
         return
       }
@@ -858,10 +819,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     })
 
     async function forceRemoteBillboardHidden(current: DedicatedBinding) {
-      // White 2's native FieldActor update can rewrite BlAct::visible after a
-      // one-time hide. Reassert only the visible bit after every emulated frame
-      // while the authoritative remote is on another map. Do not touch actor
-      // position, material, UID, animation, or lifecycle.
       const address = current.blActAddress + BLACT_MAT_FLAGS
       const flags = await runtimeBridge.read16(address)
       if ((flags & BLACT_VISIBLE_MASK) !== 0) {
@@ -870,9 +827,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     }
 
     async function setRemoteActorHidden(current: DedicatedBinding, hidden: boolean) {
-      // BlAct::visible is bit 9 of the 16-bit flags word at +0x18. Toggle only
-      // that render bit: do not mutate FieldActor flags, position, UID, binding,
-      // material, or animation state.
       const address = current.blActAddress + BLACT_MAT_FLAGS
       const flags = await runtimeBridge.read16(address)
       const nextFlags = hidden
@@ -886,8 +840,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       const current = binding
       const hadActor = ownsActor || current !== null
       if (!hadActor) return
-      // Keep ownership until deletion succeeds. A zero GameData pointer during
-      // a transition means cleanup cannot run yet, not that our actor vanished.
       if (current) {
         const liveSystem = await new White2ActorSystemProbe(runtimeBridge).inspect()
         if (liveSystem.actorSystem !== current.actorSystem) {
@@ -909,9 +861,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     }
 
     async function detachDedicatedActorNativeUpdate(current: DedicatedBinding) {
-      // PokéRun already owns the dedicated remote actor's position and BlAct.
-      // Remove White 2's per-actor TCB so its native move/draw callback cannot
-      // restore the underlying NPC model after the remote changes maps.
       const forceShadow = await runtimeBridge.callArm9Thumb4(
         FLDACT_SET_FORCE_OFF_SHADOW,
         current.actorAddress,
@@ -974,37 +923,51 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
     async function bindDedicatedActor(actorAddress: number, remote: MultiplayerPlayerState) {
       const rawBinding = await resolveActorBinding(runtimeBridge, actorAddress, POKERUN_NATIVE_TEST_UID)
       const next: DedicatedBinding = { ...rawBinding, nativeRender: await readRenderProfile(runtimeBridge, rawBinding) }
+
+      // Never expose the native model while the dedicated binding is being
+      // converted into the multiplayer protagonist. Hide first, then detach,
+      // position/render, and only reveal once a valid protagonist profile exists.
+      const initialFlags = await runtimeBridge.read16(next.blActAddress + BLACT_MAT_FLAGS)
+      await runtimeBridge.write16(next.blActAddress + BLACT_MAT_FLAGS, initialFlags & ~BLACT_VISIBLE_MASK)
+      remoteActorHidden = true
+
       await detachDedicatedBillboardAnimation(next)
       await detachDedicatedActorNativeUpdate(next)
       const world = remote.worldPosition
       if (!world) return null
-      const initialProfile = remoteProfile(Date.now(), remote)
+
+      let initialProfile = remoteProfile(Date.now(), remote)
+      if (!initialProfile) {
+        const livePlayer = await ensurePlayerBinding()
+        const liveProfile = await readRenderProfile(runtimeBridge, livePlayer)
+        initialProfile = {
+          ...liveProfile,
+          faceIndex: WALK_FACE_START_BY_DIRECTION[remote.direction],
+        }
+      }
+
       latestRemoteProfile = initialProfile
-      await applyRemoteFrame(next, remote, world, initialProfile)
+      lastVisibleRemoteProfile = { ...initialProfile }
+      await applyRemoteFrame(next, remote, world, {
+        ...initialProfile,
+        matFlags: initialProfile.matFlags & ~BLACT_VISIBLE_MASK,
+      })
       renderedWorld = { ...world }
       lastRenderAdvanceAt = Date.now()
       binding = next
       ownsActor = true
+      await setRemoteActorHidden(next, false)
       return next
     }
 
     async function ensureActor(remote: MultiplayerPlayerState) {
       if (binding) {
         if (await bindingStillValid(runtimeBridge, binding)) return binding
-
-        // A binding becoming invalid is not proof that the native FieldActor
-        // needs deletion. During White 2 field/BlAct rebuilds the scene handle
-        // can disappear before the actor system is ready for scheduled tasks.
-        // Drop PokéRun's stale pointers and let the next healthy heap scan either
-        // rebind the live UID or observe that White 2 already destroyed it.
         console.info('[PokéRun lifecycle] ABANDON REMOTE • INVALID BINDING')
         abandonActorForLocalMapTransition()
         return null
       }
       if (ownsActor) {
-        // Ownership without a usable binding is the same uncertain state: do not
-        // schedule DeleteActor from here. Reacquire from the current field on the
-        // next tick instead.
         console.info('[PokéRun lifecycle] ABANDON REMOTE • OWNER WITHOUT BINDING')
         abandonActorForLocalMapTransition()
         return null
@@ -1012,9 +975,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       resetRemoteAnimation()
       if (Date.now() < reacquireAfter) return null
 
-      // A local field reload can preserve or recreate the PokéRun UID before
-      // this runtime has a binding. Reuse a live actor instead of failing the
-      // duplicate-UID safety check or creating a second remote trainer.
       const liveScan = await new White2ActorSystemProbe(runtimeBridge).scanHeap()
       const existing = liveScan.entries.find(entry =>
         entry.uid === POKERUN_NATIVE_TEST_UID
@@ -1056,8 +1016,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       const local = presence.local
       const remote = presence.remote
 
-      // Detect the local map change before touching the old FieldActorSystem.
-      // This avoids racing render learning or DeleteActor against an unloading field.
       if (local) {
         const currentLocalMapId = local.location.mapId
         const localMapChanged = lastLocalMapId !== null && lastLocalMapId !== currentLocalMapId
@@ -1083,10 +1041,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
       if (!local?.worldPosition) {
         if (ownsActor && now - lastCompletePresenceAt > MISSING_STATE_GRACE_MS) {
-          // Local position disappearing is a field-transition signal. Native
-          // DeleteActor is unsafe here because White 2 may already be tearing
-          // down the old field task manager. Drop PokéRun's references and let
-          // the field teardown own destruction of the old dedicated actor.
           rangeLatched = false
           stableMapId = null
           stableMapSince = 0
@@ -1150,8 +1104,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
               movementState: 'moving',
               worldPosition: visualWorld,
             }
-            // Doorway motion is synthetic: keep the last known-good trainer
-            // renderer instead of advancing learned/fallback walk profiles.
             const departureProfile = lastVisibleRemoteProfile ?? latestRemoteProfile
             renderedWorld = visualWorld
             lastRenderAdvanceAt = now
@@ -1163,17 +1115,24 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
 
           if (!remoteActorHidden) {
             await setRemoteActorHidden(binding, true)
-            console.info('[PokéRun lifecycle] HIDE REMOTE • DOOR DEPARTURE COMPLETE', {
-              actor: binding.actorAddress,
-              transition: transition?.id ?? null,
-            })
           }
-          rangeLatched = true
-          resetRemoteAnimation()
-        } else {
+          console.info('[PokéRun lifecycle] REMOVE REMOTE • OFF MAP', {
+            actor: binding.actorAddress,
+            transition: transition?.id ?? null,
+            localMapId: local.location.mapId,
+            remoteMapId: remote.location.mapId,
+          })
+          // The local field is still healthy here, so deletion is safe. Do not
+          // restore native model 11 before deleting: that can create a one-frame
+          // rival/orange flash. Clearing our own binding in the same call also
+          // prevents any stale frame callback from touching the deleted actor.
+          await releaseActor(false, false)
           rangeLatched = false
-          remoteActorHidden = false
+          return
         }
+
+        rangeLatched = false
+        remoteActorHidden = false
         return
       }
 
@@ -1195,9 +1154,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
       const dx = Math.abs(remote.x - local.x)
       const dy = Math.abs(remote.y - local.y)
 
-      // Distance only gates the initial spawn. Once this map owns a dedicated
-      // remote FieldActor, keep it alive and let White 2 handle off-camera culling.
-      // Deleting/recreating the actor on distance transitions corrupts its renderer.
       if (!rangeLatched) {
         if (dx > ENTER_REMOTE_DX || dy > ENTER_REMOTE_DY) return
         rangeLatched = true
@@ -1255,16 +1211,6 @@ export function White2DedicatedTrainerRuntime({ bridge, rom }: { bridge: MelonDs
             break
           }
           const failedLocal = presenceRef.current.local
-
-          // A generic renderer/read failure is not a safe place to schedule a
-          // White 2 field task. During map transitions, JS presence can still
-          // look completely healthy for a short window after the native field
-          // task manager has begun teardown. Calling DeleteActor from this catch
-          // can therefore deadlock until the 900-frame native safety timeout.
-          //
-          // Drop only PokéRun's references here. On the next healthy tick,
-          // ensureActor() will either rebind the still-live dedicated UID or
-          // spawn a fresh actor if White 2 destroyed it with the old field.
           rangeLatched = false
           stableMapId = failedLocal?.location.mapId ?? null
           stableMapSince = Date.now()
