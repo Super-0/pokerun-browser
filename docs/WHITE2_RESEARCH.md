@@ -5,6 +5,14 @@ Target: Pokémon White 2 US (IRDO), exact-ROM-fingerprint gated by PokéRun code
 
 This file contains durable reverse-engineering findings. Keep temporary experiment status in `docs/POKERUN_MULTIPLAYER_STATE.md`.
 
+## Current Test Harness Context
+
+The current multiplayer debugging harness uses **one real White 2 emulator/game instance** plus a **headless fake P2 peer**.
+
+The fake peer publishes synthetic remote player state through PokéRun's normal multiplayer protocol path. The one real White 2 instance renders that remote peer as a dedicated injected native `FieldActor`.
+
+Do not assume a second emulator/tab exists when interpreting current diagnostics.
+
 ## Primary External Reference
 
 A public decomp/reconstruction repository, `fuddlesworth/pokebw2`, contains White 2 US source reconstruction, exact symbol names, and addresses matching PokéRun's independently identified functions.
@@ -78,14 +86,15 @@ Current PokéRun uses a `0x100`-byte actor stride, consistent with the live heap
 - model position offsets;
 - resource-group indices.
 
-In the stable map-427 orange-P2 test, P1 and P2 have byte-for-byte identical embedded `FieldActorConfig` for object code `240`.
+In the stable map-427 overlap test, real P1 and the PokéRun remote actor have byte-for-byte identical embedded `FieldActorConfig` for object code `240`.
 
 Generated object-code data identifies:
 
 - `OBJ_CODE_HERO` = 231
 - `OBJ_CODE_HEROINE` = 240
+- `OBJ_CODE_YOUNGSTER` = 11
 
-The tested local player is therefore using the heroine object code.
+The tested local player and injected remote therefore both use the heroine object code, while the orange NPC is a Youngster.
 
 ## Native White 2 Player Creation
 
@@ -99,13 +108,6 @@ The tested local player is therefore using the heroine object code.
 After creation it calls `SetActorFlag32(actor, TRUE)`.
 
 `SetActorFlag32` sets actor flag `0x20`. Other code shows this flag is used for persistent/resident actors across actor cleanup/zone changes; it is not currently proven to affect visual model identity.
-
-Stable flags in the orange-P2 experiment:
-
-- P1: `0x00000023`
-- P2: `0x00010003`
-
-So P1 has flag `0x20` and P2 does not, but current decomp usage points toward persistence rather than texture selection.
 
 ## White 2 Already Has Remote-Player Field Actors
 
@@ -204,7 +206,8 @@ The decomp defines BLAct as `BillboardActor`:
 Stable map-427 capture:
 
 - P1 material: `13`
-- P2 material: `13`
+- injected remote material: `13`
+- overlapping Youngster material: `6`
 
 ## BillboardActorHandle
 
@@ -238,7 +241,7 @@ Stable capture:
 - animation count `48`
 - current animation `1`
 
-### P2
+### Injected remote
 
 - handle `0x022691C4`
 - scene actor `10`
@@ -246,8 +249,6 @@ Stable capture:
 - animation table `0x021CF13C`
 - animation count `48`
 - current animation `0`
-
-The animation difference can explain pose selection, not a wholly different trainer texture.
 
 ## Billboard Material Loading
 
@@ -260,7 +261,7 @@ Important behavior:
 - actors sharing the same cached object code can reuse the same billboard material;
 - `FldAct_SwapObjCode` updates actor billboard information and handles asynchronous material replacement/deletion.
 
-Because P1 and P2 both report object code/config 240 and both actual scene material 13, a visibly unrelated orange sprite is difficult to reconcile with BLAct 10 truly being the orange figure. This is why actor/billboard identity is now the next research target.
+The matching heroine object code/config/material/texMat seen on P1 and the injected remote was valid. The apparent contradiction came from a different actor being drawn on top of the remote.
 
 ## Native Functions Used / Identified
 
@@ -296,9 +297,9 @@ White 2's own communication-actor template uses:
 
 - `0x00FC`
 
-## Stable Resource-Graph Observation
+## Resource-Graph Observation — Corrected
 
-Even while the injected actor appears orange on screen, P1 and P2 match on:
+P1 and the injected remote match on:
 
 - object code `240` (`OBJ_CODE_HEROINE`);
 - embedded `FieldActorConfig`;
@@ -309,7 +310,7 @@ Even while the injected actor appears orange on screen, P1 and P2 match on:
 - animation table `0x021CF13C`;
 - dumped animation table contents.
 
-This means the next required proof is identity: verify which allocated FieldActor/BLAct actually owns the visible orange pixels.
+This was correctly indicating that the injected remote used the heroine resource family.
 
 ## Probe 2: moveCode 2 -> 0
 
@@ -319,28 +320,38 @@ Controlled experiment changed only that to `MOVE_CODE_NONE (0)`.
 
 Result:
 
-- P2 remained orange;
-- P2 move-code vtable became identical to P1 (`0x021CC5D0`).
+- the apparent orange figure remained;
+- the remote move-code vtable became identical to P1 (`0x021CC5D0`).
 
-Conclusion: generic move code 2 was not the cause.
+Corrected conclusion: move code 2 was not the source of orange art. The apparent orange figure was an overlapping native Youngster.
 
-## Probe 3: Actor/Billboard Census
+## Probe 3: Actor/Billboard Census — RESOLVED OVERLAP
 
 PokéRun commit `aa5e613` adds a read-only census of every allocated actor and resolved billboard.
 
-It records:
+It revealed two actors at the exact same world position:
 
-- actor identity and state;
-- model and move code;
-- flags;
-- grid/world position;
-- TCB and vtables;
-- BLAct index/address;
-- actual scene material/type;
-- BLAct position/face/render flags;
-- texMat and animation state.
+### Native Youngster
 
-Goal: determine whether BLAct 10 is truly the visible orange figure or whether another actor/billboard is overlapping or being mistaken for the remote actor.
+- slot `9`
+- UID `1`
+- model `11` = `OBJ_CODE_YOUNGSTER`
+- BLAct `8`
+- material/texMat `6`
+- world `x=3571712, y=65551, z=46759936`
+
+### PokéRun injected remote heroine
+
+- slot `10`
+- UID `0x7F01`
+- model `240` = `OBJ_CODE_HEROINE`
+- BLAct `10`
+- material/texMat `13`
+- world `x=3571712, y=65551, z=46759936`
+
+Using the fake-P2 harness controls moved the heroine away while the Youngster remained stationary, visually confirming the census result.
+
+The orange-model bug is therefore resolved as an actor-overlap misdiagnosis, not a renderer identity failure.
 
 ## Static Map / Transition Research
 
@@ -353,7 +364,7 @@ PokéRun has already extracted/decoded substantial White 2 static field data:
 
 Current startup logs report 182 static boundary triggers loaded.
 
-Door/transition implementation is intentionally paused while remote actor rendering is reverse-engineered.
+Door/transition implementation remains intentionally paused while the native remote-player actor path is reverse-engineered further.
 
 ## Research Rules
 
@@ -368,7 +379,7 @@ Prefer:
 
 Avoid:
 
-- copying arbitrary P1 pointers directly into P2;
+- copying arbitrary P1 pointers directly into the injected remote;
 - changing multiple unknown actor fields at once;
-- conflating the second emulator's real player with the injected remote actor;
-- resuming higher-level transition polish before actor/resource identity is understood.
+- assuming a second emulator/tab exists in the current harness;
+- resuming higher-level transition polish before the native communication-actor path is understood well enough to choose a clean architecture.
