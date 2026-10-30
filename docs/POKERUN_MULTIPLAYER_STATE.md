@@ -20,7 +20,7 @@ Each instance contains:
 
 The remote representation is therefore not the second emulator itself. It is a dedicated native White 2 actor inside the current local game.
 
-### Current remote actor lifecycle
+### Current PokéRun remote actor lifecycle
 
 1. Read the local White 2 player and current field actor system.
 2. Build a `ZoneNPC` payload for the remote actor.
@@ -31,17 +31,41 @@ The remote representation is therefore not the second emulator itself. It is a d
 7. Rebind/swap the actor to the remote trainer object code using White 2's native resource path.
 8. Drive position/facing/animation/visibility from remote player state.
 
-## Current branch / known code state
+This is the CURRENT PokéRun implementation, not necessarily the final design.
 
-Remote branch head before the current local experiment:
+## Major White 2 Decomp Discovery
 
-- `4868fc5` — `Add read-only White 2 render resource graph probe`
+A public White 2 decomp/reconstruction (`fuddlesworth/pokebw2`) contains the exact functions/structs being reverse-engineered, including the same White 2 US addresses PokéRun already uses.
 
-Important: the developer currently has one local, uncommitted experimental edit in `src/multiplayer/games/White2NativeActor.ts`:
+Most importantly, White 2 already contains `src/ov036/field_comm_actor.c`, explicitly described as:
+
+> The actors of the other players in a field communication.
+
+White 2's native remote-player system:
+
+- creates a normal `FieldActor` for each remote player;
+- supplies that player's hero/heroine object code directly as `modelId`;
+- uses `MOVE_CODE_COMM_ACTOR`;
+- stores pointers to live direction, world position, hidden state, and a communication entry in the actor's position work block;
+- lets White 2's own movement callback set facing, position, walking/running draw status, and visibility;
+- configures the actor with height calculation disabled, map attributes disabled, collision disabled, persistence flag enabled, ignore-disable-all enabled, and movement-bit terrain effects disabled.
+
+This is extremely close to PokéRun's intended architecture. Future implementation should strongly consider adapting White 2's own field-communication actor path instead of permanently maintaining a detached generic actor plus manual billboard playback.
+
+Do not immediately rewrite to this architecture while the current orange-model investigation is in progress; use it as the primary reference for controlled experiments.
+
+## Current Branch / Local State
+
+Important remote commits:
+
+- `4868fc5` — read-only P1/P2 render resource graph probe
+- `aa5e613` — read-only census of every active FieldActor and billboard
+
+The developer currently has one local, uncommitted experimental edit in `src/multiplayer/games/White2NativeActor.ts`:
 
 - `ZoneNPC.moveCode` changed from `2` to `0` for Probe 2.
 
-Do not assume that local experiment exists on GitHub until it is explicitly committed.
+Do not assume that local experiment exists on GitHub until explicitly committed.
 
 ## Proven Working Pieces
 
@@ -59,67 +83,66 @@ Do not assume that local experiment exists on GitHub until it is explicitly comm
 
 ## Current Blocking Bug: Orange Remote Trainer
 
-The injected remote `FieldActor` still visibly renders as an orange/Hugh-like trainer even when its reported trainer/render identity matches the real protagonist.
+The injected remote `FieldActor` visibly renders as an orange/Hugh-like trainer even when its reported trainer/render identity matches the real protagonist.
 
-The screenshot test condition is:
+The test condition is:
 
 - P1: visibly correct protagonist;
-- P2 remote actor: visibly orange trainer;
+- injected remote P2: visibly orange trainer;
 - both stationary;
 - same map.
 
-This is currently the highest-priority reverse-engineering problem. Implementation work on doors/transitions is paused until the actual visual identity path is understood.
+Implementation work on doors/transitions remains paused until this contradiction is understood.
 
 ## Probe 1 Results: Resource Graph
 
-Read-only probe added in commit `4868fc5`.
-
-A stable orange-P2 capture showed:
+Stable orange-P2 capture:
 
 ### Local P1
 
 - actor: `0x0223E1E4`
 - UID: `0x00FF`
-- modelId: `240`
+- modelId: `240` (`OBJ_CODE_HEROINE`)
 - TCB: `0x0230A104`
 - scene-node vtable: `0x021CF974`
 - BLAct index: `9`
 - BLAct: `0x02268094`
 - renderer handle: `0x0226919C`
-- matEntry: `13`
-- anim table: `0x021CF13C`
+- material / texMat: `13`
+- animation table: `0x021CF13C`
 
 ### Remote P2
 
 - actor: `0x0223E3E4`
 - UID: `0x7F01`
-- modelId: `240`
+- modelId: `240` (`OBJ_CODE_HEROINE`)
 - TCB: `0x00000000` after PokéRun detaches it
 - scene-node vtable: `0x021CF974`
 - BLAct index: `10`
 - BLAct: `0x022680B0`
 - renderer handle: `0x022691C4`
-- matEntry: `13`
-- anim table: `0x021CF13C`
+- material / texMat: `13`
+- animation table: `0x021CF13C`
 
-### Important Probe 1 conclusion
+The actor's embedded `FieldActorConfig` (`+0xE4` onward) is also byte-for-byte identical between P1 and P2.
+
+### Probe 1 conclusion
 
 The visible orange-vs-protagonist difference is NOT explained by any of the following alone:
 
-- `modelId`
-- `matEntry`
-- BLAct geometry flags
-- BLAct material flags
-- scene-node vtable
-- renderer animation-table pointer
-- the animation-table contents dumped by the probe
-- use of White 2's native object-code resource swap
-
-P1 and P2 can match at all of those layers while still visibly rendering differently.
+- object/model code;
+- `FieldActorConfig`;
+- scene-node vtable;
+- BLAct material;
+- BLAct geometry/material flags;
+- renderer texMat;
+- animation table pointer;
+- animation table contents;
+- White 2's native object-code resource swap.
 
 ## Probe 2 Results: moveCode 2 -> 0
 
-Hypothesis: the remote actor was originally created with `ZoneNPC.moveCode = 2`, giving it a different movement-code vtable from the real player. Perhaps that move family selected hidden visual state.
+Hypothesis: the remote actor's previous move code `2` selected a different actor family.
 
 Experiment:
 
@@ -129,60 +152,56 @@ Experiment:
 
 Result:
 
-- P2 is still orange.
-- P2 now has the SAME move-code vtable as P1: `0x021CC5D0`.
-- P2 modelId is still `240`.
-- P2 scene-node vtable is still `0x021CF974`.
-- P2 matEntry is still `13`.
-- P2 anim table is still `0x021CF13C`.
+- P2 is still orange;
+- P1 and P2 now both use move-code vtable `0x021CC5D0`;
+- model/config/material/animation state still matches.
 
-Therefore move code is NOT the cause of the orange trainer identity.
+Therefore generic move code `2` was not the cause.
 
-## Remaining Notable Differences After Probe 2
+## Billboard Struct Reality
 
-The largest known differences that remain are ordinary actor/runtime state plus one renderer-handle word:
+The decomp identifies the structures PokéRun had inferred:
 
-### FieldActor
+- BLAct is `BillboardActor`;
+- the handle is `BillboardActorHandle`;
+- handle `+0x04` is `texMat`;
+- handle `+0x08` is the animation-table pointer;
+- handle `+0x0C/+0x0E` are animation count/current animation;
+- BLAct `+0x00` contains the actual scene material and billboard type.
 
-Expected differences include:
+P1 and P2 both use scene material `13` and texMat `13` while the screenshot still appears different.
 
-- flags/state in the early actor header;
-- UID (`0x00FF` vs `0x7F01`);
-- coordinates;
-- local player TCB present vs remote TCB detached;
-- BLAct index (`9` vs `10`);
-- other player-vs-NPC state bytes.
+This creates a strong identity question: either the visible orange sprite is not the BLAct currently attributed to P2, another actor overlaps it, or some lower-level state not yet captured changes the pixels despite the same scene material.
 
-After Probe 2, the move-code vtable difference is gone.
+## Probe 3: Actor/Billboard Census
 
-### Renderer handle
+Commit `aa5e613` adds a read-only census emitted as:
 
-The only non-index handle difference in the stable comparison is at `handle + 0x0C`:
+`[PokéRun resdiag] ACTOR/BILLBOARD CENSUS`
 
-- P1: `0x00010030`
-- P2: `0x00000030`
+For every allocated FieldActor owned by the active actor system it records:
 
-Known code defines:
+- slot/address/state;
+- UID/zone/model/move code;
+- actor and movement flags;
+- grid/world position;
+- TCB and vtables;
+- BLAct index/address;
+- actual scene material/type;
+- BLAct world position;
+- face and packed render flags;
+- texMat and animation state.
 
-- `HANDLE_ANIM_COUNT = 0x0C`
-- `HANDLE_ANIM = 0x0E`
-
-Interpreted as two u16 fields, both have animation count `0x0030` (48), while P1 has current animation index `1` and P2 has current animation index `0`.
-
-This may explain pose/frame selection but is not yet proven to explain the completely different orange character art.
+Purpose: identify which actual actor/billboard owns the visible orange sprite and detect overlapping/misidentified actors before more renderer writes are attempted.
 
 ## Current Research Direction
 
-Do not resume door/transition implementation yet.
-
-The next reverse-engineering work should determine where the actual per-actor character/texture/palette/model resource selection lives, because the currently mapped BLAct/handle animation path is insufficient to explain the pixels on screen.
-
-Promising targets:
-
-1. Inspect the global field-model/model-manager object referenced by the shared renderer structures (the observed data contains the ASCII prefix `fldmmdl_`).
-2. Trace the native object-code swap/resource loader to identify which per-actor object stores character/texture/palette resource identity.
-3. Determine whether `matEntry=13` is only a material-table slot while another per-actor selector chooses the actual resource family.
-4. Verify whether the orange sprite is truly the injected P2 actor by performing a controlled visibility/position identity test before writing more renderer state.
+1. Run Probe 3 without moving either player.
+2. Compare the orange sprite's world position against every active BLAct.
+3. Establish whether BLAct 10 is truly the orange figure.
+4. If identity is confirmed, use White 2's decomp to trace material/palette/resource state below the current diagnostics.
+5. If identity is not confirmed, fix actor/billboard ownership before touching resource logic.
+6. In parallel, continue studying White 2's native `field_comm_actor.c` as the likely long-term remote-player architecture.
 
 ## Guardrails
 
@@ -193,7 +212,6 @@ Until the orange-model identity is understood, avoid unrelated changes to:
 - map transition implementation;
 - door behavior;
 - render-profile cache design;
-- actor creation architecture;
 - random P1-to-P2 pointer copying.
 
 Prefer read-only probes and one-variable experiments.
