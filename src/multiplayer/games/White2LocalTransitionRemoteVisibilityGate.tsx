@@ -1,14 +1,259 @@
+import { useEffect, useRef } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
-import type { MultiplayerRomIdentity } from '../core/protocol'
+import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
+import type { MultiplayerMapTransition, MultiplayerRomIdentity } from '../core/protocol'
+import { White2ActorSystemProbe } from './White2ActorSystem'
+import { POKERUN_NATIVE_TEST_UID } from './White2NativeActor'
+
+const PLAYER_UID = 0x00ff
+const ACTOR_TCB = 0x84
+const ACTOR_SCENE_NODE_VTABLE = 0x90
+const SCENE_NODE_GET_BLACT_INDEX = 0x14
+const ACTOR_SYSTEM_FIELD_BLACT = 0x28
+const FIELD_BLACT_SYSTEM = 0x04
+const BLACT_SYSTEM_SCENE = 0x04
+const BLACT_SYSTEM_ACTOR_HANDLES = 0x18
+const BLACT_SYSTEM_ACTOR_COUNT = 0x1c
+const BLACT_SCENE_ACTORS = 0x08
+const BLACT_SCENE_CONFIG_ACTOR_COUNT = 0x0e
+const BLACT_SIZE = 0x1c
+const BLACT_GEOM_FLAGS = 0x00
+const BLACT_MAT_FLAGS = 0x18
+const BLACT_VISIBLE_MASK = 0x0200
+const HANDLE_SIZE = 0x28
+const HANDLE_BLACT_INDEX = 0x00
+const HANDLE_MAT_ENTRY = 0x04
+const FLDACT_GET_BLACT_IDX = 0x02167240
+const FLDACT_SET_HIDDEN = 0x02167574
+const NATIVE_STACK_RESERVE = 0x400
+const BLACT_NONE = 0xffff
+const MAIN_RAM_START = 0x02000000
+const MAIN_RAM_END = 0x02400000
+const TRANSITION_FRESH_MS = 800
+const POLL_MS = 16
+
+type Binding = {
+  actorAddress: number
+  blActIndex: number
+  blActAddress: number
+  handleAddress: number
+}
+
+function isMainRamPointer(value: number) {
+  return Number.isInteger(value) && value >= MAIN_RAM_START && value < MAIN_RAM_END && (value & 0x3) === 0
+}
+
+function isMainRamFunctionPointer(value: number) {
+  const address = value & ~1
+  return Number.isInteger(value)
+    && address >= MAIN_RAM_START
+    && address < MAIN_RAM_END
+    && ((value & 1) === 1 || (address & 3) === 0)
+}
+
+function transitionFresh(transition: MultiplayerMapTransition | undefined) {
+  if (!transition) return false
+  const age = Date.now() - transition.detectedAt
+  return age >= 0 && age < TRANSITION_FRESH_MS
+}
+
+async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actorSystem: number): Promise<Binding | null> {
+  const sceneNodeVTable = await bridge.read32(actorAddress + ACTOR_SCENE_NODE_VTABLE)
+  if (!isMainRamPointer(sceneNodeVTable)) return null
+  const getter = await bridge.read32(sceneNodeVTable + SCENE_NODE_GET_BLACT_INDEX)
+  if (!isMainRamFunctionPointer(getter)) return null
+
+  const call = await bridge.callArm9Thumb4(FLDACT_GET_BLACT_IDX, actorAddress, 0, 0, 0, NATIVE_STACK_RESERVE)
+  if (call.status !== 1) return null
+  const blActIndex = call.result & 0xffff
+  if (blActIndex === BLACT_NONE) return null
+
+  const fieldBlAct = await bridge.read32(actorSystem + ACTOR_SYSTEM_FIELD_BLACT)
+  if (!isMainRamPointer(fieldBlAct)) return null
+  const blActSystem = await bridge.read32(fieldBlAct + FIELD_BLACT_SYSTEM)
+  if (!isMainRamPointer(blActSystem)) return null
+
+  const [scene, handles, handleCount] = await Promise.all([
+    bridge.read32(blActSystem + BLACT_SYSTEM_SCENE),
+    bridge.read32(blActSystem + BLACT_SYSTEM_ACTOR_HANDLES),
+    bridge.read16(blActSystem + BLACT_SYSTEM_ACTOR_COUNT),
+  ])
+  if (!isMainRamPointer(scene) || !isMainRamPointer(handles)) return null
+
+  const [sceneActors, sceneActorCount] = await Promise.all([
+    bridge.read32(scene + BLACT_SCENE_ACTORS),
+    bridge.read16(scene + BLACT_SCENE_CONFIG_ACTOR_COUNT),
+  ])
+  if (!isMainRamPointer(sceneActors) || blActIndex >= sceneActorCount) return null
+
+  let handleAddress = 0
+  for (let index = 0; index < handleCount; index += 1) {
+    const candidate = handles + index * HANDLE_SIZE
+    if ((await bridge.read32(candidate + HANDLE_BLACT_INDEX)) !== blActIndex) continue
+    if (handleAddress !== 0) return null
+    handleAddress = candidate
+  }
+  if (!handleAddress) return null
+
+  return {
+    actorAddress,
+    blActIndex,
+    blActAddress: sceneActors + blActIndex * BLACT_SIZE,
+    handleAddress,
+  }
+}
 
 /**
- * Arrival visibility is now owned exclusively by White2DedicatedTrainerRuntime:
- * native P2 creation is deferred through the unsafe local-arrival window, then
- * the actor is bound hidden, rendered as the protagonist, and revealed once.
+ * One-shot native-spawn quarantine.
  *
- * Keep this compatibility component temporarily so older runtime wiring does not
- * need to change in the same patch. It intentionally performs no writes.
+ * White 2 creates PokéRun's remote actor as native model 11 before the dedicated
+ * runtime has had a chance to detach its native updater and replace its billboard
+ * family. On a cold same-map spawn that native model can therefore be visible for
+ * a frame (or longer if field setup is busy).
+ *
+ * This gate owns only FieldActor's native hidden flag. For each newly observed P2
+ * actor it keeps the actor hidden until:
+ *   1. the actor's native update TCB has been detached, and
+ *   2. P2's material/geometry family matches the live local protagonist.
+ *
+ * It then clears the native hidden flag exactly once and never participates in
+ * ordinary visibility again. Billboard visibility remains exclusively owned by
+ * White2DedicatedTrainerRuntime, avoiding the old competing-writer race.
  */
-export function White2LocalTransitionRemoteVisibilityGate(_props: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
+export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
+  const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
+
+  useEffect(() => multiplayerPresence.subscribe(snapshot => {
+    presenceRef.current = snapshot
+  }), [])
+
+  useEffect(() => {
+    if (!bridge || !White2ActorSystemProbe.supportsRom(rom)) return
+    const runtimeBridge = bridge
+    const probe = new White2ActorSystemProbe(runtimeBridge)
+    let cancelled = false
+    let busy = false
+    let observedActor = 0
+    let releasedActor = 0
+    let nativeHidden: boolean | null = null
+    let lastPresenceKey = ''
+    let lastWarning = ''
+
+    async function setNativeHidden(actorAddress: number, hidden: boolean) {
+      if (nativeHidden === hidden) return true
+      const call = await runtimeBridge.callArm9Thumb4(
+        FLDACT_SET_HIDDEN,
+        actorAddress,
+        hidden ? 1 : 0,
+        0,
+        0,
+        NATIVE_STACK_RESERVE,
+      )
+      if (call.status !== 1) return false
+      nativeHidden = hidden
+      return true
+    }
+
+    async function inspect() {
+      if (cancelled || busy || runtimeBridge.status !== 'running') return
+      busy = true
+      try {
+        const { local, remote } = presenceRef.current
+        const presenceKey = `${String(local?.location.mapId ?? 'none')}:${String(remote?.location.mapId ?? 'none')}`
+        if (presenceKey !== lastPresenceKey) {
+          lastPresenceKey = presenceKey
+          observedActor = 0
+          releasedActor = 0
+          nativeHidden = null
+        }
+
+        if (!local || !remote || local.location.mapId !== remote.location.mapId) return
+        if (transitionFresh(local.transition) || transitionFresh(remote.transition)) return
+
+        const scan = await probe.scanHeap()
+        const player = scan.entries.find(entry => entry.uid === PLAYER_UID && entry.state === 'player')
+        const remoteActor = scan.entries.find(entry =>
+          entry.uid === POKERUN_NATIVE_TEST_UID
+          && entry.state === 'active'
+          && entry.actorSystemBackptr === scan.actorSystem
+        )
+
+        if (!player || !remoteActor) {
+          observedActor = 0
+          releasedActor = 0
+          nativeHidden = null
+          return
+        }
+
+        if (remoteActor.address !== observedActor) {
+          observedActor = remoteActor.address
+          releasedActor = 0
+          nativeHidden = null
+        }
+        if (releasedActor === remoteActor.address) return
+
+        // Quarantine first. The actor-level flag is independent of the billboard
+        // material visibility bit and suppresses native model 11 during bootstrap.
+        if (!await setNativeHidden(remoteActor.address, true)) return
+
+        // The dedicated runtime clears ACTOR_TCB after removing White 2's native
+        // actor updater. Do not release the actor before that ownership transfer.
+        const nativeTcb = await runtimeBridge.read32(remoteActor.address + ACTOR_TCB)
+        if (nativeTcb !== 0) return
+
+        const [playerBinding, remoteBinding] = await Promise.all([
+          resolveBinding(runtimeBridge, player.address, scan.actorSystem),
+          resolveBinding(runtimeBridge, remoteActor.address, scan.actorSystem),
+        ])
+        if (!playerBinding || !remoteBinding) return
+
+        const [playerMatEntry, playerGeomFlags, playerMatFlags, remoteMatEntry, remoteGeomFlags, remoteMatFlags] = await Promise.all([
+          runtimeBridge.read16(playerBinding.handleAddress + HANDLE_MAT_ENTRY),
+          runtimeBridge.read16(playerBinding.blActAddress + BLACT_GEOM_FLAGS),
+          runtimeBridge.read16(playerBinding.blActAddress + BLACT_MAT_FLAGS),
+          runtimeBridge.read16(remoteBinding.handleAddress + HANDLE_MAT_ENTRY),
+          runtimeBridge.read16(remoteBinding.blActAddress + BLACT_GEOM_FLAGS),
+          runtimeBridge.read16(remoteBinding.blActAddress + BLACT_MAT_FLAGS),
+        ])
+
+        const familyReady = remoteMatEntry === playerMatEntry
+          && remoteGeomFlags === playerGeomFlags
+          && (remoteMatFlags & ~BLACT_VISIBLE_MASK) === (playerMatFlags & ~BLACT_VISIBLE_MASK)
+        if (!familyReady) return
+
+        if (!await setNativeHidden(remoteActor.address, false)) return
+        releasedActor = remoteActor.address
+        lastWarning = ''
+        console.info('[PokéRun lifecycle] RELEASE REMOTE FROM NATIVE SPAWN QUARANTINE', {
+          actor: remoteActor.address,
+          mapId: local.location.mapId,
+          matEntry: remoteMatEntry,
+          geomFlags: remoteGeomFlags,
+        })
+      } catch (reason) {
+        const message = reason instanceof Error ? reason.message : String(reason)
+        if (message !== lastWarning) {
+          lastWarning = message
+          console.warn('White 2 native remote spawn quarantine paused for one pass:', reason)
+        }
+      } finally {
+        busy = false
+      }
+    }
+
+    const unsubscribeFrame = runtimeBridge.subscribeEmulatedFrame(() => {
+      void inspect()
+    })
+    const timer = window.setInterval(() => {
+      void inspect()
+    }, POLL_MS)
+
+    return () => {
+      cancelled = true
+      unsubscribeFrame()
+      window.clearInterval(timer)
+    }
+  }, [bridge, rom.gameId, rom.sha256])
+
   return null
 }
