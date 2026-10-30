@@ -20,6 +20,7 @@ const RUN_STEPS = 6
 const DOOR_INTENT_MS = 40
 const DOOR_PREOPEN_MS = 120
 const DOOR_SETTLE_MS = 1100
+const REMOTE_DEPARTURE_TOTAL_MS = 430 + 260
 
 type Direction = MultiplayerPlayerState['direction']
 type MovementMode = 'walk' | 'run'
@@ -415,42 +416,77 @@ class FakeRemoteDoorPeer {
         worldPosition: { ...exteriorWorld },
         transition: replayTransition,
       })
-    } else {
-      // Exit starts on the captured interior trigger tile. Mark the intent before
-      // changing maps so the interior door can open while P2 remains visible.
+
+      await sleep(DOOR_PREOPEN_MS)
+      if (generation !== this.scriptGeneration) return
+
+      // Keep the proven entrance timing. The pre-open beat counts as part of the
+      // departure lead once the authoritative destination-map packet arrives.
+      replayTransition.detectedAt = Date.now() - DOOR_PREOPEN_MS
       this.publish({
-        location: { mapId: transition.toMapId },
-        x: transition.toX,
-        y: transition.toY,
-        direction: exitDirection,
-        movementState: 'moving',
-        worldPosition: { ...interiorWorld },
+        ...destination,
+        movementState: 'idle',
         transition: replayTransition,
       })
-      await sleep(DOOR_INTENT_MS)
-      if (generation !== this.scriptGeneration) return
+    } else {
+      // Reverse use must finish visually on the interior side. The old sequence
+      // changed maps first and then used the generic off-map departure motion,
+      // which pushed the FieldActor into an impossible tile and left its shadow /
+      // collision object parked behind the doorway.
       this.publish({
         location: { mapId: transition.toMapId },
-        x: transition.toX,
-        y: transition.toY,
+        x: current.x,
+        y: current.y,
         direction: exitDirection,
+        movementState: 'moving',
+        worldPosition: { ...(current.worldPosition ?? interiorWorld) },
+        transition: replayTransition,
+      })
+
+      await sleep(DOOR_INTENT_MS)
+      if (generation !== this.scriptGeneration) return
+      await sleep(Math.max(0, DOOR_PREOPEN_MS - DOOR_INTENT_MS))
+      if (generation !== this.scriptGeneration) return
+
+      const startWorld = current.worldPosition ?? interiorWorld
+      const doorwayWorld = stepWorld(interiorWorld, exitDirection)
+      const deltaX = (doorwayWorld.x | 0) - (startWorld.x | 0)
+      const deltaZ = (doorwayWorld.z | 0) - (startWorld.z | 0)
+
+      for (let step = 1; step <= WALK_STEPS; step += 1) {
+        if (generation !== this.scriptGeneration) return
+        const fraction = step / WALK_STEPS
+        this.publish({
+          // Keep the logical/collision grid on the legal interior trigger tile.
+          // Only the PokéRun-owned world billboard travels into the doorway.
+          location: { mapId: transition.toMapId },
+          x: current.x,
+          y: current.y,
+          direction: exitDirection,
+          movementState: 'moving',
+          worldPosition: {
+            x: Math.round((startWorld.x | 0) + deltaX * fraction) >>> 0,
+            y: startWorld.y >>> 0,
+            z: Math.round((startWorld.z | 0) + deltaZ * fraction) >>> 0,
+          },
+          transition: replayTransition,
+        })
+        await sleep(WALK_STEP_MS)
+      }
+
+      if (generation !== this.scriptGeneration) return
+
+      // The doorway travel already happened on the source map. Backdate the
+      // transition beyond the generic departure window so the runtime hides /
+      // removes the old interior actor immediately instead of walking it farther.
+      replayTransition.detectedAt = Date.now() - REMOTE_DEPARTURE_TOTAL_MS
+      this.publish({
+        ...destination,
         movementState: 'idle',
-        worldPosition: { ...interiorWorld },
         transition: replayTransition,
       })
     }
 
-    await sleep(DOOR_PREOPEN_MS)
-    if (generation !== this.scriptGeneration) return
-
-    // Keep the proven synthetic-departure timing: the pre-open beat counts as
-    // part of the 430 ms lead once the authoritative map-change packet arrives.
-    replayTransition.detectedAt = Date.now() - DOOR_PREOPEN_MS
-    this.publish({
-      ...destination,
-      movementState: 'idle',
-      transition: replayTransition,
-    })
     console.info('[PokéRun fake door] MANUAL REMOTE DOOR', {
       mode,
       transition: replayTransition,
@@ -719,7 +755,7 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
         ENTER: map {String(door.fromMapId)} @ {entryApproach.x},{entryApproach.y} {arrowForDirection(door.fromDirection)}<br/>
         DOOR TILE: {door.fromX},{door.fromY} (included in animation)<br/>
         EXIT: map {String(door.toMapId)} @ {door.toX},{door.toY} {arrowForDirection(exitDirection)}<br/>
-        Stand P2 on ENTER and press that direction. The doorway tile is consumed by the transition instead of ordinary movement.
+        Stand P2 on ENTER/EXIT and press that direction. Doorway travel is owned by the transition; P2 never idles on the doorway tile.
       </div> : <div style={{ marginTop: 5, opacity: 0.68 }}>
         Capture the real trainer using this door once. After that, P2 can enter and exit it directly with the D-pad.
       </div>}
