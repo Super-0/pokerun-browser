@@ -6,6 +6,7 @@ import { White2ActorSystemProbe } from './White2ActorSystem'
 import { POKERUN_NATIVE_TEST_UID } from './White2NativeActor'
 
 const ACTOR_UID = 0x08
+const ACTOR_SHADOW_GROUP = 0x81
 const ACTOR_SYSTEM_BACKPTR = 0x88
 const ACTOR_SCENE_NODE_VTABLE = 0x90
 const SCENE_NODE_GET_BLACT_INDEX = 0x14
@@ -22,6 +23,8 @@ const BLACT_VISIBLE_MASK = 0x0200
 const HANDLE_SIZE = 0x28
 const HANDLE_BLACT_INDEX = 0x00
 const FLDACT_GET_BLACT_IDX = 0x02167240
+const FLDACT_SET_SHADOW_GROUP = 0x0216784c
+const FLDACT_SET_FORCE_OFF_SHADOW = 0x0216787c
 const NATIVE_STACK_RESERVE = 0x400
 const BLACT_NONE = 0xffff
 const MAIN_RAM_START = 0x02000000
@@ -99,9 +102,9 @@ async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actor
  * P2's map but White 2 is still finishing Player 1's own door transition.
  *
  * During this window the dedicated remote actor may exist before the destination
- * field has a stable protagonist render family. Any attempt to expose P2 is
- * forced hidden. Once local transition metadata clears, this component becomes
- * completely passive and the normal same-map renderer owns visibility again.
+ * field has a stable protagonist render family. Keep both its billboard and its
+ * native shadow suppressed. Once local transition metadata clears, this component
+ * becomes completely passive and the normal same-map renderer owns P2 again.
  */
 export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -115,6 +118,7 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
     let cancelled = false
     let binding: Binding | null = null
     let refreshPromise: Promise<void> | null = null
+    let shadowSuppressedKey = ''
 
     function active() {
       const { local, remote } = presenceRef.current
@@ -137,9 +141,40 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
         && owner === current.blActIndex
     }
 
+    async function suppressShadow(current: Binding) {
+      const key = `${current.actorAddress}:${current.actorSystem}`
+      if (shadowSuppressedKey !== key) {
+        const [forceShadow, shadowGroup] = await Promise.all([
+          runtimeBridge.callArm9Thumb4(
+            FLDACT_SET_FORCE_OFF_SHADOW,
+            current.actorAddress,
+            1,
+            0,
+            0,
+            NATIVE_STACK_RESERVE,
+          ),
+          runtimeBridge.callArm9Thumb4(
+            FLDACT_SET_SHADOW_GROUP,
+            current.actorAddress,
+            0,
+            0,
+            0,
+            NATIVE_STACK_RESERVE,
+          ),
+        ])
+        if (forceShadow.status === 1 && shadowGroup.status === 1) {
+          shadowSuppressedKey = key
+        }
+      }
+      // Reassert the backing byte cheaply on every refresh in case the field is
+      // still finishing native initialization around this actor.
+      await runtimeBridge.write8(current.actorAddress + ACTOR_SHADOW_GROUP, 0)
+    }
+
     async function refreshBinding() {
       if (cancelled || !active()) {
         binding = null
+        shadowSuppressedKey = ''
         return
       }
       if (refreshPromise) return refreshPromise
@@ -163,6 +198,8 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
             return
           }
           binding = next
+
+          await suppressShadow(next)
 
           const flagsAddress = next.blActAddress + BLACT_MAT_FLAGS
           const flags = await runtimeBridge.read16(flagsAddress)
@@ -201,6 +238,7 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
       presenceRef.current = snapshot
       if (!active()) {
         binding = null
+        shadowSuppressedKey = ''
         return
       }
       void refreshBinding()
