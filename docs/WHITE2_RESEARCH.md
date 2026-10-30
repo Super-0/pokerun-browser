@@ -5,114 +5,266 @@ Target: Pokémon White 2 US (IRDO), exact-ROM-fingerprint gated by PokéRun code
 
 This file contains durable reverse-engineering findings. Keep temporary experiment status in `docs/POKERUN_MULTIPLAYER_STATE.md`.
 
-## Field Actor System
+## Primary External Reference
 
-### Known actor fields used by PokéRun
+A public decomp/reconstruction repository, `fuddlesworth/pokebw2`, contains White 2 US source reconstruction, exact symbol names, and addresses matching PokéRun's independently identified functions.
 
-Offsets are relative to a `FieldActor` base.
+This should now be treated as a primary reverse-engineering reference before inferring unknown structure semantics from RAM.
 
-| Offset | Meaning / current interpretation |
+## Exact FieldActor Layout
+
+`include/field/field_actor_internal.h` reconstructs the live actor layout.
+
+Important offsets:
+
+| Offset | Field |
 | --- | --- |
-| `+0x08` | UID (u16) |
-| `+0x0C` | object/model code (u16 portion; observed protagonist `240`) |
-| `+0x18` | face/direction-related state |
-| `+0x3C` | grid position fields |
-| `+0x44` | world position fields |
-| `+0x81` | shadow group byte |
-| `+0x84` | native actor update TCB pointer |
+| `+0x00` | `flags` (u32) |
+| `+0x04` | `movementFlags` (u32) |
+| `+0x08` | `uid` (u16) |
+| `+0x0A` | `zoneId` (u16) |
+| `+0x0C` | `modelId` / object code (u16) |
+| `+0x0E` | `moveCode` (u16) |
+| `+0x10` | event type |
+| `+0x12` | spawn flag |
+| `+0x14` | script ID |
+| `+0x16` | default direction |
+| `+0x18` | face direction |
+| `+0x1A` | motion direction |
+| `+0x1C` | last face direction |
+| `+0x1E` | last motion direction |
+| `+0x20/+0x22/+0x24` | user params 0/1/2 |
+| `+0x26` | next action command |
+| `+0x28` | action-command state |
+| `+0x2A` | draw status |
+| `+0x2C/+0x2E` | area width/height |
+| `+0x30` | default grid position |
+| `+0x36` | initial grid position |
+| `+0x3C` | current grid position |
+| `+0x44` | world position `VecFx32` |
+| `+0x50` | world-position offset |
+| `+0x5C` | outer draw offset |
+| `+0x68` | attribute draw offset |
+| `+0x74` | current tile |
+| `+0x78` | original-Y tile |
+| `+0x7C/+0x7D` | collision width/height |
+| `+0x7E..+0x80` | model position offsets |
+| `+0x81` | shadow group |
+| `+0x84` | native actor TCB pointer |
 | `+0x88` | actor-system backpointer |
-| `+0x8C` | move-code/function-table pointer |
-| `+0x90` | inline scene-node vtable |
-| `+0xC4` | BLAct index mirror / related runtime state (observed P1 `9`, P2 `10`) |
+| `+0x8C` | move-code vtable pointer |
+| `+0x90` | scene-node vtable pointer |
+| `+0x94` | rail/position work block begins |
+| `+0xA4` | move-subprocess work |
+| `+0xB4` | movement-command work |
+| `+0xC4` | billboard actor work |
+| `+0xE4` | embedded `FieldActorConfig` |
 
-FieldActor size used by current code: `0x100` bytes.
+Current PokéRun uses a `0x100`-byte actor stride, consistent with the live heap observations.
+
+## FieldActorConfig
+
+`FieldActorConfig` is the object-code record from the field model table. It contains:
+
+- object/config UID;
+- entity type;
+- scene-node type;
+- shadow/reflection/footprint settings;
+- billboard size;
+- sprite-atlas size;
+- sprite controller type;
+- gender;
+- collision size;
+- model position offsets;
+- resource-group indices.
+
+In the stable map-427 orange-P2 test, P1 and P2 have byte-for-byte identical embedded `FieldActorConfig` for object code `240`.
+
+Generated object-code data identifies:
+
+- `OBJ_CODE_HERO` = 231
+- `OBJ_CODE_HEROINE` = 240
+
+The tested local player is therefore using the heroine object code.
+
+## Native White 2 Player Creation
+
+`field_player_core.c` creates the real player from a `ZoneNPC` template:
+
+- UID `0xFF`;
+- model `OBJ_CODE_HERO`/`OBJ_CODE_HEROINE` depending player state/sex;
+- `MOVE_CODE_NONE` while on the normal grid;
+- normal field actor creation via `CreateNewActorByEntityNoWKOBJCODE`.
+
+After creation it calls `SetActorFlag32(actor, TRUE)`.
+
+`SetActorFlag32` sets actor flag `0x20`. Other code shows this flag is used for persistent/resident actors across actor cleanup/zone changes; it is not currently proven to affect visual model identity.
+
+Stable flags in the orange-P2 experiment:
+
+- P1: `0x00000023`
+- P2: `0x00010003`
+
+So P1 has flag `0x20` and P2 does not, but current decomp usage points toward persistence rather than texture selection.
+
+## White 2 Already Has Remote-Player Field Actors
+
+`src/ov036/field_comm_actor.c` is explicitly the game's system for:
+
+> the actors of the other players in a field communication
+
+This is directly relevant to PokéRun.
+
+### Native remote-player ZoneNPC template
+
+White 2's communication actor template uses:
+
+- UID `0xFC`;
+- model filled per remote player;
+- `MOVE_CODE_COMM_ACTOR`;
+- no event type;
+- spawn flag 0;
+- script ID `0x7D0`;
+- direction 0;
+- params 0;
+- area width/height 4;
+- grid actor (not rail).
+
+From `generated/move_codes.txt`, `MOVE_CODE_COMM_ACTOR` is the slot immediately after `MOVE_CODE_WALK_RANDOM_LEFT_RIGHT_BUMP`; counting from `MOVE_CODE_NONE = 0` places it at `0x44`.
+
+`field_actor_movedata.c` maps this move code to:
+
+- `FieldCommActor_MoveInit`
+- `FieldCommActor_Move`
+- `FieldCommActor_MoveDelete`
+- normal move-code return handler
+
+### Native remote-player setup
+
+After creation, White 2's `FieldCommActor_Add` performs:
+
+1. stores pointers to direction, position, hidden state, and the communication entry in the actor's position work block;
+2. sets actor world position/facing;
+3. disables height calculation;
+4. disables map attributes;
+5. sets actor flag `0x20`;
+6. disables collision;
+7. enables ignore-disable-all;
+8. disables movement-bit terrain effects.
+
+### Native remote-player movement
+
+`FieldCommActor_Move` each frame:
+
+- reads remote direction;
+- updates face direction;
+- reads remote world position;
+- moves actor to that position;
+- sets draw status to stopped/walking/running depending movement distance;
+- handles hero/heroine running specifically;
+- reads hidden state and calls `SetActorHidden`.
+
+This is conceptually almost identical to PokéRun's desired remote-controlled other-trainer system.
+
+Long-term architecture should strongly consider adapting this native path rather than maintaining a detached generic actor and manually replaying billboard frames.
 
 ## Actor System / BLAct Path
 
-Known constants in current PokéRun code:
+Known live structure path:
 
 | Structure / offset | Meaning |
 | --- | --- |
-| ActorSystem `+0x28` | Field BLAct wrapper |
-| Field BLAct `+0x04` | BLAct system |
-| BLAct system `+0x04` | scene |
-| BLAct system `+0x18` | actor-handle array |
-| BLAct system `+0x1C` | actor-handle count |
-| scene `+0x08` | BLAct actor array |
-| scene `+0x0E` | configured BLAct actor count |
+| ActorSystem `+0x28` | Field billboard actor wrapper |
+| wrapper `+0x04` | `BillboardActorSys` |
+| `BillboardActorSys +0x04` | scene |
+| `BillboardActorSys +0x18` | handle array |
+| `BillboardActorSys +0x1C` | handle count |
+| scene `+0x08` | `BillboardActor` array |
+| scene `+0x0E` | configured actor count |
 
-Known sizes:
+Known sizes in current White 2 layout:
 
-- BLAct: `0x1C`
-- renderer handle: `0x28`
+- `BillboardActor`: `0x1C`
+- `BillboardActorHandle`: `0x28`
 
-## BLAct fields currently used
+## BillboardActor
 
-| Offset | Meaning / interpretation |
+The decomp defines BLAct as `BillboardActor`:
+
+| Offset | Field |
 | --- | --- |
-| `+0x00` | geometry/material entry related flags used by current renderer code |
-| `+0x04` | position/runtime word |
-| `+0x10` | face/frame-related index word |
-| `+0x18` | material/visibility flags |
-
-Observed stable protagonist values in map 427 testing:
-
-- `matEntry = 13`
-- `geomFlags = 13`
-- `matFlags = 4639` (`0x121F`)
-
-## Renderer Handle
-
-Known offsets in current code:
-
-| Offset | Meaning |
-| --- | --- |
-| `+0x00` | BLAct index |
-| `+0x04` | material entry |
-| `+0x08` | animation table pointer |
-| `+0x0C` | animation count (u16) |
-| `+0x0E` | current animation index (u16) |
-| `+0x10` | step |
-| `+0x12` | wait |
-| `+0x14` | loops |
-| `+0x18` | animate flag/state |
-| `+0x24` | shared renderer/model-manager-related pointer observed in current captures |
+| `+0x00` | material (14 bits) + billboard type (2 bits) |
+| `+0x04` | `VecFx32` position |
+| `+0x10` | face index |
+| `+0x12` | scale X |
+| `+0x14` | scale Y |
+| `+0x16` | rotation |
+| `+0x18` | packed alpha/polygon/visible/flip/light bits |
 
 Stable map-427 capture:
 
-### P1 handle
+- P1 material: `13`
+- P2 material: `13`
 
-- address: `0x0226919C`
-- BLAct index: `9`
-- matEntry: `13`
-- anim table: `0x021CF13C`
-- `+0x0C` word: `0x00010030`
-- `+0x24`: `0x0230A7CC`
+## BillboardActorHandle
 
-### Injected P2 handle
+Exact handle layout from the decomp:
 
-- address: `0x022691C4`
-- BLAct index: `10`
-- matEntry: `13`
-- anim table: `0x021CF13C`
-- `+0x0C` word: `0x00000030`
-- `+0x24`: `0x0230A7CC`
+| Offset | Field |
+| --- | --- |
+| `+0x00` | scene actor index |
+| `+0x04` | texMat index |
+| `+0x08` | animation-table pointer |
+| `+0x0C` | animation count |
+| `+0x0E` | current animation |
+| `+0x10` | animation step |
+| `+0x12` | wait |
+| `+0x14` | loop state |
+| `+0x18` | animate BOOL |
+| `+0x1C` | last animation command |
+| `+0x20` | callback |
+| `+0x24` | callback data |
 
-Thus both actors share the same animation-table pointer and same `+0x24` pointer. The `+0x0C` difference is current animation index (`1` vs `0`) with the same animation count (`48`).
+Important correction: the previously observed shared pointer at handle `+0x24` is callback data, not a model-manager pointer.
 
-## Scene Node
+Stable capture:
 
-Observed scene-node vtable for both real P1 and injected P2:
+### P1
 
-- `0x021CF974`
+- handle `0x0226919C`
+- scene actor `9`
+- texMat `13`
+- animation table `0x021CF13C`
+- animation count `48`
+- current animation `1`
 
-Native BLAct-index lookup currently calls:
+### P2
 
-- `FldAct_GetBlActIdx` at `0x02167240`
+- handle `0x022691C4`
+- scene actor `10`
+- texMat `13`
+- animation table `0x021CF13C`
+- animation count `48`
+- current animation `0`
+
+The animation difference can explain pose selection, not a wholly different trainer texture.
+
+## Billboard Material Loading
+
+`field_actor_billboard.c` shows that field billboard materials are cached by object code.
+
+Important behavior:
+
+- `FieldActorConfig.uid` is used as the object-code key for pending/material cache entries;
+- the material is loaded from the resource group in the actor config;
+- actors sharing the same cached object code can reuse the same billboard material;
+- `FldAct_SwapObjCode` updates actor billboard information and handles asynchronous material replacement/deletion.
+
+Because P1 and P2 both report object code/config 240 and both actual scene material 13, a visibly unrelated orange sprite is difficult to reconcile with BLAct 10 truly being the orange figure. This is why actor/billboard identity is now the next research target.
 
 ## Native Functions Used / Identified
 
-Current exact White 2 addresses used by PokéRun include:
+Current exact White 2 US addresses used by PokéRun include:
 
 | Function | Address |
 | --- | --- |
@@ -121,12 +273,14 @@ Current exact White 2 addresses used by PokéRun include:
 | Delete actor | `0x02166980` |
 | Set actor hidden | `0x02167574` |
 | Get BLAct index | `0x02167240` |
+| Set height-calc disabled | `0x0216767C` |
+| Set actor flag 32 | `0x021676B0` |
 | Set shadow group | `0x0216784C` |
 | Set force-off shadow | `0x0216787C` |
 | GFL TCB manager add task | `0x0203A640` |
 | GFL TCB remove | `0x0203A6D4` |
 
-PokéRun schedules native actor creation/deletion/resource operations through White 2's own field task manager rather than relying only on direct bounded ARM9 calls, because resource loading may yield through the game's scheduler.
+Additional field-communication helper addresses should be taken from the same White 2 US symbol map before implementation.
 
 ## Remote Actor Test UID
 
@@ -134,62 +288,63 @@ PokéRun currently uses temporary development UID:
 
 - `0x7F01`
 
-Real local player UID observed:
+Real local player UID:
 
 - `0x00FF`
 
+White 2's own communication-actor template uses:
+
+- `0x00FC`
+
 ## Stable Resource-Graph Observation
 
-A read-only resource graph probe compared the real protagonist and the visibly orange injected remote actor.
+Even while the injected actor appears orange on screen, P1 and P2 match on:
 
-Even while the two looked different on screen, the following matched:
+- object code `240` (`OBJ_CODE_HEROINE`);
+- embedded `FieldActorConfig`;
+- move-code vtable after Probe 2;
+- scene-node vtable `0x021CF974`;
+- actual billboard scene material `13`;
+- texMat `13`;
+- animation table `0x021CF13C`;
+- dumped animation table contents.
 
-- model/object code `240`
-- scene-node vtable `0x021CF974`
-- material entry `13`
-- geometry flags `13`
-- material flags `4639`
-- animation table pointer `0x021CF13C`
-- dumped animation table contents
-- shared renderer/model-manager-related handle pointer `0x0230A7CC`
+This means the next required proof is identity: verify which allocated FieldActor/BLAct actually owns the visible orange pixels.
 
-This proves the currently mapped `FieldActor.modelId -> BLAct -> renderer handle -> animation table` fields are not sufficient to explain final on-screen trainer identity.
+## Probe 2: moveCode 2 -> 0
 
-## moveCode Experiment
+Original PokéRun remote actor used move code `2`.
 
-Original injected `ZoneNPC` used move code `2`, inherited from an earlier Union Room actor bootstrap idea.
+Controlled experiment changed only that to `MOVE_CODE_NONE (0)`.
 
-With move code `2`:
+Result:
 
-- real P1 move/function-table pointer: `0x021CC5D0`
-- injected P2 pointer: `0x021CC454`
+- P2 remained orange;
+- P2 move-code vtable became identical to P1 (`0x021CC5D0`).
 
-Controlled Probe 2 changed only the injected ZoneNPC move code to `0`.
+Conclusion: generic move code 2 was not the cause.
 
-After fresh creation:
+## Probe 3: Actor/Billboard Census
 
-- both P1 and P2 use `0x021CC5D0`;
-- P2 still renders as the orange trainer.
+PokéRun commit `aa5e613` adds a read-only census of every allocated actor and resolved billboard.
 
-Conclusion: move code/function-table identity is not the cause of the orange sprite.
+It records:
 
-## Resource Manager Clue
+- actor identity and state;
+- model and move code;
+- flags;
+- grid/world position;
+- TCB and vtables;
+- BLAct index/address;
+- actual scene material/type;
+- BLAct position/face/render flags;
+- texMat and animation state.
 
-The shared pointer at renderer handle `+0x24` was observed at:
-
-- `0x0230A7CC`
-
-A memory head behind that pointer includes ASCII bytes decoding to the prefix:
-
-- `fldmmdl_`
-
-This likely relates to White 2's field model/model manager and is a promising target for locating actual character/texture/palette resource ownership.
-
-Do not yet treat the exact structure layout beyond the observed bytes as proven.
+Goal: determine whether BLAct 10 is truly the visible orange figure or whether another actor/billboard is overlapping or being mistaken for the remote actor.
 
 ## Static Map / Transition Research
 
-PokéRun has already extracted/decoded a substantial amount of White 2 static field data, including:
+PokéRun has already extracted/decoded substantial White 2 static field data:
 
 - map/zone relationships;
 - native warp data;
@@ -198,21 +353,22 @@ PokéRun has already extracted/decoded a substantial amount of White 2 static fi
 
 Current startup logs report 182 static boundary triggers loaded.
 
-Door/transition implementation is intentionally paused while the orange remote visual-identity bug is reverse-engineered.
+Door/transition implementation is intentionally paused while remote actor rendering is reverse-engineered.
 
 ## Research Rules
 
 Prefer:
 
+- decomp/source confirmation before guessing unknown offsets;
 - read-only dumps;
 - exact before/after snapshots;
 - one-variable experiments;
-- native White 2 functions where their semantics are known;
-- recording falsified hypotheses here.
+- White 2's own native actor systems when available;
+- recording falsified hypotheses.
 
 Avoid:
 
 - copying arbitrary P1 pointers directly into P2;
-- changing multiple actor fields at once;
+- changing multiple unknown actor fields at once;
 - conflating the second emulator's real player with the injected remote actor;
-- resuming higher-level transition polish before visual resource identity is understood.
+- resuming higher-level transition polish before actor/resource identity is understood.
