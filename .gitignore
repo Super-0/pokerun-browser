@@ -13,6 +13,10 @@ dist
 public/dev-roms/*
 !public/dev-roms/.gitkeep
 
+# Generated White 2 reverse-engineering inventory. Rebuild locally from the
+# user's verified ROM with `npm run white2:extract -- /path/to/rom.nds`.
+generated/white2/
+
 # Reproducible local melonDS build output — generated from the pinned GPL source.
 third_party/ds-anywhere/build-pokerun-wasm/
 public/emulators/melonds/
