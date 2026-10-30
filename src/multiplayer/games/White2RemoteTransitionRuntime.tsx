@@ -38,9 +38,11 @@ function nearDoor(world: MultiplayerWorldPosition | undefined, doorWorld: Multip
 
 function inferredTransition(previous: MultiplayerPlayerState, current: MultiplayerPlayerState, now: number): MultiplayerMapTransition | null {
   if (previous.location.mapId === current.location.mapId) return null
+  const gridDistance = Math.abs(current.x - previous.x) + Math.abs(current.y - previous.y)
   return {
     id: `inferred:${previous.location.mapId}->${current.location.mapId}:${now}`,
     detectedAt: now,
+    kind: gridDistance === 1 ? 'map-edge' : undefined,
     fromMapId: previous.location.mapId,
     toMapId: current.location.mapId,
     fromX: previous.x,
