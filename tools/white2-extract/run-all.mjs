@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 const root = path.dirname(fileURLToPath(import.meta.url))
 const args = process.argv.slice(2)
 
-for (const script of ['index.mjs', 'matrix-extract.mjs']) {
+for (const script of ['index.mjs', 'matrix-extract.mjs', 'boundary-trigger-extract.mjs']) {
   const result = spawnSync(process.execPath, [path.join(root, script), ...args], {
     stdio: 'inherit',
   })
