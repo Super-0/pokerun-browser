@@ -54,7 +54,8 @@ const FIELD_TASK_TRAMPOLINE = Uint8Array.from([
 // Spawn-specific callback. r3 is forced to zero for CreateNewActorByEntityNoWKOBJCODE,
 // while data+0x10 stores SetActorHidden. The callback creates P2, immediately marks
 // the returned FieldActor hidden, then removes itself. This closes the cold-spawn
-// race where native model 11 could render before JavaScript obtained the actor pointer.
+// race where a native bootstrap model could render before JavaScript obtained the
+// actor pointer.
 //
 // Thumb source:
 //   result = create(r0, r1, r2, 0);
@@ -80,11 +81,10 @@ if (TASK_PAYLOAD_OFFSET + ZONE_NPC_SIZE > SPAWN_TASK_CODE_OFFSET - TASK_DATA_OFF
   throw new Error('White 2 ZoneNPC payload overlaps the hidden-spawn trampoline.')
 }
 
-// White 2 converts a Union Room player view into one of its dedicated remote
-// trainer NPC models. View 0 maps to model 11, so use that game-native remote
-// trainer model for the lifecycle probe. Once creation is proven, PokéRun can
-// bind the remote player's actual appearance separately.
-const UNION_REMOTE_TRAINER_MODEL = 11
+// Fallback only. Normal PokéRun bootstrap uses the live local player's current
+// object/model code so any frame exposed during native actor creation is already
+// the protagonist rather than the Union Room's model-11 trainer.
+const FALLBACK_REMOTE_TRAINER_MODEL = 11
 const LOCAL_TRANSITION_SPAWN_BLOCK_MS = 800
 
 // Temporary dev UID. Production will allocate a PokéRun-owned UID only after the
@@ -180,9 +180,12 @@ function buildZoneNpc(player: White2ActorHeapEntry, spawnPosition: NativeSpawnPo
   const view = new DataView(bytes.buffer)
   const x = Math.max(-32768, Math.min(32767, spawnPosition?.x ?? (player.x + 1)))
   const z = Math.max(-32768, Math.min(32767, spawnPosition?.y ?? player.y))
+  const bootstrapModelId = player.modelId > 0 && player.modelId !== 0xffff
+    ? player.modelId
+    : FALLBACK_REMOTE_TRAINER_MODEL
 
   putU16(view, 0x00, POKERUN_NATIVE_TEST_UID)
-  putU16(view, 0x02, UNION_REMOTE_TRAINER_MODEL)
+  putU16(view, 0x02, bootstrapModelId)
   putU16(view, 0x04, 2) // Same base move code used by White 2's Union Room parent actor.
   putU16(view, 0x06, 0)
   putU16(view, 0x08, 0)
@@ -198,7 +201,7 @@ function buildZoneNpc(player: White2ActorHeapEntry, spawnPosition: NativeSpawnPo
   putU16(view, 0x1e, z)
   view.setInt32(0x20, 0, true)
 
-  return { bytes, x, z, modelId: UNION_REMOTE_TRAINER_MODEL }
+  return { bytes, x, z, modelId: bootstrapModelId }
 }
 
 function delay(ms: number) {
@@ -437,6 +440,7 @@ export class White2NativeActorBridge {
 
     console.info('[PokéRun lifecycle] NATIVE REMOTE CREATED HIDDEN', {
       actor: actorAddress,
+      bootstrapModelId: npc.modelId,
       x: npc.x,
       y: npc.z,
       authoritativeRemotePosition: Boolean(spawnPosition),
