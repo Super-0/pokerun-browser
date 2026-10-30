@@ -9,10 +9,13 @@ export type MultiplayerPlayer = { id: string; label: string; ready: boolean; rom
 export type MultiplayerGameStart = { startId: string; gameId: GameId; startedAt: number }
 export type MultiplayerWorldPosition = { x: number; y: number; z: number }
 export type MultiplayerDirection = 'north' | 'south' | 'east' | 'west'
+export type MultiplayerTransitionKind = 'door' | 'map-edge' | 'warp' | 'unknown'
 export type MultiplayerMapTransition = {
   /** Unique within one player session so peers only replay a transition once. */
   id: string
   detectedAt: number
+  /** Optional while older/runtime-detected transitions are still being classified. */
+  kind?: MultiplayerTransitionKind
   fromMapId: number | string
   toMapId: number | string
   fromX: number
