@@ -7,7 +7,6 @@ import { White2DoorTransitionRenderGuard } from './White2DoorTransitionRenderGua
 import { White2DoorTransitionPlayer } from './White2DoorTransition'
 import { White2ActorSystemProbe } from './White2ActorSystem'
 import { White2SameMapRenderFamilyGuard } from './White2SameMapRenderFamilyGuard'
-import { White2OffMapRemoteCleanup } from './White2OffMapRemoteCleanup'
 
 const UPDATE_MS = 20
 const HANDLE_TIMEOUT_MS = 1800
@@ -54,14 +53,6 @@ function inferredTransition(previous: MultiplayerPlayerState, current: Multiplay
   }
 }
 
-/**
- * Adds local-world transition effects around the dedicated remote trainer.
- *
- * The games intentionally keep independent story/map state, so we do not run the
- * remote player's warp on this client. We only replay the visible door prop near
- * the remote player's last/first position. Non-door warps simply produce no prop
- * match and fall back to the existing disappear/reappear lifecycle.
- */
 function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
 
@@ -83,8 +74,6 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
       const current = activeDoor
       if (!current) return
       activeDoor = null
-      // A map unload destroys the old prop system/handle. Never call through a
-      // pointer from a different map after the local player transitions.
       if (!force && !sameMap(current.mapId, localMapId)) return
       try {
         await doors.freeHandle(current.handle)
@@ -161,8 +150,6 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
       if (transition.id === lastHandledTransitionId) return
       lastHandledTransitionId = transition.id
 
-      // Departure: open the door in the map this client is still displaying as
-      // the dedicated actor reaches it and disappears into the other map.
       if (sameMap(local.location.mapId, transition.fromMapId)) {
         console.info('[PokéRun door] REMOTE DEPARTURE', {
           id: transition.id,
@@ -181,9 +168,6 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
         return
       }
 
-      // Arrival: open the corresponding local door first. The dedicated actor's
-      // existing 280 ms stable-map gate naturally makes the trainer appear just
-      // after this starts instead of popping in front of a closed door.
       if (sameMap(local.location.mapId, transition.toMapId)) {
         await playDoor(transition.toWorldPosition, local.location.mapId, now)
       }
@@ -193,9 +177,6 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
       const now = Date.now()
       const { local, remote } = presenceRef.current
 
-      // PokéRun door animation is cosmetic. If the real trainer starts moving
-      // into the same doorway, release our temporary prop handle immediately so
-      // White 2's native door script owns the door exclusively.
       if (
         activeDoor
         && local
@@ -217,15 +198,6 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
       }
 
       const priorRemote = previousRemote
-
-      // Do not infer a door from ordinary remote movement. The previous DEV-only
-      // moving→idle probe caused manual Player 2 movement near a real doorway to
-      // open that door and could leave a cosmetic prop handle active while the
-      // local trainer tried to use it. Doors now play only for actual transition
-      // metadata (or an inferred map change), never for a same-map stop.
-
-      // Prefer explicit transition metadata when available. The inferred path
-      // keeps this compatible with peers that only publish ordinary state.
       const transition = remote.transition
         ?? (priorRemote ? inferredTransition(priorRemote, remote, now) : null)
       previousRemote = remote
@@ -260,13 +232,11 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
   return null
 }
 
-/** Production White 2 remote-player stack: real FieldActor + local transition visuals. */
 export function White2RemoteTransitionRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   return <>
     <White2DoorTransitionRenderGuard bridge={bridge} rom={rom}/>
     <White2SameMapRenderFamilyGuard bridge={bridge} rom={rom}/>
     <White2DedicatedTrainerRuntime bridge={bridge} rom={rom}/>
-    <White2OffMapRemoteCleanup bridge={bridge} rom={rom}/>
     <White2RemoteDoorRuntime bridge={bridge} rom={rom}/>
   </>
 }
