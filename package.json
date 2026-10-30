@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "node scripts/patch-mgba-heap.mjs && vite",
     "dev:multiplayer": "node scripts/patch-mgba-heap.mjs && node scripts/dev-multiplayer.mjs",
+    "white2:extract": "node tools/white2-extract/index.mjs",
     "build:melonds": "node scripts/build-melonds.mjs",
     "build": "node scripts/patch-mgba-heap.mjs && tsc -b && vite build",
     "preview": "node scripts/patch-mgba-heap.mjs && vite preview",
