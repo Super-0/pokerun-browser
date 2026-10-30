@@ -112,20 +112,6 @@ async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actor
   }
 }
 
-/**
- * Ordinary same-map renderer ownership.
- *
- * The dedicated trainer runtime is allowed to choose face indices for walking,
- * but all of its writes are forced through the currently-live protagonist
- * material/geometry family. Before overriding a write we validate that the
- * cached binding is still the PokéRun UID and still owns the same BlAct handle.
- * This prevents a field rebuild from reusing a stale remote address for Player 1.
- *
- * After Player 1 changes into a map where P2 already exists, P2 is quarantined
- * invisible during the short field bootstrap. It is only revealed after the full
- * protagonist family and directional idle frame have been written, preventing a
- * one-frame native/black-square flash.
- */
 export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
 
@@ -235,7 +221,7 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
     }
 
     async function quarantineLiveRemote() {
-      if (!bootstrapQuarantine || !sameMapSnapshot()) return
+      if (cancelled || !bootstrapQuarantine || !sameMapSnapshot()) return
       const live = await resolveLiveActors()
       if (!live) return
       const flagsAddress = live.remoteBinding.blActAddress + BLACT_MAT_FLAGS
@@ -246,9 +232,9 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
     }
 
     async function prepareLiveFamily(force = false) {
+      if (cancelled) return
       const sameMap = sameMapSnapshot()
       if (!sameMap) {
-        bootstrapQuarantine = false
         clearPrepared()
         return
       }
@@ -275,6 +261,17 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
           return
         }
         const { playerBinding, remoteBinding: nextRemoteBinding } = live
+
+        // If this is a local-map bootstrap, hide the newly created native actor
+        // before reading/writing the protagonist family. This closes the small
+        // window where the native billboard could otherwise appear as a black box.
+        if (bootstrapQuarantine) {
+          const flagsAddress = nextRemoteBinding.blActAddress + BLACT_MAT_FLAGS
+          const flags = await runtimeBridge.read16(flagsAddress)
+          if ((flags & BLACT_VISIBLE_MASK) !== 0) {
+            await originalWrite16(flagsAddress, flags & ~BLACT_VISIBLE_MASK)
+          }
+        }
 
         const [matEntry, geomFlags, matFlags] = await Promise.all([
           runtimeBridge.read16(playerBinding.handleAddress + HANDLE_MAT_ENTRY),
@@ -336,20 +333,24 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
       const localMapId = snapshot.local?.location.mapId ?? null
       const remoteMapId = snapshot.remote?.location.mapId ?? null
       const transitionActive = Boolean(snapshot.local?.transition || snapshot.remote?.transition)
+      const sameMapIds = localMapId !== null && remoteMapId !== null && localMapId === remoteMapId
 
       if (previousLocalMapId !== null && localMapId !== previousLocalMapId) {
         localMapStableSince = Date.now()
-        bootstrapQuarantine = Boolean(
-          !transitionActive
-          && localMapId !== null
-          && remoteMapId !== null
-          && localMapId === remoteMapId
-        )
+        bootstrapQuarantine = sameMapIds
         clearPrepared()
       }
       previousLocalMapId = localMapId
 
-      if (transitionActive || localMapId === null || remoteMapId === null || localMapId !== remoteMapId) {
+      // Preserve a pending local-map quarantine while the real trainer's own
+      // transition metadata is still active. It will be consumed as soon as the
+      // transition clears and the new field is safe to bind.
+      if (transitionActive) {
+        clearPrepared()
+        return
+      }
+
+      if (!sameMapIds) {
         bootstrapQuarantine = false
         clearPrepared()
         return
