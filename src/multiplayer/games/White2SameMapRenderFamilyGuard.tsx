@@ -17,6 +17,9 @@ const BLACT_SCENE_ACTORS = 0x08
 const BLACT_SCENE_CONFIG_ACTOR_COUNT = 0x0e
 const BLACT_SIZE = 0x1c
 const BLACT_GEOM_FLAGS = 0x00
+const BLACT_FACE_INDEX = 0x10
+const BLACT_MAT_FLAGS = 0x18
+const BLACT_VISIBLE_MASK = 0x0200
 const HANDLE_SIZE = 0x28
 const HANDLE_BLACT_INDEX = 0x00
 const HANDLE_MAT_ENTRY = 0x04
@@ -26,6 +29,13 @@ const BLACT_NONE = 0xffff
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
 const LOCAL_MAP_STABLE_MS = 450
+
+const IDLE_FACE_BY_DIRECTION = {
+  north: 0,
+  south: 3,
+  west: 6,
+  east: 9,
+} as const
 
 type Binding = {
   actorAddress: number
@@ -93,10 +103,15 @@ async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actor
 /**
  * Ordinary same-map render-family guard.
  *
- * Unlike the door guard, this component never caches a billboard binding across
- * frames. Every correction resolves the current field actor system from scratch,
- * so a map rebuild cannot make a stale P2 address alias Player 1. It also suspends
- * itself for transitions and briefly after a local map change.
+ * This component never caches a billboard binding across frames. Every correction
+ * resolves the current field actor system from scratch, so a map rebuild cannot
+ * make a stale P2 address alias Player 1. It suspends itself for transitions and
+ * briefly after a real local map change.
+ *
+ * While P2 is moving, only material/geometry family is normalized so the normal
+ * walk animation owns face indices. While P2 is idle, the complete protagonist
+ * idle render is normalized so a fresh native model-11 bind can never remain as
+ * the rival before the animation learner has produced its first cached profile.
  */
 export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -108,7 +123,7 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
     let cancelled = false
     let reading = false
     let previousLocalMapId: number | string | null = null
-    let localMapStableSince = Date.now()
+    let localMapStableSince = 0
     let lastCorrectionKey = ''
 
     async function service() {
@@ -139,30 +154,53 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
         if (playerBinding.blActAddress === remoteBinding.blActAddress) return
         if (playerBinding.handleAddress === remoteBinding.handleAddress) return
 
-        const [playerMatEntry, playerGeomFlags, remoteMatEntry, remoteGeomFlags] = await Promise.all([
+        const [playerMatEntry, playerGeomFlags, playerMatFlags, remoteMatEntry, remoteGeomFlags, remoteMatFlags, remoteFaceIndex] = await Promise.all([
           runtimeBridge.read16(playerBinding.handleAddress + HANDLE_MAT_ENTRY),
           runtimeBridge.read16(playerBinding.blActAddress + BLACT_GEOM_FLAGS),
+          runtimeBridge.read16(playerBinding.blActAddress + BLACT_MAT_FLAGS),
           runtimeBridge.read16(remoteBinding.handleAddress + HANDLE_MAT_ENTRY),
           runtimeBridge.read16(remoteBinding.blActAddress + BLACT_GEOM_FLAGS),
+          runtimeBridge.read16(remoteBinding.blActAddress + BLACT_MAT_FLAGS),
+          runtimeBridge.read16(remoteBinding.blActAddress + BLACT_FACE_INDEX),
         ])
 
-        if (remoteMatEntry === playerMatEntry && remoteGeomFlags === playerGeomFlags) return
+        const moving = remote.movementState === 'moving'
+        const idleFaceIndex = IDLE_FACE_BY_DIRECTION[remote.direction]
+        const normalizedMatFlags = (playerMatFlags & ~BLACT_VISIBLE_MASK) | (remoteMatFlags & BLACT_VISIBLE_MASK)
+        const familyMismatch = remoteMatEntry !== playerMatEntry || remoteGeomFlags !== playerGeomFlags
+        const idleMismatch = !moving && (remoteFaceIndex !== idleFaceIndex || (remoteMatFlags & ~BLACT_VISIBLE_MASK) !== (playerMatFlags & ~BLACT_VISIBLE_MASK))
+        if (!familyMismatch && !idleMismatch) return
 
-        await Promise.all([
-          runtimeBridge.write16(remoteBinding.handleAddress + HANDLE_MAT_ENTRY, playerMatEntry),
-          runtimeBridge.write16(remoteBinding.blActAddress + BLACT_GEOM_FLAGS, playerGeomFlags),
-        ])
+        const writes: Promise<void>[] = []
+        if (familyMismatch) {
+          writes.push(
+            runtimeBridge.write16(remoteBinding.handleAddress + HANDLE_MAT_ENTRY, playerMatEntry),
+            runtimeBridge.write16(remoteBinding.blActAddress + BLACT_GEOM_FLAGS, playerGeomFlags),
+          )
+        }
+        if (!moving) {
+          writes.push(
+            runtimeBridge.write16(remoteBinding.blActAddress + BLACT_FACE_INDEX, idleFaceIndex),
+            runtimeBridge.write16(remoteBinding.blActAddress + BLACT_MAT_FLAGS, normalizedMatFlags),
+          )
+        }
+        await Promise.all(writes)
 
-        const correctionKey = `${local.location.mapId}:${remoteBinding.actorAddress}:${remoteMatEntry}:${remoteGeomFlags}->${playerMatEntry}:${playerGeomFlags}`
+        const correctionKey = `${local.location.mapId}:${remoteBinding.actorAddress}:${remoteMatEntry}:${remoteGeomFlags}:${remoteFaceIndex}:${remoteMatFlags}->${playerMatEntry}:${playerGeomFlags}:${idleFaceIndex}:${normalizedMatFlags}`
         if (correctionKey !== lastCorrectionKey) {
           lastCorrectionKey = correctionKey
-          console.info('[PokéRun render] CORRECTED LIVE SAME-MAP REMOTE FAMILY', {
+          console.info('[PokéRun render] CORRECTED LIVE SAME-MAP REMOTE RENDER', {
             mapId: local.location.mapId,
             actor: remoteBinding.actorAddress,
+            moving,
             remoteMatEntry,
             remoteGeomFlags,
+            remoteFaceIndex,
+            remoteMatFlags,
             playerMatEntry,
             playerGeomFlags,
+            playerMatFlags,
+            idleFaceIndex,
           })
         }
       } catch {
@@ -175,11 +213,12 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
     const unsubscribePresence = multiplayerPresence.subscribe(snapshot => {
       presenceRef.current = snapshot
       const localMapId = snapshot.local?.location.mapId ?? null
-      if (localMapId !== previousLocalMapId) {
-        previousLocalMapId = localMapId
+      if (previousLocalMapId !== null && localMapId !== previousLocalMapId) {
         localMapStableSince = Date.now()
         lastCorrectionKey = ''
       }
+      previousLocalMapId = localMapId
+      void service()
     })
 
     const unsubscribeFrame = runtimeBridge.subscribeEmulatedFrame(() => {
