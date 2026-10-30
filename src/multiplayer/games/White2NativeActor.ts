@@ -12,6 +12,7 @@ import {
 const FIND_FIELD_ACTOR = 0x02167a54
 const CREATE_ACTOR = 0x021668b4
 const DELETE_ACTOR = 0x02166980
+const SET_ACTOR_HIDDEN = 0x02167574
 const GFL_TCB_MGR_ADD_TASK = 0x0203a640
 const NATIVE_STACK_RESERVE = 0x1000
 const MMSYS_TCB_MGR = 0x24
@@ -34,6 +35,7 @@ const FIELD_ACTOR_SIZE = 0x100
 const TASK_DATA_OFFSET = 0x94
 const TASK_PAYLOAD_OFFSET = 0x1c
 const TASK_CODE_OFFSET = 0xdc
+const SPAWN_TASK_CODE_OFFSET = 0xd4
 const TASK_STATUS_OFFSET = 0x18
 const TASK_RESULT_OFFSET = 0x14
 const TASK_SCRATCH_SIZE = FIELD_ACTOR_SIZE - TASK_DATA_OFFSET
@@ -49,8 +51,33 @@ const FIELD_TASK_TRAMPOLINE = Uint8Array.from([
   0xd5, 0xa6, 0x03, 0x02,
 ])
 
+// Spawn-specific callback. r3 is forced to zero for CreateNewActorByEntityNoWKOBJCODE,
+// while data+0x10 stores SetActorHidden. The callback creates P2, immediately marks
+// the returned FieldActor hidden, then removes itself. This closes the cold-spawn
+// race where native model 11 could render before JavaScript obtained the actor pointer.
+//
+// Thumb source:
+//   result = create(r0, r1, r2, 0);
+//   SetActorHidden(result, TRUE);
+//   GFL_TCBRemove(tcb);
+//   status = 1;
+const SPAWN_HIDDEN_TASK_TRAMPOLINE = Uint8Array.from([
+  0xf0, 0xb5, 0x04, 0x00, 0x0d, 0x00, 0x2e, 0x68,
+  0x68, 0x68, 0xa9, 0x68, 0xea, 0x68, 0x00, 0x23,
+  0xb0, 0x47, 0x68, 0x61, 0x01, 0x21, 0x2e, 0x69,
+  0xb0, 0x47, 0x20, 0x00, 0x02, 0x4e, 0xb0, 0x47,
+  0x01, 0x27, 0xaf, 0x61, 0xf0, 0xbd, 0xc0, 0x46,
+  0xd5, 0xa6, 0x03, 0x02,
+])
+
 if (TASK_CODE_OFFSET + FIELD_TASK_TRAMPOLINE.length > FIELD_ACTOR_SIZE) {
   throw new Error('White 2 field-task trampoline no longer fits in the reserved scratch area.')
+}
+if (SPAWN_TASK_CODE_OFFSET + SPAWN_HIDDEN_TASK_TRAMPOLINE.length > FIELD_ACTOR_SIZE) {
+  throw new Error('White 2 hidden-spawn field-task trampoline no longer fits in the reserved scratch area.')
+}
+if (TASK_PAYLOAD_OFFSET + ZONE_NPC_SIZE > SPAWN_TASK_CODE_OFFSET - TASK_DATA_OFFSET) {
+  throw new Error('White 2 ZoneNPC payload overlaps the hidden-spawn trampoline.')
 }
 
 // White 2 converts a Union Room player view into one of its dedicated remote
@@ -287,6 +314,80 @@ export class White2NativeActorBridge {
     }
   }
 
+  private async runHiddenCreateFieldTask(scan: White2ActorHeapScan, zoneId: number, payload: Uint8Array) {
+    const zeroed = scan.entries.filter(entry => entry.state === 'zeroed').sort((a, b) => a.index - b.index)
+    if (zeroed.length < 2) throw new Error('Native hidden-spawn task needs at least two free FieldActor slots so its scratch slot cannot be selected by actor creation.')
+
+    const scratchSlot = zeroed[zeroed.length - 1]
+    const dataAddress = scratchSlot.address + TASK_DATA_OFFSET
+    const payloadAddress = dataAddress + TASK_PAYLOAD_OFFSET
+    const codeAddress = scratchSlot.address + SPAWN_TASK_CODE_OFFSET
+    const originalScratch = await this.bridge.readBytes(dataAddress, TASK_SCRATCH_SIZE)
+
+    const tcbManager = await this.bridge.read32(scan.actorSystem + MMSYS_TCB_MGR)
+    assertMainRamPointer(tcbManager, 'Field actor TCB manager')
+
+    const scratch = new Uint8Array(TASK_SCRATCH_SIZE)
+    const view = new DataView(scratch.buffer)
+    view.setUint32(0x00, (CREATE_ACTOR | 1) >>> 0, true)
+    view.setUint32(0x04, scan.actorSystem >>> 0, true)
+    view.setUint32(0x08, payloadAddress >>> 0, true)
+    view.setUint32(0x0c, zoneId >>> 0, true)
+    view.setUint32(0x10, (SET_ACTOR_HIDDEN | 1) >>> 0, true)
+    view.setUint32(TASK_RESULT_OFFSET, 0, true)
+    view.setUint32(TASK_STATUS_OFFSET, 0, true)
+    scratch.set(payload, TASK_PAYLOAD_OFFSET)
+    scratch.set(SPAWN_HIDDEN_TASK_TRAMPOLINE, SPAWN_TASK_CODE_OFFSET - TASK_DATA_OFFSET)
+
+    let scheduled = false
+    let completed = false
+    let scheduledTask = 0
+    let emulatedFrames = 0
+    const unsubscribeEmulatedFrame = this.bridge.subscribeEmulatedFrame(() => { emulatedFrames += 1 })
+    try {
+      await this.bridge.writeBytes(dataAddress, scratch)
+      const addTask = await this.bridge.callArm9Thumb4(
+        GFL_TCB_MGR_ADD_TASK,
+        tcbManager,
+        (codeAddress | 1) >>> 0,
+        dataAddress,
+        0,
+        NATIVE_STACK_RESERVE,
+      )
+      assertCallReturned(addTask, 'GFL_TCBMgrAddTask(hidden spawn)')
+      if (addTask.result === 0) throw new Error('White 2 field actor TCB manager has no free task entry for hidden spawn.')
+      assertMainRamPointer(addTask.result, 'Scheduled hidden-spawn field task')
+      scheduledTask = addTask.result
+      scheduled = true
+
+      while (emulatedFrames < TASK_TIMEOUT_FRAMES) {
+        const status = await this.bridge.read32(dataAddress + TASK_STATUS_OFFSET)
+        if (status === 1) {
+          const result = await this.bridge.read32(dataAddress + TASK_RESULT_OFFSET)
+          completed = true
+          return result >>> 0
+        }
+        await delay(16)
+      }
+
+      const status = await this.bridge.read32(dataAddress + TASK_STATUS_OFFSET)
+      if (status === 1) {
+        const result = await this.bridge.read32(dataAddress + TASK_RESULT_OFFSET)
+        completed = true
+        return result >>> 0
+      }
+      const [callback, taskData, scratchUid] = await Promise.all([
+        this.bridge.read32(scheduledTask + 0x14),
+        this.bridge.read32(scheduledTask + 0x10),
+        this.bridge.read16(scratchSlot.address + 0x08),
+      ])
+      throw new White2NativeActorUnsafeStateError(`Scheduled White 2 hidden-spawn task did not finish after ${emulatedFrames} game frames (status ${status}, task ${hex(scheduledTask)}, callback ${hex(callback)}, data ${hex(taskData)}, scratch UID ${hex(scratchUid)}, tab ${document.visibilityState}). Reload the tab before retrying.`)
+    } finally {
+      unsubscribeEmulatedFrame()
+      if (!scheduled || completed) await this.bridge.writeBytes(dataAddress, originalScratch)
+    }
+  }
+
   private async deleteActorAddress(actorAddress: number, scan?: White2ActorHeapScan) {
     assertMainRamPointer(actorAddress, 'Actor to delete')
     const deleteOpcode = await this.bridge.read16(DELETE_ACTOR)
@@ -315,17 +416,16 @@ export class White2NativeActorBridge {
     const existing = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
     if (existing !== 0) throw new White2NativeActorUnsafeStateError(`Test UID ${hex(POKERUN_NATIVE_TEST_UID)} is already in use at ${hex(existing)}. Reload the tab before retrying the native lifecycle probe.`)
 
-    const createOpcode = await this.bridge.read16(CREATE_ACTOR)
+    const [createOpcode, hiddenOpcode] = await Promise.all([
+      this.bridge.read16(CREATE_ACTOR),
+      this.bridge.read16(SET_ACTOR_HIDDEN),
+    ])
     if (createOpcode === 0 || createOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-create address.')
+    if (hiddenOpcode === 0 || hiddenOpcode === 0xffff) throw new Error('White 2 overlay 12 is not resident at the expected actor-hidden address.')
 
     const spawnPosition = currentRemoteSpawnPosition()
     const npc = buildZoneNpc(player, spawnPosition)
-    const actorAddress = await this.runFieldTask(
-      scan,
-      CREATE_ACTOR,
-      payloadAddress => [scan.actorSystem, payloadAddress, player.zoneId, 0],
-      npc.bytes,
-    )
+    const actorAddress = await this.runHiddenCreateFieldTask(scan, player.zoneId, npc.bytes)
     assertMainRamPointer(actorAddress, 'Created actor')
 
     const found = await this.findActor(scan.actorSystem, POKERUN_NATIVE_TEST_UID)
@@ -335,7 +435,7 @@ export class White2NativeActorBridge {
       throw new White2NativeActorUnsafeStateError(`Created actor verification failed: returned ${hex(actorAddress)}, FindFieldActor saw ${hex(found)}. Reload the tab before retrying.`)
     }
 
-    console.info('[PokéRun lifecycle] NATIVE REMOTE CREATED', {
+    console.info('[PokéRun lifecycle] NATIVE REMOTE CREATED HIDDEN', {
       actor: actorAddress,
       x: npc.x,
       y: npc.z,
