@@ -25,6 +25,8 @@ const HANDLE_BLACT_INDEX = 0x00
 const HANDLE_MAT_ENTRY = 0x04
 const FLDACT_GET_BLACT_IDX = 0x02167240
 const FLDACT_SET_HIDDEN = 0x02167574
+const FLDACT_SWAP_OBJ_CODE = 0x02194438
+const FLDACTSYS_IS_ASYNC_LOAD_PENDING = 0x02193844
 const NATIVE_STACK_RESERVE = 0x400
 const BLACT_NONE = 0xffff
 const MAIN_RAM_START = 0x02000000
@@ -106,19 +108,16 @@ async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actor
 /**
  * One-shot native-spawn quarantine.
  *
- * White 2 creates PokéRun's remote actor as native model 11 before the dedicated
- * runtime has had a chance to detach its native updater and replace its billboard
- * family. On a cold same-map spawn that native model can therefore be visible for
- * a frame (or longer if field setup is busy).
+ * P2 is kept actor-hidden until PokéRun owns its update loop and White 2 has
+ * rebound its native billboard resources to the live protagonist object code.
+ * Merely copying modelId/material fields is not enough: White 2 tracks the
+ * underlying object-code resource binding separately. FldAct_SwapObjCode is the
+ * game's own unload/rebind path for that resource ownership.
  *
- * This gate owns only FieldActor's native hidden flag. For each newly observed P2
- * actor it keeps the actor hidden until:
- *   1. the actor's native update TCB has been detached, and
- *   2. P2's material/geometry family matches the live local protagonist.
- *
- * It then clears the native hidden flag exactly once and never participates in
- * ordinary visibility again. Billboard visibility remains exclusively owned by
- * White2DedicatedTrainerRuntime, avoiding the old competing-writer race.
+ * This gate performs that native resource swap exactly once for each newly
+ * observed P2 actor, waits for the field material loader to become idle, verifies
+ * the resulting billboard family against P1, then clears the native hidden flag
+ * exactly once. Ordinary visibility remains owned by White2DedicatedTrainerRuntime.
  */
 export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -134,6 +133,7 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
     let cancelled = false
     let busy = false
     let observedActor = 0
+    let swappedActor = 0
     let releasedActor = 0
     let nativeHidden: boolean | null = null
     let lastPresenceKey = ''
@@ -163,6 +163,7 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
         if (presenceKey !== lastPresenceKey) {
           lastPresenceKey = presenceKey
           observedActor = 0
+          swappedActor = 0
           releasedActor = 0
           nativeHidden = null
         }
@@ -180,6 +181,7 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
 
         if (!player || !remoteActor) {
           observedActor = 0
+          swappedActor = 0
           releasedActor = 0
           nativeHidden = null
           return
@@ -187,20 +189,66 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
 
         if (remoteActor.address !== observedActor) {
           observedActor = remoteActor.address
+          swappedActor = 0
           releasedActor = 0
           nativeHidden = null
         }
         if (releasedActor === remoteActor.address) return
 
-        // Quarantine first. The actor-level flag is independent of the billboard
-        // material visibility bit and suppresses native model 11 during bootstrap.
+        // Quarantine first. The actor-level flag is independent of billboard
+        // material visibility and remains active while White 2 rebinds resources.
         if (!await setNativeHidden(remoteActor.address, true)) return
 
-        // The dedicated runtime clears ACTOR_TCB after removing White 2's native
-        // actor updater. Do not release the actor before that ownership transfer.
+        // The dedicated runtime clears ACTOR_TCB after removing White 2's normal
+        // actor updater. Do not mutate native resource ownership before then.
         const nativeTcb = await runtimeBridge.read32(remoteActor.address + ACTOR_TCB)
         if (nativeTcb !== 0) return
 
+        // modelId/material fields can look identical to P1 while the actor still
+        // references the old orange-trainer resource. Use White 2's real object-
+        // code swap routine to rebuild that hidden resource binding.
+        if (swappedActor !== remoteActor.address) {
+          const targetObjCode = player.modelId
+          if (targetObjCode <= 0 || targetObjCode === 0xffff) return
+          const swapOpcode = await runtimeBridge.read16(FLDACT_SWAP_OBJ_CODE)
+          if (swapOpcode === 0 || swapOpcode === 0xffff) return
+
+          const swap = await runtimeBridge.callArm9Thumb4(
+            FLDACT_SWAP_OBJ_CODE,
+            remoteActor.address,
+            targetObjCode,
+            0,
+            0,
+            NATIVE_STACK_RESERVE,
+          )
+          if (swap.status !== 1) {
+            throw new Error(`FldAct_SwapObjCode failed with status ${swap.status} at PC 0x${swap.pc.toString(16).toUpperCase()}.`)
+          }
+          swappedActor = remoteActor.address
+          console.info('[PokéRun lifecycle] NATIVE REMOTE RESOURCE SWAP REQUESTED', {
+            actor: remoteActor.address,
+            mapId: local.location.mapId,
+            objCode: targetObjCode,
+          })
+          return
+        }
+
+        // Let White 2's ordinary field scheduler drive the asynchronous material
+        // unloader/loader. This read-only native query avoids calling ForceFullSync
+        // through the bounded JS call gate, where OS_WaitInterrupt would be unsafe.
+        const pending = await runtimeBridge.callArm9Thumb4(
+          FLDACTSYS_IS_ASYNC_LOAD_PENDING,
+          scan.actorSystem,
+          0,
+          0,
+          0,
+          NATIVE_STACK_RESERVE,
+        )
+        if (pending.status !== 1) return
+        if (pending.result !== 0) return
+
+        // The swap may replace the billboard slot/handle, so always resolve both
+        // bindings fresh after the native loader reports idle.
         const [playerBinding, remoteBinding] = await Promise.all([
           resolveBinding(runtimeBridge, player.address, scan.actorSystem),
           resolveBinding(runtimeBridge, remoteActor.address, scan.actorSystem),
@@ -224,9 +272,10 @@ export function White2LocalTransitionRemoteVisibilityGate({ bridge, rom }: { bri
         if (!await setNativeHidden(remoteActor.address, false)) return
         releasedActor = remoteActor.address
         lastWarning = ''
-        console.info('[PokéRun lifecycle] RELEASE REMOTE FROM NATIVE SPAWN QUARANTINE', {
+        console.info('[PokéRun lifecycle] RELEASE REMOTE FROM NATIVE RESOURCE QUARANTINE', {
           actor: remoteActor.address,
           mapId: local.location.mapId,
+          objCode: player.modelId,
           matEntry: remoteMatEntry,
           geomFlags: remoteGeomFlags,
         })
