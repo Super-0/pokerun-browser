@@ -58,6 +58,7 @@ if (TASK_CODE_OFFSET + FIELD_TASK_TRAMPOLINE.length > FIELD_ACTOR_SIZE) {
 // trainer model for the lifecycle probe. Once creation is proven, PokéRun can
 // bind the remote player's actual appearance separately.
 const UNION_REMOTE_TRAINER_MODEL = 11
+const LOCAL_TRANSITION_SPAWN_BLOCK_MS = 800
 
 // Temporary dev UID. Production will allocate a PokéRun-owned UID only after the
 // native create/delete lifecycle is validated across map transitions.
@@ -124,19 +125,25 @@ function putU16(view: DataView, offset: number, value: number) {
 
 function currentRemoteSpawnPosition(): NativeSpawnPosition | null {
   let position: NativeSpawnPosition | null = null
-  let localTransitionActive = false
+  let localTransitionFresh = false
+  const now = Date.now()
   const unsubscribe = multiplayerPresence.subscribe(snapshot => {
     const { local, remote } = snapshot
-    if (local?.transition) {
-      localTransitionActive = true
+    const transition = local?.transition
+    if (
+      transition
+      && now - transition.detectedAt >= 0
+      && now - transition.detectedAt < LOCAL_TRANSITION_SPAWN_BLOCK_MS
+    ) {
+      localTransitionFresh = true
       return
     }
     if (!local || !remote || local.location.mapId !== remote.location.mapId) return
     position = { x: remote.x, y: remote.y }
   })
   unsubscribe()
-  if (localTransitionActive) {
-    throw new White2ActorSystemUnavailableError('Remote actor spawn deferred until the local map transition finishes.')
+  if (localTransitionFresh) {
+    throw new White2ActorSystemUnavailableError('Remote actor spawn deferred during the local arrival bootstrap window.')
   }
   return position
 }
