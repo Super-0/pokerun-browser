@@ -6,6 +6,8 @@ import { White2ActorSystemProbe } from './White2ActorSystem'
 import { POKERUN_NATIVE_TEST_UID } from './White2NativeActor'
 
 const PLAYER_UID = 0x00ff
+const ACTOR_UID = 0x08
+const ACTOR_SYSTEM_BACKPTR = 0x88
 const ACTOR_SCENE_NODE_VTABLE = 0x90
 const SCENE_NODE_GET_BLACT_INDEX = 0x14
 const ACTOR_SYSTEM_FIELD_BLACT = 0x28
@@ -29,6 +31,7 @@ const BLACT_NONE = 0xffff
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
 const LOCAL_MAP_STABLE_MS = 450
+const REFRESH_MS = 32
 
 const IDLE_FACE_BY_DIRECTION = {
   north: 0,
@@ -39,8 +42,16 @@ const IDLE_FACE_BY_DIRECTION = {
 
 type Binding = {
   actorAddress: number
+  actorSystem: number
+  blActIndex: number
   blActAddress: number
   handleAddress: number
+}
+
+type RenderFamily = {
+  matEntry: number
+  geomFlags: number
+  matFlags: number
 }
 
 function isMainRamPointer(value: number) {
@@ -95,23 +106,24 @@ async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actor
 
   return {
     actorAddress,
+    actorSystem,
+    blActIndex,
     blActAddress: sceneActors + blActIndex * BLACT_SIZE,
     handleAddress,
   }
 }
 
 /**
- * Ordinary same-map render-family guard.
+ * Ordinary same-map renderer ownership.
  *
- * This component never caches a billboard binding across frames. Every correction
- * resolves the current field actor system from scratch, so a map rebuild cannot
- * make a stale P2 address alias Player 1. It suspends itself for transitions and
- * briefly after a real local map change.
+ * The dedicated trainer runtime is allowed to choose face indices for walking,
+ * but all of its writes are forced through the currently-live protagonist
+ * material/geometry family. Before overriding a write we validate that the
+ * cached binding is still the PokéRun UID and still owns the same BlAct handle.
+ * This prevents a field rebuild from reusing a stale remote address for Player 1.
  *
- * While P2 is moving, only material/geometry family is normalized so the normal
- * walk animation owns face indices. While P2 is idle, the complete protagonist
- * idle render is normalized so a fresh native model-11 bind can never remain as
- * the rival before the animation learner has produced its first cached profile.
+ * The filter disables itself during transitions and briefly after a real local
+ * map change. Door-specific ownership remains in White2DoorDepartureRenderGuardV2.
  */
 export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
@@ -120,19 +132,95 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
     if (!bridge || !White2ActorSystemProbe.supportsRom(rom)) return
     const runtimeBridge = bridge
     const probe = new White2ActorSystemProbe(runtimeBridge)
+    const originalWrite16 = runtimeBridge.write16.bind(runtimeBridge)
+
     let cancelled = false
     let reading = false
     let previousLocalMapId: number | string | null = null
     let localMapStableSince = 0
-    let lastCorrectionKey = ''
+    let remoteBinding: Binding | null = null
+    let protagonistFamily: RenderFamily | null = null
+    let preparedMapId: number | string | null = null
+    let lastPreparedAt = 0
+    let lastLogKey = ''
 
-    async function service() {
-      if (cancelled || reading || runtimeBridge.status !== 'running') return
+    function clearPrepared() {
+      remoteBinding = null
+      protagonistFamily = null
+      preparedMapId = null
+      lastPreparedAt = 0
+      lastLogKey = ''
+    }
+
+    function sameMapStable() {
       const { local, remote } = presenceRef.current
-      if (!local || !remote) return
-      if (local.location.mapId !== remote.location.mapId) return
-      if (local.transition || remote.transition) return
-      if (Date.now() - localMapStableSince < LOCAL_MAP_STABLE_MS) return
+      if (!local || !remote) return null
+      if (local.location.mapId !== remote.location.mapId) return null
+      if (local.transition || remote.transition) return null
+      if (Date.now() - localMapStableSince < LOCAL_MAP_STABLE_MS) return null
+      return { local, remote }
+    }
+
+    async function bindingStillOwned(binding: Binding) {
+      const [uid, actorSystem, owner] = await Promise.all([
+        runtimeBridge.read16(binding.actorAddress + ACTOR_UID),
+        runtimeBridge.read32(binding.actorAddress + ACTOR_SYSTEM_BACKPTR),
+        runtimeBridge.read32(binding.handleAddress + HANDLE_BLACT_INDEX),
+      ])
+      return uid === POKERUN_NATIVE_TEST_UID
+        && actorSystem === binding.actorSystem
+        && owner === binding.blActIndex
+    }
+
+    runtimeBridge.write16 = async (address: number, value: number) => {
+      const active = sameMapStable()
+      const binding = remoteBinding
+      const family = protagonistFamily
+      if (!active || !binding || !family || preparedMapId !== active.local.location.mapId) {
+        return originalWrite16(address, value)
+      }
+
+      const isMatEntry = address === binding.handleAddress + HANDLE_MAT_ENTRY
+      const isGeomFlags = address === binding.blActAddress + BLACT_GEOM_FLAGS
+      const isFaceIndex = address === binding.blActAddress + BLACT_FACE_INDEX
+      const isMatFlags = address === binding.blActAddress + BLACT_MAT_FLAGS
+      if (!isMatEntry && !isGeomFlags && !isFaceIndex && !isMatFlags) {
+        return originalWrite16(address, value)
+      }
+
+      // Never trust an address merely because it matched. White 2 can recycle a
+      // BlAct/handle during a field rebuild. Confirm this is still P2 before the
+      // write is normalized; otherwise immediately drop ownership.
+      if (!await bindingStillOwned(binding)) {
+        clearPrepared()
+        return originalWrite16(address, value)
+      }
+
+      if (isMatEntry) return originalWrite16(address, family.matEntry)
+      if (isGeomFlags) return originalWrite16(address, family.geomFlags)
+      if (isMatFlags) {
+        const normalized = (family.matFlags & ~BLACT_VISIBLE_MASK) | (value & BLACT_VISIBLE_MASK)
+        return originalWrite16(address, normalized)
+      }
+      if (isFaceIndex && active.remote.movementState === 'idle') {
+        return originalWrite16(address, IDLE_FACE_BY_DIRECTION[active.remote.direction])
+      }
+      return originalWrite16(address, value)
+    }
+
+    async function prepareLiveFamily(force = false) {
+      const active = sameMapStable()
+      if (!active) {
+        clearPrepared()
+        return
+      }
+
+      const now = Date.now()
+      if (!force
+        && remoteBinding
+        && protagonistFamily
+        && preparedMapId === active.local.location.mapId
+        && now - lastPreparedAt < REFRESH_MS) return
 
       reading = true
       try {
@@ -143,68 +231,70 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
           && entry.state === 'active'
           && entry.actorSystemBackptr === scan.actorSystem
         )
-        if (!player || !remoteActor) return
+        if (!player || !remoteActor) {
+          clearPrepared()
+          return
+        }
 
-        const [playerBinding, remoteBinding] = await Promise.all([
+        const [playerBinding, nextRemoteBinding] = await Promise.all([
           resolveBinding(runtimeBridge, player.address, scan.actorSystem),
           resolveBinding(runtimeBridge, remoteActor.address, scan.actorSystem),
         ])
-        if (!playerBinding || !remoteBinding) return
-        if (playerBinding.actorAddress === remoteBinding.actorAddress) return
-        if (playerBinding.blActAddress === remoteBinding.blActAddress) return
-        if (playerBinding.handleAddress === remoteBinding.handleAddress) return
+        if (!playerBinding || !nextRemoteBinding) {
+          clearPrepared()
+          return
+        }
+        if (playerBinding.actorAddress === nextRemoteBinding.actorAddress
+          || playerBinding.blActAddress === nextRemoteBinding.blActAddress
+          || playerBinding.handleAddress === nextRemoteBinding.handleAddress) {
+          clearPrepared()
+          return
+        }
 
-        const [playerMatEntry, playerGeomFlags, playerMatFlags, remoteMatEntry, remoteGeomFlags, remoteMatFlags, remoteFaceIndex] = await Promise.all([
+        const [matEntry, geomFlags, matFlags] = await Promise.all([
           runtimeBridge.read16(playerBinding.handleAddress + HANDLE_MAT_ENTRY),
           runtimeBridge.read16(playerBinding.blActAddress + BLACT_GEOM_FLAGS),
           runtimeBridge.read16(playerBinding.blActAddress + BLACT_MAT_FLAGS),
-          runtimeBridge.read16(remoteBinding.handleAddress + HANDLE_MAT_ENTRY),
-          runtimeBridge.read16(remoteBinding.blActAddress + BLACT_GEOM_FLAGS),
-          runtimeBridge.read16(remoteBinding.blActAddress + BLACT_MAT_FLAGS),
-          runtimeBridge.read16(remoteBinding.blActAddress + BLACT_FACE_INDEX),
         ])
 
-        const moving = remote.movementState === 'moving'
-        const idleFaceIndex = IDLE_FACE_BY_DIRECTION[remote.direction]
-        const normalizedMatFlags = (playerMatFlags & ~BLACT_VISIBLE_MASK) | (remoteMatFlags & BLACT_VISIBLE_MASK)
-        const familyMismatch = remoteMatEntry !== playerMatEntry || remoteGeomFlags !== playerGeomFlags
-        const idleMismatch = !moving && (remoteFaceIndex !== idleFaceIndex || (remoteMatFlags & ~BLACT_VISIBLE_MASK) !== (playerMatFlags & ~BLACT_VISIBLE_MASK))
-        if (!familyMismatch && !idleMismatch) return
+        remoteBinding = nextRemoteBinding
+        protagonistFamily = { matEntry, geomFlags, matFlags }
+        preparedMapId = active.local.location.mapId
+        lastPreparedAt = now
 
-        const writes: Promise<void>[] = []
-        if (familyMismatch) {
-          writes.push(
-            runtimeBridge.write16(remoteBinding.handleAddress + HANDLE_MAT_ENTRY, playerMatEntry),
-            runtimeBridge.write16(remoteBinding.blActAddress + BLACT_GEOM_FLAGS, playerGeomFlags),
-          )
-        }
-        if (!moving) {
-          writes.push(
-            runtimeBridge.write16(remoteBinding.blActAddress + BLACT_FACE_INDEX, idleFaceIndex),
-            runtimeBridge.write16(remoteBinding.blActAddress + BLACT_MAT_FLAGS, normalizedMatFlags),
-          )
+        // Correct the currently-visible frame immediately. Afterwards the write
+        // filter keeps every dedicated-runtime update on this family, eliminating
+        // the correction/reversion flash between two independent render owners.
+        const currentFlags = await runtimeBridge.read16(nextRemoteBinding.blActAddress + BLACT_MAT_FLAGS)
+        const normalizedFlags = (matFlags & ~BLACT_VISIBLE_MASK) | (currentFlags & BLACT_VISIBLE_MASK)
+        const writes: Promise<void>[] = [
+          originalWrite16(nextRemoteBinding.handleAddress + HANDLE_MAT_ENTRY, matEntry),
+          originalWrite16(nextRemoteBinding.blActAddress + BLACT_GEOM_FLAGS, geomFlags),
+          originalWrite16(nextRemoteBinding.blActAddress + BLACT_MAT_FLAGS, normalizedFlags),
+        ]
+        if (active.remote.movementState === 'idle') {
+          writes.push(originalWrite16(
+            nextRemoteBinding.blActAddress + BLACT_FACE_INDEX,
+            IDLE_FACE_BY_DIRECTION[active.remote.direction],
+          ))
         }
         await Promise.all(writes)
 
-        const correctionKey = `${local.location.mapId}:${remoteBinding.actorAddress}:${remoteMatEntry}:${remoteGeomFlags}:${remoteFaceIndex}:${remoteMatFlags}->${playerMatEntry}:${playerGeomFlags}:${idleFaceIndex}:${normalizedMatFlags}`
-        if (correctionKey !== lastCorrectionKey) {
-          lastCorrectionKey = correctionKey
-          console.info('[PokéRun render] CORRECTED LIVE SAME-MAP REMOTE RENDER', {
-            mapId: local.location.mapId,
-            actor: remoteBinding.actorAddress,
-            moving,
-            remoteMatEntry,
-            remoteGeomFlags,
-            remoteFaceIndex,
-            remoteMatFlags,
-            playerMatEntry,
-            playerGeomFlags,
-            playerMatFlags,
-            idleFaceIndex,
+        const logKey = `${preparedMapId}:${nextRemoteBinding.actorAddress}:${matEntry}:${geomFlags}:${matFlags}`
+        if (logKey !== lastLogKey) {
+          lastLogKey = logKey
+          console.info('[PokéRun render] VERIFIED SAME-MAP REMOTE OWNER', {
+            mapId: preparedMapId,
+            actor: nextRemoteBinding.actorAddress,
+            blActAddress: nextRemoteBinding.blActAddress,
+            handleAddress: nextRemoteBinding.handleAddress,
+            matEntry,
+            geomFlags,
+            matFlags,
           })
         }
       } catch {
-        // Best-effort ordinary-movement guard. Door/lifecycle runtimes remain authoritative.
+        clearPrepared()
       } finally {
         reading = false
       }
@@ -213,22 +303,35 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
     const unsubscribePresence = multiplayerPresence.subscribe(snapshot => {
       presenceRef.current = snapshot
       const localMapId = snapshot.local?.location.mapId ?? null
+      const remoteMapId = snapshot.remote?.location.mapId ?? null
+      const transitionActive = Boolean(snapshot.local?.transition || snapshot.remote?.transition)
+
       if (previousLocalMapId !== null && localMapId !== previousLocalMapId) {
         localMapStableSince = Date.now()
-        lastCorrectionKey = ''
+        clearPrepared()
       }
       previousLocalMapId = localMapId
-      void service()
+
+      if (transitionActive || localMapId === null || remoteMapId === null || localMapId !== remoteMapId) {
+        clearPrepared()
+        return
+      }
+      if (!reading) void prepareLiveFamily(true)
     })
 
     const unsubscribeFrame = runtimeBridge.subscribeEmulatedFrame(() => {
-      void service()
+      if (!reading) void prepareLiveFamily()
     })
+    const timer = window.setInterval(() => {
+      if (!reading) void prepareLiveFamily()
+    }, REFRESH_MS)
 
     return () => {
       cancelled = true
       unsubscribePresence()
       unsubscribeFrame()
+      window.clearInterval(timer)
+      runtimeBridge.write16 = originalWrite16
     }
   }, [bridge, rom.gameId, rom.sha256])
 
