@@ -1,281 +1,248 @@
 import { useEffect } from 'react'
 import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
-import { White2ActorSystemProbe, type White2ActorHeapEntry, type White2ActorHeapScan } from '../multiplayer/games/White2ActorSystem'
+import { White2ActorSystemProbe } from '../multiplayer/games/White2ActorSystem'
 import { POKERUN_NATIVE_TEST_UID } from '../multiplayer/games/White2NativeActor'
 
-const FIELD_ACTOR_SIZE = 0x100
+// FieldActor offsets from the White 2 decomp/reconstruction.
 const ACTOR_FLAGS = 0x00
 const ACTOR_MOVEMENT_FLAGS = 0x04
+const ACTOR_UID = 0x08
+const ACTOR_ZONE_ID = 0x0a
+const ACTOR_MODEL_ID = 0x0c
 const ACTOR_MOVE_CODE = 0x0e
+const ACTOR_EVENT_TYPE = 0x10
+const ACTOR_SPAWN_FLAG = 0x12
+const ACTOR_SCRIPT_ID = 0x14
+const ACTOR_DEFAULT_DIR = 0x16
+const ACTOR_FACE_DIR = 0x18
+const ACTOR_USER_PARAM_0 = 0x20
+const ACTOR_USER_PARAM_1 = 0x22
+const ACTOR_USER_PARAM_2 = 0x24
+const ACTOR_DRAW_STATUS = 0x2a
+const ACTOR_AREA_WIDTH = 0x2c
+const ACTOR_AREA_HEIGHT = 0x2e
 const ACTOR_WPOS = 0x44
-const ACTOR_SCENE_NODE_VTABLE = 0x90
-const SCENE_NODE_GET_BLACT_INDEX = 0x14
-const ACTOR_SYSTEM_FIELD_BLACT = 0x28
-const FIELD_BLACT_SYSTEM = 0x04
-const BLACT_SYSTEM_SCENE = 0x04
-const BLACT_SYSTEM_ACTOR_HANDLES = 0x18
-const BLACT_SYSTEM_ACTOR_COUNT = 0x1c
-const BLACT_SCENE_ACTORS = 0x08
-const BLACT_SCENE_CONFIG_ACTOR_COUNT = 0x0e
-const BLACT_SIZE = 0x1c
-const BLACT_MATERIAL = 0x00
-const BLACT_POSITION = 0x04
-const BLACT_FACE = 0x10
-const BLACT_RENDER_FLAGS = 0x18
-const HANDLE_SIZE = 0x28
-const HANDLE_BLACT_INDEX = 0x00
-const HANDLE_TEX_MAT = 0x04
-const HANDLE_ANIMS = 0x08
-const HANDLE_ANIM_COUNT = 0x0c
-const HANDLE_ANIM = 0x0e
-const HANDLE_STEP = 0x10
-const HANDLE_WAIT = 0x12
-const HANDLE_LOOPS = 0x14
-const HANDLE_ANIMATE = 0x18
-const FLDACT_GET_BLACT_IDX = 0x02167240
-const NATIVE_STACK_RESERVE = 0x400
-const BLACT_NONE = 0xffff
+const ACTOR_TCB = 0x84
+const ACTOR_MOVE_CODE_VTABLE = 0x8c
+const ACTOR_POSITION_WORK = 0x94
+const ACTOR_POSITION_WORK_SIZE = 0x10
+
+// White 2's native field-communication actor recipe.
+// FIELD_COMM_ACTOR_NPC uses UID 0xFC and MOVE_CODE_COMM_ACTOR (0x44).
+const NATIVE_COMM_UID = 0x00fc
+const MOVE_CODE_COMM_ACTOR = 0x44
+const NATIVE_COMM_SCRIPT_ID = 0x07d0
+const NATIVE_COMM_AREA_WIDTH = 4
+const NATIVE_COMM_AREA_HEIGHT = 4
+
+// Set by FieldCommActor_Add in this order:
+//   FldAct_SetHeightCalcDisabled(TRUE) -> actor flag 0x200
+//   FldAct_SetMapAttrDisabled(TRUE)     -> actor flag 0x400
+//   SetActorFlag32(TRUE)               -> actor flag 0x20
+//   SetActorCollisionEnabled(FALSE)     -> actor flag 0x80
+//   FldAct_SetIgnoreDisableAll(TRUE)    -> movement flag 0x80000
+//   FldAct_SetMoveBitAttrEffectOff(TRUE)-> movement flag 0x100000
+const FLAG_PERSISTENT = 0x00000020
+const FLAG_COLLISION_DISABLED = 0x00000080
+const FLAG_HEIGHT_CALC_DISABLED = 0x00000200
+const FLAG_MAP_ATTR_DISABLED = 0x00000400
+const MOVE_FLAG_IGNORE_DISABLE_ALL = 0x00080000
+const MOVE_FLAG_ATTR_EFFECT_OFF = 0x00100000
+
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
 const POLL_MS = 150
 const STABLE_MS = 700
-const POINTER_HEAD_BYTES = 0x40
-const ANIMS_DUMP_BYTES = 0x100
-
-type Binding = {
-  sceneNodeVTable: number
-  blActIndex: number
-  blActAddress: number
-  handleAddress: number
-  matEntry: number
-  anims: number
-}
-
-function isMainRamPointer(value: number) {
-  return Number.isInteger(value) && value >= MAIN_RAM_START && value < MAIN_RAM_END && (value & 3) === 0
-}
-
-function isMainRamFunctionPointer(value: number) {
-  const address = value & ~1
-  return Number.isInteger(value)
-    && address >= MAIN_RAM_START
-    && address < MAIN_RAM_END
-    && ((value & 1) === 1 || (address & 3) === 0)
-}
 
 function hex(value: number) {
   return `0x${(value >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
-}
-
-function offsetHex(offset: number) {
-  return `+0x${offset.toString(16).toUpperCase().padStart(2, '0')}`
-}
-
-function bytesHex(bytes: Uint8Array) {
-  return [...bytes].map(value => value.toString(16).toUpperCase().padStart(2, '0')).join(' ')
 }
 
 function signed32(value: number) {
   return value | 0
 }
 
-function readWord(bytes: Uint8Array, offset: number) {
-  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset, true)
+function isMainRamPointer(value: number) {
+  return Number.isInteger(value) && value >= MAIN_RAM_START && value < MAIN_RAM_END && (value & 3) === 0
 }
 
-function wordTable(bytes: Uint8Array) {
-  const words: Array<{ offset: string; value: string; pointer: boolean }> = []
-  for (let offset = 0; offset + 4 <= bytes.length; offset += 4) {
-    const value = readWord(bytes, offset)
-    words.push({ offset: offsetHex(offset), value: hex(value), pointer: isMainRamPointer(value) })
-  }
-  return words
+function hasBit(value: number, bit: number) {
+  return ((value >>> 0) & (bit >>> 0)) !== 0
 }
 
-function diffWords(local: Uint8Array, remote: Uint8Array) {
-  const length = Math.min(local.length, remote.length)
-  const diffs: Array<{ offset: string; local: string; remote: string; localPointer: boolean; remotePointer: boolean }> = []
-  for (let offset = 0; offset + 4 <= length; offset += 4) {
-    const localValue = readWord(local, offset)
-    const remoteValue = readWord(remote, offset)
-    if (localValue === remoteValue) continue
-    diffs.push({
-      offset: offsetHex(offset),
-      local: hex(localValue),
-      remote: hex(remoteValue),
-      localPointer: isMainRamPointer(localValue),
-      remotePointer: isMainRamPointer(remoteValue),
-    })
-  }
-  return diffs
+function missingActorFlags(flags: number) {
+  const missing: string[] = []
+  if (!hasBit(flags, FLAG_PERSISTENT)) missing.push('0x20 SetActorFlag32 / persistent')
+  if (!hasBit(flags, FLAG_COLLISION_DISABLED)) missing.push('0x80 collision disabled')
+  if (!hasBit(flags, FLAG_HEIGHT_CALC_DISABLED)) missing.push('0x200 height calculation disabled')
+  if (!hasBit(flags, FLAG_MAP_ATTR_DISABLED)) missing.push('0x400 map attributes disabled')
+  return missing
 }
 
-async function pointerHeads(bridge: MelonDsBridge, bytes: Uint8Array) {
-  const results: Array<{ offset: string; pointer: string; head: string }> = []
-  const seen = new Set<number>()
-  for (let offset = 0; offset + 4 <= bytes.length; offset += 4) {
-    const pointer = readWord(bytes, offset)
-    if (!isMainRamPointer(pointer) || seen.has(pointer)) continue
-    seen.add(pointer)
-    const length = Math.min(POINTER_HEAD_BYTES, MAIN_RAM_END - pointer)
-    try {
-      const head = await bridge.readBytes(pointer, length)
-      results.push({ offset: offsetHex(offset), pointer: hex(pointer), head: bytesHex(head) })
-    } catch (reason) {
-      results.push({ offset: offsetHex(offset), pointer: hex(pointer), head: `READ FAILED: ${reason instanceof Error ? reason.message : String(reason)}` })
-    }
-  }
-  return results
+function missingMovementFlags(flags: number) {
+  const missing: string[] = []
+  if (!hasBit(flags, MOVE_FLAG_IGNORE_DISABLE_ALL)) missing.push('0x80000 ignore DisableAll')
+  if (!hasBit(flags, MOVE_FLAG_ATTR_EFFECT_OFF)) missing.push('0x100000 movement terrain effects disabled')
+  return missing
 }
 
-async function resolveBinding(bridge: MelonDsBridge, actor: White2ActorHeapEntry): Promise<Binding | null> {
-  const sceneNodeVTable = await bridge.read32(actor.address + ACTOR_SCENE_NODE_VTABLE)
-  if (!isMainRamPointer(sceneNodeVTable)) return null
-  const getter = await bridge.read32(sceneNodeVTable + SCENE_NODE_GET_BLACT_INDEX)
-  if (!isMainRamFunctionPointer(getter)) return null
-
-  const call = await bridge.callArm9Thumb4(FLDACT_GET_BLACT_IDX, actor.address, 0, 0, 0, NATIVE_STACK_RESERVE)
-  if (call.status !== 1) return null
-  const blActIndex = call.result & 0xffff
-  if (blActIndex === BLACT_NONE) return null
-
-  const fieldBlAct = await bridge.read32(actor.actorSystemBackptr + ACTOR_SYSTEM_FIELD_BLACT)
-  if (!isMainRamPointer(fieldBlAct)) return null
-  const blActSystem = await bridge.read32(fieldBlAct + FIELD_BLACT_SYSTEM)
-  if (!isMainRamPointer(blActSystem)) return null
-
-  const [scene, handles, handleCount] = await Promise.all([
-    bridge.read32(blActSystem + BLACT_SYSTEM_SCENE),
-    bridge.read32(blActSystem + BLACT_SYSTEM_ACTOR_HANDLES),
-    bridge.read16(blActSystem + BLACT_SYSTEM_ACTOR_COUNT),
+async function captureRemoteParity(bridge: MelonDsBridge, actorAddress: number) {
+  const [
+    flags,
+    movementFlags,
+    uid,
+    zoneId,
+    modelId,
+    moveCode,
+    eventType,
+    spawnFlag,
+    scriptId,
+    defaultDir,
+    faceDir,
+    userParam0,
+    userParam1,
+    userParam2,
+    drawStatus,
+    areaWidth,
+    areaHeight,
+    worldX,
+    worldY,
+    worldZ,
+    tcb,
+    moveCodeVTable,
+    positionWorkBytes,
+  ] = await Promise.all([
+    bridge.read32(actorAddress + ACTOR_FLAGS),
+    bridge.read32(actorAddress + ACTOR_MOVEMENT_FLAGS),
+    bridge.read16(actorAddress + ACTOR_UID),
+    bridge.read16(actorAddress + ACTOR_ZONE_ID),
+    bridge.read16(actorAddress + ACTOR_MODEL_ID),
+    bridge.read16(actorAddress + ACTOR_MOVE_CODE),
+    bridge.read16(actorAddress + ACTOR_EVENT_TYPE),
+    bridge.read16(actorAddress + ACTOR_SPAWN_FLAG),
+    bridge.read16(actorAddress + ACTOR_SCRIPT_ID),
+    bridge.read16(actorAddress + ACTOR_DEFAULT_DIR),
+    bridge.read16(actorAddress + ACTOR_FACE_DIR),
+    bridge.read16(actorAddress + ACTOR_USER_PARAM_0),
+    bridge.read16(actorAddress + ACTOR_USER_PARAM_1),
+    bridge.read16(actorAddress + ACTOR_USER_PARAM_2),
+    bridge.read16(actorAddress + ACTOR_DRAW_STATUS),
+    bridge.read16(actorAddress + ACTOR_AREA_WIDTH),
+    bridge.read16(actorAddress + ACTOR_AREA_HEIGHT),
+    bridge.read32(actorAddress + ACTOR_WPOS + 0x00),
+    bridge.read32(actorAddress + ACTOR_WPOS + 0x04),
+    bridge.read32(actorAddress + ACTOR_WPOS + 0x08),
+    bridge.read32(actorAddress + ACTOR_TCB),
+    bridge.read32(actorAddress + ACTOR_MOVE_CODE_VTABLE),
+    bridge.readBytes(actorAddress + ACTOR_POSITION_WORK, ACTOR_POSITION_WORK_SIZE),
   ])
-  if (!isMainRamPointer(scene) || !isMainRamPointer(handles)) return null
 
-  const [sceneActors, sceneActorCount] = await Promise.all([
-    bridge.read32(scene + BLACT_SCENE_ACTORS),
-    bridge.read16(scene + BLACT_SCENE_CONFIG_ACTOR_COUNT),
-  ])
-  if (!isMainRamPointer(sceneActors) || blActIndex >= sceneActorCount) return null
+  const workView = new DataView(positionWorkBytes.buffer, positionWorkBytes.byteOffset, positionWorkBytes.byteLength)
+  const positionWork = [0, 4, 8, 12].map(offset => workView.getUint32(offset, true))
+  const linkedPointerCount = positionWork.filter(isMainRamPointer).length
 
-  let handleAddress = 0
-  for (let index = 0; index < handleCount; index += 1) {
-    const candidate = handles + index * HANDLE_SIZE
-    if ((await bridge.read32(candidate + HANDLE_BLACT_INDEX)) !== blActIndex) continue
-    if (handleAddress !== 0) return null
-    handleAddress = candidate
+  const checks = {
+    nativeCommUid: uid === NATIVE_COMM_UID,
+    nativeCommMoveCode: moveCode === MOVE_CODE_COMM_ACTOR,
+    nativeCommScriptId: scriptId === NATIVE_COMM_SCRIPT_ID,
+    nativeCommArea: areaWidth === NATIVE_COMM_AREA_WIDTH && areaHeight === NATIVE_COMM_AREA_HEIGHT,
+    persistentFlag: hasBit(flags, FLAG_PERSISTENT),
+    collisionDisabled: hasBit(flags, FLAG_COLLISION_DISABLED),
+    heightCalcDisabled: hasBit(flags, FLAG_HEIGHT_CALC_DISABLED),
+    mapAttrDisabled: hasBit(flags, FLAG_MAP_ATTR_DISABLED),
+    ignoreDisableAll: hasBit(movementFlags, MOVE_FLAG_IGNORE_DISABLE_ALL),
+    moveBitAttrEffectOff: hasBit(movementFlags, MOVE_FLAG_ATTR_EFFECT_OFF),
+    nativeFourPointerWorkBlockShape: linkedPointerCount === 4,
+    nativeUpdaterStillAttached: tcb !== 0,
   }
-  if (!handleAddress) return null
 
   return {
-    sceneNodeVTable,
-    blActIndex,
-    blActAddress: sceneActors + blActIndex * BLACT_SIZE,
-    handleAddress,
-    matEntry: await bridge.read16(handleAddress + HANDLE_TEX_MAT),
-    anims: await bridge.read32(handleAddress + HANDLE_ANIMS),
-  }
-}
-
-async function captureBlock(bridge: MelonDsBridge, address: number, length: number) {
-  const bytes = await bridge.readBytes(address, length)
-  return {
-    address: hex(address),
-    length,
-    raw: bytesHex(bytes),
-    words: wordTable(bytes),
-    pointerHeads: await pointerHeads(bridge, bytes),
-    bytes,
-  }
-}
-
-async function captureActorBillboardCensus(bridge: MelonDsBridge, scan: White2ActorHeapScan) {
-  const actors: Array<Record<string, unknown>> = []
-
-  for (const actor of scan.entries) {
-    if (actor.state === 'zeroed' || actor.actorSystemBackptr !== scan.actorSystem) continue
-
-    const [moveCode, wX, wY, wZ, flags, movementFlags] = await Promise.all([
-      bridge.read16(actor.address + ACTOR_MOVE_CODE),
-      bridge.read32(actor.address + ACTOR_WPOS + 0x00),
-      bridge.read32(actor.address + ACTOR_WPOS + 0x04),
-      bridge.read32(actor.address + ACTOR_WPOS + 0x08),
-      bridge.read32(actor.address + ACTOR_FLAGS),
-      bridge.read32(actor.address + ACTOR_MOVEMENT_FLAGS),
-    ])
-
-    const binding = await resolveBinding(bridge, actor)
-    let billboard: Record<string, unknown> | null = null
-    if (binding) {
-      const [materialAndType, blX, blY, blZ, face, renderFlags, texMat, animCount, anim, step, wait, loops, animate] = await Promise.all([
-        bridge.read16(binding.blActAddress + BLACT_MATERIAL),
-        bridge.read32(binding.blActAddress + BLACT_POSITION + 0x00),
-        bridge.read32(binding.blActAddress + BLACT_POSITION + 0x04),
-        bridge.read32(binding.blActAddress + BLACT_POSITION + 0x08),
-        bridge.read16(binding.blActAddress + BLACT_FACE),
-        bridge.read16(binding.blActAddress + BLACT_RENDER_FLAGS),
-        bridge.read16(binding.handleAddress + HANDLE_TEX_MAT),
-        bridge.read16(binding.handleAddress + HANDLE_ANIM_COUNT),
-        bridge.read16(binding.handleAddress + HANDLE_ANIM),
-        bridge.read16(binding.handleAddress + HANDLE_STEP),
-        bridge.read16(binding.handleAddress + HANDLE_WAIT),
-        bridge.read16(binding.handleAddress + HANDLE_LOOPS),
-        bridge.read32(binding.handleAddress + HANDLE_ANIMATE),
-      ])
-      billboard = {
-        blActIndex: binding.blActIndex,
-        blActAddress: hex(binding.blActAddress),
-        handleAddress: hex(binding.handleAddress),
-        material: materialAndType & 0x3fff,
-        type: materialAndType >>> 14,
-        position: { x: signed32(blX), y: signed32(blY), z: signed32(blZ) },
-        face,
-        renderFlags: `0x${renderFlags.toString(16).toUpperCase().padStart(4, '0')}`,
-        texMat,
-        anims: hex(binding.anims),
-        animCount,
-        anim,
-        step,
-        wait,
-        loops,
-        animate,
-      }
-    }
-
-    actors.push({
-      slot: actor.index,
-      state: actor.state,
-      actor: hex(actor.address),
-      uid: actor.uid,
-      zoneId: actor.zoneId,
-      modelId: actor.modelId,
-      moveCode,
+    current: {
+      actor: hex(actorAddress),
+      uid: { value: uid, hex: hex(uid) },
+      zoneId,
+      modelId,
+      moveCode: { value: moveCode, hex: hex(moveCode) },
+      eventType,
+      spawnFlag,
+      scriptId: { value: scriptId, hex: hex(scriptId) },
+      defaultDir,
+      faceDir,
+      userParams: [userParam0, userParam1, userParam2],
+      drawStatus,
+      area: { width: areaWidth, height: areaHeight },
+      world: { x: signed32(worldX), y: signed32(worldY), z: signed32(worldZ) },
       flags: hex(flags),
       movementFlags: hex(movementFlags),
-      faceDir: actor.faceDir,
-      grid: { x: actor.x, height: actor.height, y: actor.y },
-      world: { x: signed32(wX), y: signed32(wY), z: signed32(wZ) },
-      tcb: hex(actor.tcb),
-      moveCodeVTable: hex(actor.moveCodeVTable),
-      sceneNodeVTable: hex(actor.sceneNodeVTable),
-      billboard,
-    })
+      tcb: hex(tcb),
+      moveCodeVTable: hex(moveCodeVTable),
+      positionWork: positionWork.map((value, index) => ({
+        slot: index,
+        offset: `+0x${(ACTOR_POSITION_WORK + index * 4).toString(16).toUpperCase()}`,
+        value: hex(value),
+        plausibleMainRamPointer: isMainRamPointer(value),
+      })),
+    },
+    nativeWhite2Recipe: {
+      source: 'src/ov036/field_comm_actor.c :: FIELD_COMM_ACTOR_NPC + FieldCommActor_Add',
+      uid: hex(NATIVE_COMM_UID),
+      moveCode: { value: MOVE_CODE_COMM_ACTOR, hex: hex(MOVE_CODE_COMM_ACTOR), name: 'MOVE_CODE_COMM_ACTOR' },
+      eventType: 0,
+      spawnFlag: 0,
+      scriptId: hex(NATIVE_COMM_SCRIPT_ID),
+      defaultDir: 0,
+      userParams: [0, 0, 0],
+      area: { width: NATIVE_COMM_AREA_WIDTH, height: NATIVE_COMM_AREA_HEIGHT },
+      positionWork: [
+        'pointer to remote direction (u16*)',
+        'pointer to remote world position (VecFx32*)',
+        'pointer to remote hidden state (u32*)',
+        'pointer to FldCommActEntry',
+      ],
+      actorFlagsRequired: {
+        persistent: hex(FLAG_PERSISTENT),
+        collisionDisabled: hex(FLAG_COLLISION_DISABLED),
+        heightCalcDisabled: hex(FLAG_HEIGHT_CALC_DISABLED),
+        mapAttrDisabled: hex(FLAG_MAP_ATTR_DISABLED),
+      },
+      movementFlagsRequired: {
+        ignoreDisableAll: hex(MOVE_FLAG_IGNORE_DISABLE_ALL),
+        moveBitAttrEffectOff: hex(MOVE_FLAG_ATTR_EFFECT_OFF),
+      },
+      ownership: 'native FieldActor updater remains attached and FieldCommActor_Move consumes the four live pointers each frame',
+    },
+    checks,
+    missing: {
+      actorFlags: missingActorFlags(flags),
+      movementFlags: missingMovementFlags(movementFlags),
+      templateFields: [
+        ...(uid === NATIVE_COMM_UID ? [] : [`UID ${hex(uid)} vs native ${hex(NATIVE_COMM_UID)}`]),
+        ...(moveCode === MOVE_CODE_COMM_ACTOR ? [] : [`moveCode ${hex(moveCode)} vs native ${hex(MOVE_CODE_COMM_ACTOR)}`]),
+        ...(scriptId === NATIVE_COMM_SCRIPT_ID ? [] : [`scriptId ${hex(scriptId)} vs native ${hex(NATIVE_COMM_SCRIPT_ID)}`]),
+        ...(areaWidth === NATIVE_COMM_AREA_WIDTH && areaHeight === NATIVE_COMM_AREA_HEIGHT
+          ? []
+          : [`area ${areaWidth}x${areaHeight} vs native ${NATIVE_COMM_AREA_WIDTH}x${NATIVE_COMM_AREA_HEIGHT}`]),
+        ...(linkedPointerCount === 4 ? [] : [`position work has ${linkedPointerCount}/4 plausible live RAM pointers`]),
+        ...(tcb !== 0 ? [] : ['native updater TCB is detached']),
+      ],
+    },
+    interpretation: {
+      currentArchitecture: 'generic actor + detached native updater + PokéRun-owned movement/render playback',
+      nativeArchitecture: 'MOVE_CODE_COMM_ACTOR + four live state pointers + White 2-owned movement/draw/visibility update',
+      nextDecision: 'Use this parity report to decide which native comm-actor behaviors to reproduce/adopt in one-variable experiments.',
+    },
   }
-
-  return actors
 }
 
 /**
- * Dev-only renderer resource research probe.
- *
- * It does not mutate White 2 state. Once P1 and PokéRun's P2 actor are stable
- * and billboard-bound, it captures their resource structures and a census of
- * every allocated FieldActor/BLAct so the visible sprite can be tied to the
- * actor that actually owns its screen position/material.
+ * Probe 4: read-only comparison between PokéRun's injected remote FieldActor and
+ * White 2's own field-communication actor recipe. No emulated memory is written.
  */
 export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   useEffect(() => {
     if (!bridge || !White2ActorSystemProbe.supportsRom(rom)) return
+
     const runtimeBridge = bridge
     const probe = new White2ActorSystemProbe(runtimeBridge)
     let cancelled = false
@@ -289,26 +256,15 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
       busy = true
       try {
         const scan = await probe.scanHeap()
-        const local = scan.entries.find(entry => entry.state === 'player') ?? null
         const remotes = scan.entries.filter(entry => entry.uid === POKERUN_NATIVE_TEST_UID)
         const remote = remotes.length === 1 ? remotes[0] : null
-        if (!local || !remote || remote.tcb !== 0) {
+        if (!remote) {
           readyKey = ''
           readySince = 0
           return
         }
 
-        const [localBinding, remoteBinding] = await Promise.all([
-          resolveBinding(runtimeBridge, local),
-          resolveBinding(runtimeBridge, remote),
-        ])
-        if (!localBinding || !remoteBinding) {
-          readyKey = ''
-          readySince = 0
-          return
-        }
-
-        const key = `${local.address}:${remote.address}:${localBinding.blActIndex}:${remoteBinding.blActIndex}:${localBinding.handleAddress}:${remoteBinding.handleAddress}`
+        const key = `${scan.actorSystem}:${remote.address}:${remote.modelId}:${remote.tcb}`
         if (key !== readyKey) {
           readyKey = key
           readySince = performance.now()
@@ -316,84 +272,11 @@ export function White2MemoryResearchPanel({ bridge, rom }: { bridge: MelonDsBrid
         }
         if (capturedKey === key || performance.now() - readySince < STABLE_MS) return
 
-        const [localActor, remoteActor, localBlAct, remoteBlAct, localHandle, remoteHandle] = await Promise.all([
-          captureBlock(runtimeBridge, local.address, FIELD_ACTOR_SIZE),
-          captureBlock(runtimeBridge, remote.address, FIELD_ACTOR_SIZE),
-          captureBlock(runtimeBridge, localBinding.blActAddress, BLACT_SIZE),
-          captureBlock(runtimeBridge, remoteBinding.blActAddress, BLACT_SIZE),
-          captureBlock(runtimeBridge, localBinding.handleAddress, HANDLE_SIZE),
-          captureBlock(runtimeBridge, remoteBinding.handleAddress, HANDLE_SIZE),
-        ])
-
-        const localAnims = isMainRamPointer(localBinding.anims)
-          ? await captureBlock(runtimeBridge, localBinding.anims, Math.min(ANIMS_DUMP_BYTES, MAIN_RAM_END - localBinding.anims))
-          : null
-        const remoteAnims = isMainRamPointer(remoteBinding.anims)
-          ? await captureBlock(runtimeBridge, remoteBinding.anims, Math.min(ANIMS_DUMP_BYTES, MAIN_RAM_END - remoteBinding.anims))
-          : null
-        const census = await captureActorBillboardCensus(runtimeBridge, scan)
-
+        const report = await captureRemoteParity(runtimeBridge, remote.address)
         capturedKey = key
-        console.info('[PokéRun resdiag] RESOURCE GRAPH SNAPSHOT', {
-          purpose: 'read-only P1/P2 visual-resource comparison',
-          actorSystem: hex(scan.actorSystem),
-          actorHeap: hex(scan.actorHeap),
-          actorCapacity: scan.capacity,
-          actorCount: scan.count,
-          remoteActorCount: remotes.length,
-          local: {
-            slot: local.index,
-            actor: hex(local.address),
-            uid: local.uid,
-            modelId: local.modelId,
-            tcb: hex(local.tcb),
-            sceneNodeInline: hex(local.address + ACTOR_SCENE_NODE_VTABLE),
-            sceneNodeVTable: hex(localBinding.sceneNodeVTable),
-            blActIndex: localBinding.blActIndex,
-            blActAddress: hex(localBinding.blActAddress),
-            handleAddress: hex(localBinding.handleAddress),
-            matEntry: localBinding.matEntry,
-            anims: hex(localBinding.anims),
-          },
-          remote: {
-            slot: remote.index,
-            actor: hex(remote.address),
-            uid: remote.uid,
-            modelId: remote.modelId,
-            tcb: hex(remote.tcb),
-            sceneNodeInline: hex(remote.address + ACTOR_SCENE_NODE_VTABLE),
-            sceneNodeVTable: hex(remoteBinding.sceneNodeVTable),
-            blActIndex: remoteBinding.blActIndex,
-            blActAddress: hex(remoteBinding.blActAddress),
-            handleAddress: hex(remoteBinding.handleAddress),
-            matEntry: remoteBinding.matEntry,
-            anims: hex(remoteBinding.anims),
-          },
-          diffs: {
-            actorWords: diffWords(localActor.bytes, remoteActor.bytes),
-            blActWords: diffWords(localBlAct.bytes, remoteBlAct.bytes),
-            handleWords: diffWords(localHandle.bytes, remoteHandle.bytes),
-            animWords: localAnims && remoteAnims ? diffWords(localAnims.bytes, remoteAnims.bytes) : null,
-          },
-          localBlocks: {
-            actor: { address: localActor.address, raw: localActor.raw, words: localActor.words, pointerHeads: localActor.pointerHeads },
-            blAct: { address: localBlAct.address, raw: localBlAct.raw, words: localBlAct.words, pointerHeads: localBlAct.pointerHeads },
-            handle: { address: localHandle.address, raw: localHandle.raw, words: localHandle.words, pointerHeads: localHandle.pointerHeads },
-            anims: localAnims ? { address: localAnims.address, raw: localAnims.raw, words: localAnims.words, pointerHeads: localAnims.pointerHeads } : null,
-          },
-          remoteBlocks: {
-            actor: { address: remoteActor.address, raw: remoteActor.raw, words: remoteActor.words, pointerHeads: remoteActor.pointerHeads },
-            blAct: { address: remoteBlAct.address, raw: remoteBlAct.raw, words: remoteBlAct.words, pointerHeads: remoteBlAct.pointerHeads },
-            handle: { address: remoteHandle.address, raw: remoteHandle.raw, words: remoteHandle.words, pointerHeads: remoteHandle.pointerHeads },
-            anims: remoteAnims ? { address: remoteAnims.address, raw: remoteAnims.raw, words: remoteAnims.words, pointerHeads: remoteAnims.pointerHeads } : null,
-          },
-        })
-        console.info('[PokéRun resdiag] ACTOR/BILLBOARD CENSUS', {
-          purpose: 'identify which allocated actor/billboard owns the visible orange sprite',
-          actors: census,
-        })
+        console.info('[PokéRun resdiag] NATIVE COMM ACTOR PARITY', report)
       } catch (reason) {
-        console.info('[PokéRun resdiag] PROBE WAITING', {
+        console.info('[PokéRun resdiag] PROBE 4 WAITING', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
       } finally {
