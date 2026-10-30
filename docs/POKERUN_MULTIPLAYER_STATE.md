@@ -52,8 +52,6 @@ White 2's native remote-player system:
 
 This is extremely close to PokéRun's intended architecture. Future implementation should strongly consider adapting White 2's own field-communication actor path instead of permanently maintaining a detached generic actor plus manual billboard playback.
 
-Do not immediately rewrite to this architecture while the current orange-model investigation is in progress; use it as the primary reference for controlled experiments.
-
 ## Current Branch / Local State
 
 Important remote commits:
@@ -79,24 +77,44 @@ Do not assume that local experiment exists on GitHub until explicitly committed.
 - The remote actor's native updater TCB can be detached.
 - PokéRun can directly drive the remote actor's world position.
 - PokéRun can resolve the actor's scene node, BLAct index, BLAct, renderer handle, and animation table.
+- The injected remote heroine renders with the correct heroine material/resource when unobstructed.
 - Static White 2 map/warp/boundary extraction is already substantially complete for future transition work.
 
-## Current Blocking Bug: Orange Remote Trainer
+## RESOLVED: Apparent Orange Remote Trainer
 
-The injected remote `FieldActor` visibly renders as an orange/Hugh-like trainer even when its reported trainer/render identity matches the real protagonist.
+The apparent "orange P2" was NOT a bad trainer-resource binding.
 
-The test condition is:
+Probe 3 proved there were two separate actors occupying the exact same world position:
 
-- P1: visibly correct protagonist;
-- injected remote P2: visibly orange trainer;
-- both stationary;
-- same map.
+### Native map NPC (the visible orange character)
 
-Implementation work on doors/transitions remains paused until this contradiction is understood.
+- actor slot: `9`
+- actor: `0x0223E2E4`
+- UID: `1`
+- modelId: `11` (`OBJ_CODE_YOUNGSTER`)
+- moveCode: `2`
+- BLAct index: `8`
+- material / texMat: `6`
+- world position: `x=3571712, y=65551, z=46759936`
+
+### PokéRun remote heroine
+
+- actor slot: `10`
+- actor: `0x0223E3E4`
+- UID: `0x7F01`
+- modelId: `240` (`OBJ_CODE_HEROINE`)
+- moveCode: `0` in Probe 2
+- BLAct index: `10`
+- material / texMat: `13`
+- world position: `x=3571712, y=65551, z=46759936`
+
+The two actors were exactly overlapped. Moving the second game's real player one or two tiles caused the correct remote heroine to emerge and move away while the orange Youngster remained stationary. Screenshot confirmation was obtained.
+
+Conclusion: the heroine renderer/resource path was working. The orange character was an unrelated native Youngster NPC covering the injected remote actor.
 
 ## Probe 1 Results: Resource Graph
 
-Stable orange-P2 capture:
+Stable overlap capture:
 
 ### Local P1
 
@@ -126,19 +144,9 @@ Stable orange-P2 capture:
 
 The actor's embedded `FieldActorConfig` (`+0xE4` onward) is also byte-for-byte identical between P1 and P2.
 
-### Probe 1 conclusion
+### Probe 1 corrected interpretation
 
-The visible orange-vs-protagonist difference is NOT explained by any of the following alone:
-
-- object/model code;
-- `FieldActorConfig`;
-- scene-node vtable;
-- BLAct material;
-- BLAct geometry/material flags;
-- renderer texMat;
-- animation table pointer;
-- animation table contents;
-- White 2's native object-code resource swap.
+The matching resource state was valid. The visual contradiction existed only because an unrelated Youngster was drawn directly over the heroine remote actor.
 
 ## Probe 2 Results: moveCode 2 -> 0
 
@@ -152,11 +160,11 @@ Experiment:
 
 Result:
 
-- P2 is still orange;
-- P1 and P2 now both use move-code vtable `0x021CC5D0`;
-- model/config/material/animation state still matches.
+- apparent orange figure remained;
+- P1 and P2 now both used move-code vtable `0x021CC5D0`;
+- model/config/material/animation state still matched.
 
-Therefore generic move code `2` was not the cause.
+Corrected conclusion: move code `2` was not responsible for the orange art. The orange figure was slot-9 Youngster, not the PokéRun remote.
 
 ## Billboard Struct Reality
 
@@ -169,9 +177,7 @@ The decomp identifies the structures PokéRun had inferred:
 - handle `+0x0C/+0x0E` are animation count/current animation;
 - BLAct `+0x00` contains the actual scene material and billboard type.
 
-P1 and P2 both use scene material `13` and texMat `13` while the screenshot still appears different.
-
-This creates a strong identity question: either the visible orange sprite is not the BLAct currently attributed to P2, another actor overlaps it, or some lower-level state not yet captured changes the pixels despite the same scene material.
+The fact that P1 and remote P2 both used scene material `13` and texMat `13` was correct evidence that both were using the heroine resource family.
 
 ## Probe 3: Actor/Billboard Census
 
@@ -179,40 +185,30 @@ Commit `aa5e613` adds a read-only census emitted as:
 
 `[PokéRun resdiag] ACTOR/BILLBOARD CENSUS`
 
-For every allocated FieldActor owned by the active actor system it records:
-
-- slot/address/state;
-- UID/zone/model/move code;
-- actor and movement flags;
-- grid/world position;
-- TCB and vtables;
-- BLAct index/address;
-- actual scene material/type;
-- BLAct world position;
-- face and packed render flags;
-- texMat and animation state.
-
-Purpose: identify which actual actor/billboard owns the visible orange sprite and detect overlapping/misidentified actors before more renderer writes are attempted.
+The census resolved the orange-model mystery by exposing the overlapping slot-9 Youngster and slot-10 PokéRun heroine at exactly the same world position.
 
 ## Current Research Direction
 
-1. Run Probe 3 without moving either player.
-2. Compare the orange sprite's world position against every active BLAct.
-3. Establish whether BLAct 10 is truly the orange figure.
-4. If identity is confirmed, use White 2's decomp to trace material/palette/resource state below the current diagnostics.
-5. If identity is not confirmed, fix actor/billboard ownership before touching resource logic.
-6. In parallel, continue studying White 2's native `field_comm_actor.c` as the likely long-term remote-player architecture.
+The renderer identity question is resolved. Do not spend more time debugging heroine material/resource identity unless a new independent visual failure appears.
+
+The next reverse-engineering question is position/world-state consistency:
+
+1. Determine why the remote player's transmitted position coincided with a fixed native NPC position in the receiving game.
+2. Compare both emulator instances' local-player coordinates and NPC slot-9 coordinates at the same moment.
+3. Establish whether the overlap was legitimate per-instance NPC/world-state divergence, a coordinate conversion/synchronization offset, or a spawn/bootstrap artifact.
+4. Keep studying White 2's native `field_comm_actor.c` as the likely long-term remote-player architecture.
+5. Resume transition/door work only after position semantics are understood enough that remote placement is trustworthy.
 
 ## Guardrails
 
-Until the orange-model identity is understood, avoid unrelated changes to:
+Until remote position semantics are confirmed, avoid unrelated changes to:
 
 - network protocol;
 - movement smoothing;
 - map transition implementation;
 - door behavior;
 - render-profile cache design;
-- random P1-to-P2 pointer copying.
+- arbitrary renderer resource fields.
 
 Prefer read-only probes and one-variable experiments.
 
