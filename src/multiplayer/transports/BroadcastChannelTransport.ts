@@ -1,5 +1,6 @@
 import { isProtocolMessage, type MultiplayerConnectionState, type MultiplayerMessage } from '../core/protocol'
 import type { MultiplayerTransport } from '../core/transport'
+import { normalizeWhite2FakeBoundaryMessage } from './White2FakeBoundaryNormalizer'
 
 const NETWORK_RELAY_EVENT = 'pokerun:multiplayer'
 
@@ -63,6 +64,7 @@ export class BroadcastChannelTransport implements MultiplayerTransport {
   }
 
   send(message: MultiplayerMessage) {
+    normalizeWhite2FakeBoundaryMessage(message)
     if (this.networkMode) {
       if (this.networkConnected) import.meta.hot?.send(NETWORK_RELAY_EVENT, message)
       return
