@@ -124,12 +124,20 @@ function putU16(view: DataView, offset: number, value: number) {
 
 function currentRemoteSpawnPosition(): NativeSpawnPosition | null {
   let position: NativeSpawnPosition | null = null
+  let localTransitionActive = false
   const unsubscribe = multiplayerPresence.subscribe(snapshot => {
     const { local, remote } = snapshot
+    if (local?.transition) {
+      localTransitionActive = true
+      return
+    }
     if (!local || !remote || local.location.mapId !== remote.location.mapId) return
     position = { x: remote.x, y: remote.y }
   })
   unsubscribe()
+  if (localTransitionActive) {
+    throw new White2ActorSystemUnavailableError('Remote actor spawn deferred until the local map transition finishes.')
+  }
   return position
 }
 
