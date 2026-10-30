@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
-import type { MultiplayerRomIdentity } from '../core/protocol'
+import type { MultiplayerMapTransition, MultiplayerRomIdentity } from '../core/protocol'
 import { White2ActorSystemProbe } from './White2ActorSystem'
 import { POKERUN_NATIVE_TEST_UID } from './White2NativeActor'
 
@@ -31,6 +31,7 @@ const BLACT_NONE = 0xffff
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
 const LOCAL_MAP_STABLE_MS = 450
+const TRANSITION_FRESH_MS = 800
 const REFRESH_MS = 32
 
 const IDLE_FACE_BY_DIRECTION = {
@@ -64,6 +65,12 @@ function isMainRamFunctionPointer(value: number) {
     && address >= MAIN_RAM_START
     && address < MAIN_RAM_END
     && ((value & 1) === 1 || (address & 3) === 0)
+}
+
+function transitionFresh(transition: MultiplayerMapTransition | undefined) {
+  if (!transition) return false
+  const age = Date.now() - transition.detectedAt
+  return age >= 0 && age < TRANSITION_FRESH_MS
 }
 
 async function resolveBinding(bridge: MelonDsBridge, actorAddress: number, actorSystem: number): Promise<Binding | null> {
@@ -125,8 +132,7 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
     let cancelled = false
     let reading = false
     let previousLocalMapId: number | string | null = null
-    let localMapStableSince = 0
-    let bootstrapQuarantine = false
+    let localMapStableSince = Date.now()
     let remoteBinding: Binding | null = null
     let protagonistFamily: RenderFamily | null = null
     let preparedMapId: number | string | null = null
@@ -141,25 +147,13 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
       lastLogKey = ''
     }
 
-    function sameMapIdsSnapshot() {
+    function sameMapStable() {
       const { local, remote } = presenceRef.current
       if (!local || !remote) return null
       if (local.location.mapId !== remote.location.mapId) return null
-      return { local, remote }
-    }
-
-    function sameMapSnapshot() {
-      const sameMap = sameMapIdsSnapshot()
-      if (!sameMap) return null
-      if (sameMap.local.transition || sameMap.remote.transition) return null
-      return sameMap
-    }
-
-    function sameMapStable() {
-      const sameMap = sameMapSnapshot()
-      if (!sameMap) return null
+      if (transitionFresh(local.transition) || transitionFresh(remote.transition)) return null
       if (Date.now() - localMapStableSince < LOCAL_MAP_STABLE_MS) return null
-      return sameMap
+      return { local, remote }
     }
 
     async function bindingStillOwned(binding: Binding) {
@@ -197,6 +191,8 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
       if (isMatEntry) return originalWrite16(address, family.matEntry)
       if (isGeomFlags) return originalWrite16(address, family.geomFlags)
       if (isMatFlags) {
+        // The dedicated runtime owns visibility. This guard only normalizes the
+        // protagonist material family and preserves the caller's visible bit.
         const normalized = (family.matFlags & ~BLACT_VISIBLE_MASK) | (value & BLACT_VISIBLE_MASK)
         return originalWrite16(address, normalized)
       }
@@ -227,48 +223,14 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
       return { playerBinding, remoteBinding: nextRemoteBinding }
     }
 
-    async function quarantineLiveRemote() {
-      if (cancelled || !bootstrapQuarantine || !sameMapIdsSnapshot()) return
-      const live = await resolveLiveActors()
-      if (!live) return
-      const flagsAddress = live.remoteBinding.blActAddress + BLACT_MAT_FLAGS
-      const flags = await runtimeBridge.read16(flagsAddress)
-      if ((flags & BLACT_VISIBLE_MASK) !== 0) {
-        await originalWrite16(flagsAddress, flags & ~BLACT_VISIBLE_MASK)
-      }
-    }
-
     async function prepareLiveFamily(force = false) {
       if (cancelled) return
-
-      const sameMapIds = sameMapIdsSnapshot()
-      if (!sameMapIds) {
+      const active = sameMapStable()
+      if (!active) {
         clearPrepared()
         return
       }
 
-      // Player 1 can already report P2's destination map while its own door
-      // transition metadata is still active. Keep P2 hidden for that whole beat;
-      // do not wait for sameMapSnapshot(), which intentionally rejects transitions.
-      if (bootstrapQuarantine && (sameMapIds.local.transition || sameMapIds.remote.transition)) {
-        await quarantineLiveRemote()
-        clearPrepared()
-        return
-      }
-
-      const sameMap = sameMapSnapshot()
-      if (!sameMap) {
-        clearPrepared()
-        return
-      }
-
-      if (Date.now() - localMapStableSince < LOCAL_MAP_STABLE_MS) {
-        await quarantineLiveRemote()
-        clearPrepared()
-        return
-      }
-
-      const active = sameMap
       const now = Date.now()
       if (!force
         && remoteBinding
@@ -284,15 +246,6 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
           return
         }
         const { playerBinding, remoteBinding: nextRemoteBinding } = live
-
-        if (bootstrapQuarantine) {
-          const flagsAddress = nextRemoteBinding.blActAddress + BLACT_MAT_FLAGS
-          const flags = await runtimeBridge.read16(flagsAddress)
-          if ((flags & BLACT_VISIBLE_MASK) !== 0) {
-            await originalWrite16(flagsAddress, flags & ~BLACT_VISIBLE_MASK)
-          }
-        }
-
         const [matEntry, geomFlags, matFlags] = await Promise.all([
           runtimeBridge.read16(playerBinding.handleAddress + HANDLE_MAT_ENTRY),
           runtimeBridge.read16(playerBinding.blActAddress + BLACT_GEOM_FLAGS),
@@ -305,8 +258,7 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
         lastPreparedAt = now
 
         const currentFlags = await runtimeBridge.read16(nextRemoteBinding.blActAddress + BLACT_MAT_FLAGS)
-        const normalizedFlags = (matFlags & ~BLACT_VISIBLE_MASK)
-          | (bootstrapQuarantine ? BLACT_VISIBLE_MASK : (currentFlags & BLACT_VISIBLE_MASK))
+        const normalizedFlags = (matFlags & ~BLACT_VISIBLE_MASK) | (currentFlags & BLACT_VISIBLE_MASK)
         const writes: Promise<void>[] = [
           originalWrite16(nextRemoteBinding.handleAddress + HANDLE_MAT_ENTRY, matEntry),
           originalWrite16(nextRemoteBinding.blActAddress + BLACT_GEOM_FLAGS, geomFlags),
@@ -319,14 +271,6 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
           ))
         }
         await Promise.all(writes)
-
-        if (bootstrapQuarantine) {
-          bootstrapQuarantine = false
-          console.info('[PokéRun render] RELEASED MAP-BOOTSTRAP REMOTE', {
-            mapId: preparedMapId,
-            actor: nextRemoteBinding.actorAddress,
-          })
-        }
 
         const logKey = `${preparedMapId}:${nextRemoteBinding.actorAddress}:${matEntry}:${geomFlags}:${matFlags}`
         if (logKey !== lastLogKey) {
@@ -351,28 +295,11 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
     const unsubscribePresence = multiplayerPresence.subscribe(snapshot => {
       presenceRef.current = snapshot
       const localMapId = snapshot.local?.location.mapId ?? null
-      const remoteMapId = snapshot.remote?.location.mapId ?? null
-      const transitionActive = Boolean(snapshot.local?.transition || snapshot.remote?.transition)
-      const sameMapIds = localMapId !== null && remoteMapId !== null && localMapId === remoteMapId
-
       if (previousLocalMapId !== null && localMapId !== previousLocalMapId) {
         localMapStableSince = Date.now()
-        bootstrapQuarantine = sameMapIds
         clearPrepared()
       }
       previousLocalMapId = localMapId
-
-      if (transitionActive) {
-        clearPrepared()
-        if (bootstrapQuarantine && sameMapIds && !reading) void quarantineLiveRemote()
-        return
-      }
-
-      if (!sameMapIds) {
-        bootstrapQuarantine = false
-        clearPrepared()
-        return
-      }
       if (!reading) void prepareLiveFamily(true)
     })
 
@@ -388,7 +315,7 @@ export function White2SameMapRenderFamilyGuard({ bridge, rom }: { bridge: MelonD
       unsubscribePresence()
       unsubscribeFrame()
       window.clearInterval(timer)
-      runtimeBridge.write16 = originalWrite16
+      if (runtimeBridge.write16 !== originalWrite16) runtimeBridge.write16 = originalWrite16
     }
   }, [bridge, rom.gameId, rom.sha256])
 
