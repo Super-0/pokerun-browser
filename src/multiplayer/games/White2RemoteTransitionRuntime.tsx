@@ -150,6 +150,7 @@ function White2RemoteDoorRuntime({ bridge, rom }: { bridge: MelonDsBridge | null
     async function handleTransition(transition: MultiplayerMapTransition, local: MultiplayerPlayerState, now: number) {
       if (transition.id === lastHandledTransitionId) return
       lastHandledTransitionId = transition.id
+      if (transition.kind === 'map-edge') return
 
       if (sameMap(local.location.mapId, transition.fromMapId)) {
         console.info('[PokéRun door] REMOTE DEPARTURE', {
