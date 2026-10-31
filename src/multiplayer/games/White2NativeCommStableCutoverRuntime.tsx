@@ -37,11 +37,12 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
     const probe = new White2ActorSystemProbe(runtimeBridge)
     let cancelled = false
     let busy = false
+    let released = false
     let stableModel: number | null = null
     let stableSince = 0
 
     async function poll() {
-      if (cancelled || busy || ready || runtimeBridge.status !== 'running') return
+      if (cancelled || busy || released || runtimeBridge.status !== 'running') return
       busy = true
       try {
         const scan = await probe.scanHeap()
@@ -72,6 +73,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
 
         if (now - stableSince < STABLE_MS) return
 
+        released = true
         console.info('[PokéRun lifecycle] NATIVE COMM CUTOVER GATE READY', {
           modelId,
           stableMs: Math.round(now - stableSince),
@@ -94,7 +96,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [bridge, rom.gameId, rom.sha256, ready])
+  }, [bridge, rom.gameId, rom.sha256])
 
   return ready ? <White2NativeCommCutoverRuntime bridge={bridge} rom={rom}/> : null
 }
