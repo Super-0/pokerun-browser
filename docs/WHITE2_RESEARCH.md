@@ -46,7 +46,7 @@ Actor stride in the tested heap is `0x100`.
 - `OBJ_CODE_HEROINE = 240`
 - `OBJ_CODE_YOUNGSTER = 11`
 
-The tested local player and PokéRun remote both use heroine `240`.
+The tested local player and PokéRun remote use heroine `240`.
 
 ## Native White 2 communication actors
 
@@ -115,7 +115,7 @@ Observed live layout matches the decomp:
 
 ## Native comm symbols validated resident
 
-On ordinary map 427, Probe 5 verified the following overlay-36 functions are resident:
+On ordinary map 427, the following overlay-36 functions are resident:
 
 | Function | Address |
 | --- | --- |
@@ -131,62 +131,57 @@ On ordinary map 427, Probe 5 verified the following overlay-36 functions are res
 
 The live move-code table at `0x021CC418` matches the decomp and points to the expected init/move/delete callbacks.
 
-## Probe 6 — allocator/lifetime validation
+## Native comm validation results
 
-A native `FldCommActSys` was created against the live actor system with count 1 and `allowRun=1`.
+### Probe 6 — allocator/lifetime
 
-Observed:
+`FldCommActSys_Create` and `FldCommActSys_Free` both returned normally against the live field actor system.
 
-- count = 1;
-- allowRun = 1;
-- actor-system pointer matched live MMSys;
-- entries pointer was valid;
-- first entry was zeroed;
-- `FldCommActSys_Free` returned normally.
+Result: `allocatorLifetimeValidated = true`.
 
-Conclusion: native comm-system allocator/lifetime is safe in the tested field context.
+### Probe 7 — hidden native actor control
 
-## Probe 7 — native comm actor control — VALIDATED
+A native comm heroine was created through `FldCommActSys_CreateActor` with UID `0xFC`, moveCode `0x44`, vtable `0x021CC418`, and a live updater TCB.
 
-PokéRun created a temporary hidden actor through `FldCommActSys_CreateActor` while leaving the existing custom P2 actor untouched.
-
-Observed actor:
-
-- UID `252` / `0xFC`;
-- model `240` heroine;
-- moveCode `68` / `0x44`;
-- move-code vtable `0x021CC418`;
-- TCB `0x0230A13C` remained attached;
-- flags `0x000006A7`;
-- movement flags `0x00180802`;
-- position work contained the exact four backing pointers.
-
-All native-setup checks passed:
-
-- persistent flag;
-- collision disabled;
-- height calculation disabled;
-- map attributes disabled;
-- ignore-disable-all;
-- terrain effects disabled.
-
-PokéRun then wrote only to the backing state:
-
-1. changed backing position from x `3702784` to `3768320`;
-2. White 2 moved the actor to the new x itself;
-3. actor draw status became `10` for the large move;
-4. changed backing direction from east (`3`) to west (`2`);
-5. White 2 changed `faceDir` to `2` itself.
-
-No direct actor position/facing write was used for those checks.
+PokéRun modified only backing direction/position memory. White 2 itself consumed those values, moved the actor, changed facing, and produced movement drawStatus `10`.
 
 Result: `nativeCommActorControlValidated = true`.
 
-Cleanup also passed: native actor deletion and comm-system free returned normally.
+### Probe 8 — visible native renderer
 
-### Meaning
+A visible native comm heroine successfully:
 
-This proves PokéRun can use White 2's built-in multiplayer actor architecture instead of permanently detaching a generic NPC updater and manually replaying the remote trainer's renderer state.
+- bound heroine material 13;
+- remained visible with native animation enabled;
+- reached streamed world positions;
+- changed renderer face when backing direction changed;
+- hid when backing hidden changed;
+- deleted/freed safely.
+
+The single false boolean was a transient animation sample taken after drawStatus had already returned to STOP. That does not contradict Probe 7, which directly observed the native movement draw state.
+
+### Probe 9 — live multiplayer presence stream
+
+The actual fake-P2 multiplayer stream drove a native comm heroine for 15 seconds.
+
+Observed:
+
+- 242 writes to native backing state;
+- 80 distinct remote positions;
+- native movement draw status observed;
+- final world position exactly matched expected;
+- final face direction exactly matched expected;
+- native updater stayed attached;
+- cleanup succeeded.
+
+Results:
+
+- `liveFakePeerToNativeCommValidated = true`
+- `userMovementObserved = true`
+
+This proves the end-to-end chain:
+
+`fake peer -> GAME_STATE -> multiplayerPresence -> native backing state -> FieldCommActor`.
 
 ## Billboard path
 
@@ -228,7 +223,7 @@ Relevant BillboardActor fields:
 
 ## Resolved Youngster overlap
 
-The apparent orange remote character was actually a native Youngster occupying the exact same world position as the injected heroine.
+The apparent orange remote character was a native Youngster occupying the exact same world position as the injected heroine.
 
 Youngster:
 
@@ -236,36 +231,25 @@ Youngster:
 - model `11`
 - material `6`
 
-PokéRun custom heroine:
+PokéRun heroine:
 
-- UID `0x7F01`
 - model `240`
 - material `13`
 
 Moving fake P2 separated the heroine from the stationary Youngster, visually confirming the diagnosis.
 
-## Probe 8 — current visual native-comm test
+## Current integration implication
 
-Probe 8 creates a **visible** temporary native comm heroine near the current fake P2 and keeps the existing custom P2 actor untouched.
+The old design—generic actor creation, native TCB detachment, direct actor/billboard writes, and manual animation replay—is no longer necessary for ordinary same-map remote movement.
 
-It validates:
+The proven native architecture is:
 
-- native billboard binding;
-- heroine material binding;
-- visible state;
-- streamed backing-position movement;
-- native movement/draw animation response;
-- backing-direction facing response;
-- backing-hidden visibility response;
-- safe deletion/free.
+- persistent `FldCommActSys`;
+- native comm actor with attached updater;
+- PokéRun-owned backing values for direction, world position, and hidden state;
+- White 2-owned movement, facing, draw status, billboard animation, and visibility.
 
-Expected marker:
-
-`[PokéRun resdiag] NATIVE COMM VISUAL CONTROL`
-
-Expected success:
-
-`nativeCommVisualPathValidated: true`
+Probe 10 is the first cutover where the actual DEV fake P2 uses that architecture instead of a second mirror actor.
 
 ## Static map/transition research
 
@@ -278,22 +262,10 @@ White 2 static extraction already includes:
 
 Startup currently reports 182 static boundary triggers.
 
-Higher-level door/transition work remains intentionally paused while the native remote actor architecture is finalized.
+Door/transition integration should resume only after Probe 10 confirms the native comm actor is stable as the actual same-map remote P2.
 
 ## Research rules
 
-Prefer:
+Prefer decomp confirmation, one-variable experiments, exact snapshots, native White 2 systems, safe scheduled calls, and explicit cleanup.
 
-- decomp confirmation before guessing offsets;
-- one-variable experiments;
-- exact before/after snapshots;
-- native White 2 actor systems where available;
-- safe scheduled calls and explicit cleanup;
-- recording falsified hypotheses.
-
-Avoid:
-
-- copying arbitrary local-player pointers into remote actors;
-- changing multiple unknown actor fields at once;
-- assuming a second emulator exists in the current harness;
-- building transition polish on top of the old detached-actor renderer before native comm integration is settled.
+Avoid copying arbitrary local-player pointers, changing multiple unknown actor fields at once, assuming a second emulator exists, or building transition polish on the old detached-actor architecture.
