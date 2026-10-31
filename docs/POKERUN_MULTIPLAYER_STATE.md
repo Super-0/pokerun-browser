@@ -5,223 +5,223 @@ Branch: `mp/map-transition-recovery-v2`
 
 ## Purpose
 
-This file is the canonical handoff for the current multiplayer implementation/debugging state. New chats should read this file before making implementation decisions.
+Canonical handoff for the current White 2 multiplayer implementation and reverse-engineering state. New chats should read this file and `docs/WHITE2_RESEARCH.md` before proposing changes.
 
-## CURRENT TEST HARNESS ARCHITECTURE — IMPORTANT
+## CURRENT HARNESS — IMPORTANT
 
-The current White 2 debugging harness has **ONE real emulator/game/tab**, not two.
+The current debugging setup has **ONE real White 2 emulator/game/tab** plus a **headless fake P2 peer**.
 
-Inside that one White 2 instance:
+Inside the one real White 2 instance:
 
-- P1 is the real local White 2 player actor.
-- P2 is a **headless fake remote peer** created by the multiplayer harness.
-- The fake peer sends normal multiplayer `GAME_STATE`-style remote state through the same transport/path intended for real multiplayer.
-- Manual fake-P2 controls generate normal remote movement packets rather than directly moving the DS actor.
-- The one real White 2 instance creates a dedicated native `FieldActor` that visually represents that fake remote P2.
+- P1 is the real local White 2 player.
+- fake P2 publishes normal multiplayer remote state through PokéRun's protocol path.
+- a native White 2 `FieldActor` represents fake P2 in the real game.
 
-There is therefore **no separate Player 2 emulator/tab in the current test setup**.
+There is no separate Player 2 emulator/tab in this harness.
 
-A future real multiplayer deployment may have one emulator/game instance per human player, but that is not the current debugging harness and must not be assumed when interpreting logs.
+## Current production-ish remote actor path
 
-### Current PokéRun remote actor lifecycle
+The existing PokéRun runtime still uses the older custom path:
 
-1. Read the real local White 2 player and current field actor system.
-2. Receive/synthesize fake-P2 remote map/position/facing/movement state through the multiplayer protocol.
-3. Build a `ZoneNPC` payload for the injected remote actor.
-4. Create the actor through White 2's own field scheduler so normal resource loading/scheduler machinery runs.
-5. Create it hidden to avoid exposing bootstrap frames.
-6. Use PokéRun test UID `0x7F01`.
-7. Detach the actor's native update TCB so PokéRun can drive it remotely.
-8. Rebind/swap the actor to the remote trainer object code using White 2's native resource path.
-9. Drive position/facing/animation/visibility from the fake peer's replicated remote state.
+1. receive fake-P2 state;
+2. build a `ZoneNPC`;
+3. create a native FieldActor through White 2's scheduler;
+4. use test UID `0x7F01`;
+5. create hidden, then bind heroine resources;
+6. detach the actor's native TCB updater;
+7. PokéRun manually drives world position/facing/animation/visibility.
 
-This is the CURRENT PokéRun implementation, not necessarily the final design.
+This path works, but research now shows it is probably unnecessarily complicated.
 
-## Major White 2 Decomp Discovery
+## Major native White 2 discovery
 
-A public White 2 decomp/reconstruction (`fuddlesworth/pokebw2`) contains the exact functions/structs being reverse-engineered, including the same White 2 US addresses PokéRun already uses.
-
-Most importantly, White 2 already contains `src/ov036/field_comm_actor.c`, explicitly described as:
+White 2 already contains `src/ov036/field_comm_actor.c`, explicitly for:
 
 > The actors of the other players in a field communication.
 
-White 2's native remote-player system:
+The native system creates remote hero/heroine FieldActors using:
 
-- creates a normal `FieldActor` for each remote player;
-- supplies that player's hero/heroine object code directly as `modelId`;
-- uses `MOVE_CODE_COMM_ACTOR`;
-- stores pointers to live direction, world position, hidden state, and a communication entry in the actor's position work block;
-- lets White 2's own movement callback set facing, position, walking/running draw status, and visibility;
-- configures the actor with height calculation disabled, map attributes disabled, collision disabled, persistence flag enabled, ignore-disable-all enabled, and movement-bit terrain effects disabled.
+- UID `0xFC`;
+- `MOVE_CODE_COMM_ACTOR = 0x44`;
+- a live native updater TCB;
+- persistent pointers to direction, `VecFx32` position, hidden state, and a comm entry;
+- collision disabled;
+- height calculation disabled;
+- map attributes disabled;
+- persistent actor flag enabled;
+- ignore-disable-all enabled;
+- terrain/move-bit effects disabled.
 
-This is extremely close to PokéRun's intended remote-controlled-trainer architecture. Future implementation should strongly consider adapting White 2's own field-communication actor path instead of permanently maintaining a detached generic actor plus manual billboard playback.
+`FieldCommActor_Move` reads those pointers every frame and performs facing, position, stopped/walk/run draw status, and visibility itself.
 
-## Current Branch / Local State
+## RESOLVED: Orange-model bug
 
-Important remote commits:
+The orange character was not the injected remote model.
 
-- `4868fc5` — read-only P1/P2 render resource graph probe
-- `aa5e613` — read-only census of every active FieldActor and billboard
+Probe 3 found two actors at the exact same coordinates:
 
-The developer currently has one local, uncommitted experimental edit in `src/multiplayer/games/White2NativeActor.ts`:
+- native map Youngster: UID `1`, model `11`, material `6`;
+- PokéRun remote heroine: UID `0x7F01`, model `240`, material `13`.
 
-- `ZoneNPC.moveCode` changed from `2` to `0` for Probe 2.
+Moving fake P2 exposed the heroine underneath while the Youngster stayed put. Renderer/model binding was correct.
 
-Do not assume that local experiment exists on GitHub until explicitly committed.
+## Probe history
 
-## Proven Working Pieces
+### Probe 1 — resource graph
 
-- One real White 2 instance can consume synthetic fake-peer multiplayer state through the normal remote-player protocol path.
-- The fake peer can be moved with harness controls that generate normal remote movement packets.
-- PokéRun can locate White 2's field actor system and real local player actor.
-- Native remote `FieldActor` creation works.
-- Native actor creation can be scheduled safely through White 2's field scheduler.
-- The remote actor can be created hidden.
-- The remote actor receives UID `0x7F01`.
-- The remote actor can be found and deleted/reacquired by PokéRun.
-- The remote actor's native updater TCB can be detached.
-- PokéRun can directly drive the remote actor's world position.
-- PokéRun can resolve the actor's scene node, BLAct index, BLAct, renderer handle, material, and animation table.
-- The injected remote heroine renders with the correct heroine material/resource when unobstructed.
-- Static White 2 map/warp/boundary extraction is already substantially complete for future transition work.
+P1 and PokéRun remote matched on heroine resource identity:
 
-## RESOLVED: Apparent Orange Remote Trainer
+- model `240` (`OBJ_CODE_HEROINE`);
+- same embedded `FieldActorConfig`;
+- same scene-node vtable;
+- material / texMat `13`;
+- same animation table `0x021CF13C`.
 
-The apparent "orange P2" was **not** a bad trainer-resource binding.
+The apparent visual mismatch was later explained by the overlapping Youngster.
 
-Probe 3 proved there were two separate actors occupying the exact same world position inside the one real game instance.
+### Probe 2 — moveCode 2 -> 0
 
-### Native map NPC covering the remote
+Changing only the custom remote's moveCode from `2` to `0` made its move-code vtable match P1, but the apparent orange figure remained.
 
-- actor slot: `9`
-- actor: `0x0223E2E4`
-- UID: `1`
-- modelId: `11` (`OBJ_CODE_YOUNGSTER`)
-- moveCode: `2`
-- BLAct index: `8`
-- material / texMat: `6`
-- world position: `x=3571712, y=65551, z=46759936`
+Conclusion: move code was not the model problem. The orange figure was a different actor.
 
-### PokéRun injected remote heroine
+The developer may still have this Probe-2 edit locally and uncommitted in `White2NativeActor.ts`; do not assume GitHub contains it.
 
-- actor slot: `10`
-- actor: `0x0223E3E4`
-- UID: `0x7F01`
-- modelId: `240` (`OBJ_CODE_HEROINE`)
-- moveCode: `0` in Probe 2
-- BLAct index: `10`
-- material / texMat: `13`
-- world position: `x=3571712, y=65551, z=46759936`
+### Probe 3 — actor/billboard census
 
-The two actors were exactly overlapped. Using the fake-P2 harness controls moved the correct remote heroine away while the native Youngster stayed in place. Screenshot confirmation was obtained.
+Commit `aa5e613`.
 
-### Correct interpretation
+Resolved the orange-model mystery by identifying the overlapping Youngster and heroine as separate actors.
 
-The heroine renderer/resource path was already working. The fake peer's synthetic starting position happened to place the injected remote actor directly on top of a native Youngster NPC.
+### Probe 4 — native comm parity
 
-This was **not** evidence of a two-game coordinate mismatch, because there is only one real game in the current harness.
+Compared the current custom remote actor with White 2's native communication actor recipe.
 
-## Probe 1 Results: Resource Graph
+Result: current custom remote matched essentially none of the native-comm-specific setup. It is a generic FieldActor with its updater detached and manually controlled by PokéRun.
 
-Stable overlap capture:
+### Probe 5 — overlay/native symbol residency
 
-### Local P1
+Commit `01d29ab`.
 
-- actor: `0x0223E1E4`
-- UID: `0x00FF`
-- modelId: `240` (`OBJ_CODE_HEROINE`)
-- TCB: `0x0230A104`
-- scene-node vtable: `0x021CF974`
-- BLAct index: `9`
-- BLAct: `0x02268094`
-- renderer handle: `0x0226919C`
-- material / texMat: `13`
-- animation table: `0x021CF13C`
+Verified on normal map 427 that White 2's native communication functions are resident and callable, and that the live `MOVE_CODE_COMM_ACTOR` table at `0x021CC418` matches the decomp.
 
-### Remote P2
+Key functions validated resident:
 
-- actor: `0x0223E3E4`
-- UID: `0x7F01`
-- modelId: `240` (`OBJ_CODE_HEROINE`)
-- TCB: `0x00000000` after PokéRun detaches it
-- scene-node vtable: `0x021CF974`
-- BLAct index: `10`
-- BLAct: `0x022680B0`
-- renderer handle: `0x022691C4`
-- material / texMat: `13`
-- animation table: `0x021CF13C`
+- `FldCommActSys_Create` `0x0218AE78`
+- `FldCommActSys_CreateActor` `0x0218AEF4`
+- `FieldCommActor_Add` `0x0218AFFC`
+- `FieldCommActor_MoveInit` `0x0218B084`
+- `FieldCommActor_MoveDelete` `0x0218B090`
+- `FieldCommActor_Move` `0x0218B0A0`
+- `FieldCommActor_SetMoveWork` `0x0218B150`
 
-The actor's embedded `FieldActorConfig` (`+0xE4` onward) is also byte-for-byte identical between P1 and P2.
+### Probe 6 — native comm system lifetime
 
-### Probe 1 corrected interpretation
+Commit `5a6539f`.
 
-The matching resource state was valid. The visual contradiction existed only because an unrelated Youngster was drawn directly over the heroine remote actor.
+Successfully called `FldCommActSys_Create(count=1)` against the live actor system, verified structure layout and zeroed entry state, then freed it normally.
 
-## Probe 2 Results: moveCode 2 -> 0
+Result: `allocatorLifetimeValidated = true`.
 
-Hypothesis: the remote actor's previous move code `2` selected a different actor family.
+### Probe 7 — native comm actor control — SUCCESS
 
-Experiment:
+Commit `bef6964`.
 
-- changed only remote `ZoneNPC.moveCode` from `2` to `0`;
-- fresh remote spawn;
-- no movement before capture.
+This is the major architecture result.
 
-Result:
+A temporary hidden actor was created through White 2's actual `FldCommActSys_CreateActor` path while the existing custom fake-P2 actor remained untouched.
 
-- apparent orange figure remained;
-- P1 and P2 now both used move-code vtable `0x021CC5D0`;
-- model/config/material/animation state still matched.
+Observed native actor:
 
-Corrected conclusion: move code `2` was not responsible for the orange art. The orange figure was slot-9 Youngster, not the PokéRun remote.
+- UID `0xFC`;
+- model `240` heroine;
+- moveCode `0x44`;
+- move-code vtable `0x021CC418`;
+- native updater TCB remained attached;
+- native comm flags all present;
+- position work block held the four expected live pointers.
 
-## Billboard Struct Reality
+PokéRun changed only the backing remote-state memory.
 
-The decomp identifies the structures PokéRun had inferred:
+White 2 itself then:
 
-- BLAct is `BillboardActor`;
-- the handle is `BillboardActorHandle`;
-- handle `+0x04` is `texMat`;
-- handle `+0x08` is the animation-table pointer;
-- handle `+0x0C/+0x0E` are animation count/current animation;
-- BLAct `+0x00` contains the actual scene material and billboard type.
+- consumed the initial position;
+- moved the actor when the backing `VecFx32` changed;
+- set draw status `10` for the large move;
+- changed actor facing when only the backing direction value changed.
 
-The fact that P1 and remote P2 both used scene material `13` and texMat `13` was correct evidence that both were using the heroine resource family.
+Every Probe-7 check passed:
 
-## Probe 3: Actor/Billboard Census
+- native identity;
+- model identity;
+- native updater attached;
+- persistence/collision/height/map flags;
+- ignore-disable-all / terrain-effect flags;
+- work pointers;
+- initial position consumption;
+- native movement consumption;
+- native direction consumption.
 
-Commit `aa5e613` adds a read-only census emitted as:
+Cleanup succeeded: actor deletion and comm-system free both returned normally.
 
-`[PokéRun resdiag] ACTOR/BILLBOARD CENSUS`
+**Conclusion:** PokéRun has proven it can feed remote state to White 2's built-in multiplayer actor path and let White 2 own the remote actor's native movement/facing lifecycle.
 
-The census resolved the orange-model mystery by exposing the overlapping slot-9 Youngster and slot-10 PokéRun heroine at exactly the same world position.
+### Probe 8 — visible native comm renderer test — CURRENT
 
-## Current Research Direction
+Current branch HEAD includes:
 
-The renderer identity question is resolved. Do not spend more time debugging heroine material/resource identity unless a new independent visual failure appears.
+- `5bbcfd5` — visible native communication actor probe
+- `a57fae6` — route research panel to Probe 8
 
-The current reverse-engineering priorities are:
+Probe 8 keeps the existing custom fake-P2 actor untouched and creates a second, temporary native comm heroine nearby with `hidden = 0`.
 
-1. Preserve the one-emulator + headless-fake-peer harness as the controlled test environment.
-2. Study White 2's native `field_comm_actor.c` path as the likely correct long-term implementation for a remote-controlled other trainer.
-3. Map the exact native setup calls/flags/work-block state used by `FieldCommActor_Add` and `FieldCommActor_Move` against PokéRun's current detached-actor path.
-4. Decide which current manual renderer/movement responsibilities can be removed if White 2's native communication actor path is adopted.
-5. Keep higher-level door/transition implementation paused until the remote actor lifecycle is understood well enough to avoid building on unnecessary hacks.
+It is designed to prove the visible side of the native path:
+
+1. native heroine billboard binds;
+2. native comm actor is visible;
+3. PokéRun streams small position changes only into the backing state;
+4. White 2 drives movement/draw animation state;
+5. backing direction change drives facing;
+6. backing hidden change drives visibility;
+7. actor and comm system are deleted/freed safely.
+
+Expected log marker:
+
+`[PokéRun resdiag] NATIVE COMM VISUAL CONTROL`
+
+Success field:
+
+`nativeCommVisualPathValidated: true`
+
+## Current architecture direction
+
+If Probe 8 succeeds, the likely next major implementation step is to replace the old detached generic fake-P2 actor with a persistent `FldCommActSys`-backed remote actor.
+
+The intended architecture would become:
+
+- keep existing network/fake-peer protocol;
+- keep remote world-state production;
+- store remote direction/position/hidden in a persistent native backing block;
+- let White 2's own `FieldCommActor_Move` own position/facing/draw status/visibility;
+- remove manual TCB detachment;
+- remove manual billboard animation playback where no longer needed.
+
+Do not jump straight to doors/transitions until this native actor replacement is proven stable.
 
 ## Guardrails
 
-While reverse-engineering the native communication actor path, avoid unrelated changes to:
+Avoid unrelated changes to:
 
 - network protocol;
-- movement smoothing;
+- fake-peer packet semantics;
 - map transition implementation;
 - door behavior;
-- arbitrary renderer resource fields.
+- arbitrary renderer fields.
 
-Prefer read-only probes, decomp-backed structure mapping, and one-variable experiments.
+Prefer one-variable native/decomp-backed experiments and safe cleanup.
 
-## New Chat Handoff
+## New chat handoff
 
-Start future chats with:
+Use:
 
-> Continue PokéRun multiplayer. First read `docs/POKERUN_MULTIPLAYER_STATE.md` and `docs/WHITE2_RESEARCH.md` on branch `mp/map-transition-recovery-v2`. Treat those files and the current Git branch as canonical before proposing changes. The current harness has ONE real White 2 emulator plus a headless fake P2 peer.
+> Continue PokéRun multiplayer. First read `docs/POKERUN_MULTIPLAYER_STATE.md` and `docs/WHITE2_RESEARCH.md` on branch `mp/map-transition-recovery-v2`. The current harness has ONE real White 2 emulator plus a headless fake P2 peer. Probe 7 successfully proved White 2 native comm actor control; check the docs for the current probe before making changes.
