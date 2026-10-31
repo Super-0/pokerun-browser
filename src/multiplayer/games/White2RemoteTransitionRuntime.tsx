@@ -3,7 +3,7 @@ import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerMapTransition, MultiplayerPlayerState, MultiplayerRomIdentity, MultiplayerWorldPosition } from '../core/protocol'
 import { White2DedicatedTrainerRuntime } from './White2DedicatedTrainerRuntime'
-import { White2NativeCommCutoverRuntime } from './White2NativeCommCutoverRuntime'
+import { White2NativeCommStableCutoverRuntime } from './White2NativeCommStableCutoverRuntime'
 import { White2DoorTransitionRenderGuard } from './White2DoorTransitionRenderGuard'
 import { White2DoorTransitionPlayer } from './White2DoorTransition'
 import { White2ActorSystemProbe } from './White2ActorSystem'
@@ -243,7 +243,7 @@ export function White2RemoteTransitionRuntime({ bridge, rom }: { bridge: MelonDs
     <White2DoorTransitionRenderGuard bridge={bridge} rom={rom}/>
     <White2SameMapRenderFamilyGuard bridge={bridge} rom={rom}/>
     {import.meta.env.DEV
-      ? <White2NativeCommCutoverRuntime bridge={bridge} rom={rom}/>
+      ? <White2NativeCommStableCutoverRuntime bridge={bridge} rom={rom}/>
       : <White2DedicatedTrainerRuntime bridge={bridge} rom={rom}/>}
     <White2RemoteDoorRuntime bridge={bridge} rom={rom}/>
   </>
