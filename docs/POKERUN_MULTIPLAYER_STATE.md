@@ -1,6 +1,6 @@
 # PokéRun Multiplayer State
 
-Last updated: 2026-10-30
+Last updated: 2026-10-31
 Branch: `mp/map-transition-recovery-v2`
 
 ## Purpose
@@ -122,23 +122,51 @@ Probe 10 replaces the old detached/manual remote actor **only in DEV**.
 Current DEV path:
 
 1. fake P2 publishes ordinary multiplayer state;
-2. `White2NativeCommCutoverRuntime` allocates a persistent `FldCommActSys`;
-3. it creates the actual visible P2 through `FldCommActSys_CreateActor`;
-4. PokéRun writes only direction/position/hidden backing state;
-5. White 2 owns the actor updater, facing, draw status, billboard animation, and visibility.
+2. a stable-field gate waits for the local player to remain on normal hero/heroine model `231`/`240` for ~900 ms;
+3. `White2NativeCommCutoverRuntime` allocates a persistent `FldCommActSys`;
+4. it creates the actual visible P2 through `FldCommActSys_CreateActor`;
+5. PokéRun writes only direction/position/hidden backing state;
+6. White 2 owns the actor updater, facing, draw status, billboard animation, and visibility.
 
 The old `White2DedicatedTrainerRuntime` remains the non-DEV fallback and is not mounted during Probe 10.
 
 Probe 9's research panel is retired so no duplicate mirror actor is created.
 
+#### Probe 10 finding: transient player model 244
+
+The first cutover run created P2 with temporary local-player model `244`. The actor moved correctly but visually stayed in the save/special field animation family. This was a model-selection bug, not a movement bug.
+
+A stable model/scheduler gate was added so cutover now waits for model `231` or `240` before creation.
+
+#### Probe 10 finding: repeated cutover remount / clone leak
+
+After adding the stable model gate, the visual model was correct (`240`) but many native heroines were created repeatedly. Logs showed successive native actors in consecutive heap slots (`0x0223E3E4`, `0x0223E4E4`, `0x0223E5E4`, ...), eventually causing native allocation failures.
+
+Root cause: `White2NativeCommStableCutoverRuntime` included `ready` in its `useEffect` dependency list while also calling `setReady(false)` at the start of that same effect. Every successful gate release therefore restarted the effect, unmounted the current cutover runtime, reset the gate, and mounted another native actor.
+
+Fix commit: `cd22d79` (`Latch native comm cutover gate once per session`).
+
+The gate now:
+
+- depends only on bridge/ROM identity;
+- uses an internal one-shot `released` latch;
+- stays mounted after first successful release;
+- cannot create repeated cutover actors during the same React session.
+
+A fresh emulator/game reload is required after the clone-leak test because that session already contains leaked native comm actors.
+
 Important log markers:
 
+- `[PokéRun lifecycle] NATIVE COMM CUTOVER GATE READY`
 - `[PokéRun lifecycle] NATIVE COMM CUTOVER READY`
 - `[PokéRun resdiag] NATIVE COMM CUTOVER STATUS`
 - `[PokéRun lifecycle] NATIVE COMM CUTOVER CLEANUP`
 
+For the next clean test there should be exactly **one** gate-ready message and exactly **one** cutover-ready actor on ordinary same-map play.
+
 A healthy status should show:
 
+- modelId `231` or `240` (expected `240` for the tested heroine save);
 - UID `0xFC`;
 - moveCode `0x44`;
 - move-code vtable `0x021CC418`;
@@ -149,7 +177,7 @@ A healthy status should show:
 
 ## Current test scope
 
-For the first Probe-10 run, stay on the current map and test ordinary movement/turning only. Do not deliberately enter doors or change maps yet. Map-transition lifecycle integration comes after the same-map cutover is proven stable.
+For the next Probe-10 run, perform a **fresh reload** first. Stay on the current map and test ordinary movement/turning only. Do not deliberately enter doors or change maps yet.
 
 ## Guardrails
 
@@ -161,4 +189,4 @@ Prefer one-variable native/decomp-backed experiments and explicit cleanup.
 
 Use:
 
-> Continue PokéRun multiplayer. First read `docs/POKERUN_MULTIPLAYER_STATE.md` and `docs/WHITE2_RESEARCH.md` on branch `mp/map-transition-recovery-v2`. The harness has ONE real White 2 emulator plus a headless fake P2 peer. Probe 9 fully validated the live fake-peer -> native FieldCommActor chain; Probe 10 is the current DEV cutover where the actual fake P2 uses the native comm runtime.
+> Continue PokéRun multiplayer. First read `docs/POKERUN_MULTIPLAYER_STATE.md` and `docs/WHITE2_RESEARCH.md` on branch `mp/map-transition-recovery-v2`. The harness has ONE real White 2 emulator plus a headless fake P2 peer. Probe 9 fully validated the live fake-peer -> native FieldCommActor chain. Probe 10 is the current DEV cutover; the stable model gate now waits for model 231/240, and commit `cd22d79` fixed a React remount bug that had spawned many duplicate native heroines. Start the next test from a fresh emulator/game reload.
