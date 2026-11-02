@@ -22,6 +22,7 @@ const POLL_MS = 50
 const STABLE_MS = 900
 const ARRIVAL_STABLE_MS = 0
 const ARRIVAL_MAX_AGE_MS = 1600
+const MAP_EDGE_MAX_AGE_MS = 1800
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
 
@@ -44,6 +45,20 @@ function isFreshRemoteDoorArrival(localMapId: number | string, remote: Multiplay
   if (transition.toMapId !== localMapId || remote.location.mapId !== localMapId) return false
   const age = Date.now() - transition.detectedAt
   return age >= 0 && age < ARRIVAL_MAX_AGE_MS
+}
+
+function isFreshMapEdgeArrival(localMapId: number | string, state: MultiplayerPlayerState) {
+  const transition = state.transition
+  if (!transition || transition.kind !== 'map-edge') return false
+  if (transition.fromMapId === transition.toMapId) return false
+  if (transition.toMapId !== localMapId || state.location.mapId !== localMapId) return false
+  const age = Date.now() - transition.detectedAt
+  return age >= 0 && age < MAP_EDGE_MAX_AGE_MS
+}
+
+function isFreshMapEdgeRendezvous(local: MultiplayerPlayerState, remote: MultiplayerPlayerState) {
+  const localMapId = local.location.mapId
+  return isFreshMapEdgeArrival(localMapId, local) || isFreshMapEdgeArrival(localMapId, remote)
 }
 
 async function readFieldBusyFlag(bridge: MelonDsBridge, gameData: number) {
@@ -181,12 +196,18 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
         }
 
         const remoteDoorArrival = isFreshRemoteDoorArrival(local.location.mapId, remote)
-        const requiredStableMs = remoteDoorArrival ? ARRIVAL_STABLE_MS : STABLE_MS
+        const mapEdgeRendezvous = isFreshMapEdgeRendezvous(local, remote)
+        const fastRestore = remoteDoorArrival || mapEdgeRendezvous
+        const requiredStableMs = fastRestore ? ARRIVAL_STABLE_MS : STABLE_MS
         const now = performance.now()
         if (stableSignature !== signature) {
           stableSignature = signature
           stableSince = now
-          lastState = remoteDoorArrival ? 'arrival-stabilizing' : 'stabilizing'
+          lastState = remoteDoorArrival
+            ? 'arrival-stabilizing'
+            : mapEdgeRendezvous
+              ? 'map-edge-stabilizing'
+              : 'stabilizing'
           return
         }
         if (now - stableSince < requiredStableMs) return
@@ -194,9 +215,12 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
         mountedSignature = signature
         setReleaseKey(signature)
         lastState = 'mounted'
-        console.info(remoteDoorArrival
+        const logLabel = remoteDoorArrival
           ? '[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL RESTORE READY'
-          : '[PokéRun lifecycle] PROBE 11 NATIVE COMM RESTORE READY', {
+          : mapEdgeRendezvous
+            ? '[PokéRun lifecycle] PROBE 16 NATIVE COMM MAP EDGE RESTORE READY'
+            : '[PokéRun lifecycle] PROBE 11 NATIVE COMM RESTORE READY'
+        console.info(logLabel, {
           signature,
           mapId: local.location.mapId,
           modelId,
@@ -205,10 +229,14 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
           tcbManager: hex(tcbManager),
           busyFlag: fieldBusy,
           remoteDoorArrival,
-          transitionId: remote.transition?.id ?? null,
+          mapEdgeRendezvous,
+          localTransitionId: local.transition?.id ?? null,
+          remoteTransitionId: remote.transition?.id ?? null,
           note: remoteDoorArrival
             ? 'Fresh remote door arrival detected; create native P2 immediately while the destination door is still open.'
-            : 'Stable same-map field detected; a fresh native P2 may now be created.',
+            : mapEdgeRendezvous
+              ? 'Confirmed same-matrix map-edge rendezvous detected; recreate native P2 immediately at the authoritative edge position with no doorway staging.'
+              : 'Stable same-map field detected; a fresh native P2 may now be created.',
         })
       } catch (reason) {
         resetStableWindow()
