@@ -149,6 +149,23 @@ function freshRemoteMapEdgeArrival(presence: MultiplayerPresenceSnapshot): Multi
   return transition
 }
 
+function freshMapEdgeBridge(presence: MultiplayerPresenceSnapshot) {
+  const local = presence.local
+  const remote = presence.remote
+  if (!local || !remote?.worldPosition || local.location.mapId === remote.location.mapId) return false
+  const localMapId = local.location.mapId
+  const remoteMapId = remote.location.mapId
+
+  return [local.transition, remote.transition].some(transition => {
+    if (!transition || transition.kind !== 'map-edge') return false
+    if (transition.fromMapId === transition.toMapId) return false
+    const age = Date.now() - transition.detectedAt
+    if (age < 0 || age >= ARRIVAL_MAX_AGE_MS) return false
+    return (transition.fromMapId === localMapId && transition.toMapId === remoteMapId)
+      || (transition.fromMapId === remoteMapId && transition.toMapId === localMapId)
+  })
+}
+
 function doorwayWorldForArrival(
   transition: MultiplayerMapTransition,
   fallback: MultiplayerWorldPosition,
@@ -523,7 +540,8 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
         }
 
         const current = nativeRemote
-        let hidden = local.location.mapId === remote.location.mapId ? 0 : 1
+        const preserveMapEdge = freshMapEdgeBridge(presence)
+        let hidden = local.location.mapId === remote.location.mapId || preserveMapEdge ? 0 : 1
         let targetWorld = remote.worldPosition
         const now = performance.now()
 
