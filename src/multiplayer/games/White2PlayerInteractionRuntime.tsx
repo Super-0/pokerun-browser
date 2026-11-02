@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { PixelButton } from '../../components/PixelButton'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerDirection, MultiplayerPlayerState } from '../core/protocol'
 
@@ -166,26 +165,169 @@ export function White2PlayerInteractionRuntime() {
 
   if (!portalTarget) return null
 
+  const shellStyles = (
+    <style>{`
+      .w2-interact-root {
+        position: absolute;
+        inset: 0;
+        z-index: 12;
+        pointer-events: none;
+        font-family: Arial, Helvetica, sans-serif;
+        image-rendering: pixelated;
+        color: #25292d;
+      }
+      .w2-interact-prompt {
+        position: absolute;
+        left: 50%;
+        bottom: 9px;
+        transform: translateX(-50%);
+        min-width: 126px;
+        padding: 5px 10px 6px;
+        border: 2px solid #373d43;
+        border-radius: 6px;
+        background: linear-gradient(#ffffff 0 68%, #edf0f2 68% 100%);
+        box-shadow:
+          inset 0 0 0 2px #c9d0d5,
+          inset 0 0 0 4px #f8f9fa,
+          2px 2px 0 rgba(0,0,0,.28);
+        text-align: center;
+        font-size: 11px;
+        line-height: 1.15;
+        font-weight: 800;
+        letter-spacing: .015em;
+        white-space: nowrap;
+      }
+      .w2-interact-prompt b {
+        display: inline-block;
+        margin-right: 5px;
+        color: #225d97;
+      }
+      .w2-menu-layer {
+        position: absolute;
+        inset: 0;
+        z-index: 13;
+        pointer-events: auto;
+      }
+      .w2-menu-window {
+        position: absolute;
+        right: 10px;
+        top: 12px;
+        width: 168px;
+        padding: 7px;
+        border: 3px solid #31363b;
+        border-radius: 8px;
+        background:
+          linear-gradient(135deg, rgba(255,255,255,.46) 25%, transparent 25%) 0 0 / 8px 8px,
+          linear-gradient(315deg, rgba(255,255,255,.3) 25%, transparent 25%) 0 0 / 8px 8px,
+          #e8ecef;
+        box-shadow:
+          inset 0 0 0 2px #f9fafb,
+          inset 0 0 0 4px #aab3ba,
+          2px 2px 0 rgba(0,0,0,.35);
+      }
+      .w2-menu-header {
+        margin: 1px 5px 5px;
+        color: #4b535a;
+        font-size: 8px;
+        font-weight: 800;
+        letter-spacing: .06em;
+        text-transform: uppercase;
+      }
+      .w2-menu-list {
+        display: grid;
+        gap: 2px;
+      }
+      .w2-menu-item {
+        position: relative;
+        display: flex;
+        align-items: center;
+        min-height: 26px;
+        width: 100%;
+        padding: 4px 7px 4px 25px;
+        border: 0;
+        border-radius: 4px;
+        background: rgba(255,255,255,.78);
+        color: #202428;
+        font: inherit;
+        font-size: 11px;
+        font-weight: 700;
+        text-align: left;
+        cursor: pointer;
+      }
+      .w2-menu-item.selected {
+        background: linear-gradient(90deg, #dceeff, #f7fbff 72%);
+        box-shadow: inset 0 0 0 1px #87aaca;
+      }
+      .w2-menu-item.selected::before {
+        content: '';
+        position: absolute;
+        left: 8px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 0;
+        height: 0;
+        border-top: 5px solid transparent;
+        border-bottom: 5px solid transparent;
+        border-left: 8px solid #285f94;
+        filter: drop-shadow(1px 1px 0 #fff);
+      }
+      .w2-menu-item small {
+        margin-left: auto;
+        color: #7f878e;
+        font-size: 7px;
+        font-weight: 800;
+      }
+      .w2-info-window {
+        position: absolute;
+        left: 10px;
+        right: 10px;
+        bottom: 10px;
+        min-height: 76px;
+        padding: 10px 13px;
+        border: 3px solid #31363b;
+        border-radius: 8px;
+        background: #f7f8f9;
+        box-shadow:
+          inset 0 0 0 2px #fefefe,
+          inset 0 0 0 4px #aab3ba,
+          2px 2px 0 rgba(0,0,0,.35);
+        font-size: 10px;
+        line-height: 1.35;
+      }
+      .w2-info-window strong {
+        display: block;
+        margin-bottom: 5px;
+        font-size: 11px;
+      }
+      .w2-info-grid {
+        display: grid;
+        grid-template-columns: auto 1fr;
+        gap: 2px 8px;
+      }
+      .w2-info-grid span:nth-child(odd) {
+        color: #687078;
+        font-size: 8px;
+        font-weight: 800;
+      }
+      .w2-menu-help {
+        position: absolute;
+        left: 10px;
+        bottom: 6px;
+        color: rgba(255,255,255,.96);
+        text-shadow: 1px 1px 0 rgba(0,0,0,.8);
+        font-size: 7px;
+        font-weight: 800;
+        letter-spacing: .02em;
+      }
+    `}</style>
+  )
+
   if (!menuOpen) {
     if (!interactable) return null
     return createPortal(
-      <div style={{
-        position: 'absolute',
-        left: '50%',
-        bottom: 14,
-        transform: 'translateX(-50%)',
-        zIndex: 12,
-        padding: '7px 11px',
-        border: '2px solid #243f54',
-        boxShadow: '3px 3px 0 rgba(0,0,0,.24)',
-        background: 'rgba(248, 252, 255, .96)',
-        color: '#243f54',
-        fontSize: 12,
-        fontWeight: 800,
-        letterSpacing: '.06em',
-        pointerEvents: 'none',
-      }}>
-        X • INTERACT
+      <div className="w2-interact-root">
+        {shellStyles}
+        <div className="w2-interact-prompt"><b>A</b>INTERACT</div>
       </div>,
       portalTarget,
     )
@@ -194,107 +336,62 @@ export function White2PlayerInteractionRuntime() {
   const remote = presence.remote
 
   return createPortal(
-    <div
-      role="presentation"
-      onMouseDown={() => {
-        setMenuOpen(false)
-        setPage('root')
-        setSoonFeature('')
-      }}
-      style={{
-        position: 'absolute',
-        inset: 0,
-        zIndex: 13,
-        display: 'grid',
-        placeItems: 'center',
-        background: 'rgba(9, 20, 31, .42)',
-        overflow: 'hidden',
-      }}
-    >
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-label="Player interaction menu"
-        onMouseDown={event => event.stopPropagation()}
-        className="pixel-border"
-        style={{
-          width: 'min(390px, calc(100% - 28px))',
-          maxHeight: 'calc(100% - 28px)',
-          overflow: 'auto',
-          padding: 16,
-          background: '#f8fcff',
-          color: '#243f54',
-          boxShadow: '6px 6px 0 rgba(0,0,0,.28)',
+    <div className="w2-interact-root">
+      {shellStyles}
+      <div
+        className="w2-menu-layer"
+        role="presentation"
+        onMouseDown={() => {
+          setMenuOpen(false)
+          setPage('root')
+          setSoonFeature('')
         }}
       >
-        <span className="eyebrow">MULTIPLAYER • PARTNER</span>
-        <h2 style={{ margin: '5px 0 4px' }}>PLAYER INTERACTION</h2>
-        <p style={{ margin: '0 0 12px', opacity: .75 }}>Choose what you want to do with the nearby player.</p>
-
         {page === 'root' && (
-          <div style={{ display: 'grid', gap: 7 }}>
-            {MENU_ITEMS.map((item, index) => (
-              <button
-                key={item}
-                onMouseEnter={() => setSelection(index)}
-                onClick={() => {
-                  if (item === 'CLOSE') {
-                    setMenuOpen(false)
-                    setPage('root')
-                    return
-                  }
-                  if (item === 'TRAINER CARD') {
-                    setPage('trainer')
-                    return
-                  }
-                  setSoonFeature(item)
-                  setPage('soon')
-                }}
-                style={{
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  width: '100%',
-                  padding: '9px 11px',
-                  border: selection === index ? '3px solid #243f54' : '2px solid #8ca1b0',
-                  background: selection === index ? '#e8f5ff' : '#fff',
-                  color: '#243f54',
-                  font: 'inherit',
-                  fontWeight: 800,
-                  cursor: 'pointer',
-                }}
-              >
-                <span>{selection === index ? '▶ ' : ''}{item}</span>
-                {(item === 'EMOTE' || item === 'FOLLOW') && <small>SOON</small>}
-              </button>
-            ))}
-          </div>
+          <section
+            className="w2-menu-window"
+            role="dialog"
+            aria-modal="true"
+            aria-label="Player interaction menu"
+            onMouseDown={event => event.stopPropagation()}
+          >
+            <div className="w2-menu-header">Partner</div>
+            <div className="w2-menu-list">
+              {MENU_ITEMS.map((item, index) => (
+                <button
+                  key={item}
+                  className={`w2-menu-item ${selection === index ? 'selected' : ''}`}
+                  onMouseEnter={() => setSelection(index)}
+                  onClick={() => selectItem(item)}
+                >
+                  <span>{item}</span>
+                  {(item === 'EMOTE' || item === 'FOLLOW') && <small>SOON</small>}
+                </button>
+              ))}
+            </div>
+          </section>
         )}
 
         {page === 'trainer' && (
-          <div>
-            <div style={{ display: 'grid', gap: 7, padding: 12, border: '2px solid #8ca1b0', background: '#fff', marginBottom: 12 }}>
-              <strong>PARTNER</strong>
-              <span>MAP {String(remote?.location.mapId ?? '—')}</span>
-              <span>POSITION {remote ? `${remote.x}, ${remote.y}` : '—'}</span>
-              <span>FACING {remote ? describeDirection(remote.direction) : '—'}</span>
+          <section className="w2-info-window" role="dialog" aria-label="Partner trainer card" onMouseDown={event => event.stopPropagation()}>
+            <strong>PARTNER</strong>
+            <div className="w2-info-grid">
+              <span>AREA</span><b>{String(remote?.location.mapId ?? '—')}</b>
+              <span>POSITION</span><b>{remote ? `${remote.x}, ${remote.y}` : '—'}</b>
+              <span>FACING</span><b>{remote ? describeDirection(remote.direction) : '—'}</b>
             </div>
-            <PixelButton onClick={() => setPage('root')}>BACK</PixelButton>
-          </div>
+          </section>
         )}
 
         {page === 'soon' && (
-          <div>
-            <div style={{ padding: 12, border: '2px solid #8ca1b0', background: '#fff', marginBottom: 12 }}>
-              <strong>{soonFeature}</strong>
-              <p style={{ marginBottom: 0 }}>The interaction hook is working. This action is the next layer to wire through multiplayer messages.</p>
-            </div>
-            <PixelButton onClick={() => { setPage('root'); setSoonFeature('') }}>BACK</PixelButton>
-          </div>
+          <section className="w2-info-window" role="dialog" aria-label={`${soonFeature} coming soon`} onMouseDown={event => event.stopPropagation()}>
+            <strong>{soonFeature}</strong>
+            <span>This multiplayer action isn't connected yet.</span>
+          </section>
         )}
 
-        <small style={{ display: 'block', marginTop: 10, opacity: .65 }}>↑↓ MOVE • X/ENTER SELECT • Z/ESC BACK</small>
-      </section>
+        <div className="w2-menu-help">↑↓ MOVE · A SELECT · B BACK</div>
+      </div>
     </div>,
     portalTarget,
   )
