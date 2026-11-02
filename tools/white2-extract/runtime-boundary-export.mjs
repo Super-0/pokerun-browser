@@ -9,6 +9,15 @@ const DEFAULT_OUTPUT_DIR = 'generated/white2'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const runtimeOutput = path.join(root, 'public/dev-generated/white2-boundary-trigger-index.json')
 
+// Exact tested-ROM validation anchors recovered from the White 2 decomp and
+// confirmed by Probe 16 runtime traces:
+// 427 Aspertia City -> 438 Aspertia Gate -> 437 Route 19 is intercepted,
+// while 437 Route 19 <-> 439 Floccesy Town is genuinely seamless.
+const ASPERTIA_CITY = 427
+const ROUTE_19 = 437
+const ASPERTIA_GATE = 438
+const FLOCCESY_TOWN = 439
+
 function fail(message) {
   console.error(`\n[white2:runtime-boundaries] ${message}\n`)
   process.exit(1)
@@ -82,7 +91,42 @@ function intermediateWarpBridge(trigger, adjacency) {
   return null
 }
 
-function buildIndex(triggers, quarantined) {
+function hasDirectionalPair(entries, sourceZoneId, destinationZoneId) {
+  return entries.some(entry =>
+    entry.sourceZoneId === sourceZoneId
+    && entry.destinationZoneId === destinationZoneId
+  )
+}
+
+function hasGateQuarantine(entries, sourceZoneId, destinationZoneId, intermediateZoneId) {
+  return entries.some(entry =>
+    entry.sourceZoneId === sourceZoneId
+    && entry.destinationZoneId === destinationZoneId
+    && entry.reason === 'intermediate-warp-bridge'
+    && entry.intermediateZoneId === intermediateZoneId
+  )
+}
+
+function validateKnownAnchors(traversable, gateQuarantined) {
+  const gateForward = hasGateQuarantine(gateQuarantined, ASPERTIA_CITY, ROUTE_19, ASPERTIA_GATE)
+  const gateReverse = hasGateQuarantine(gateQuarantined, ROUTE_19, ASPERTIA_CITY, ASPERTIA_GATE)
+  const seamlessForward = hasDirectionalPair(traversable, ROUTE_19, FLOCCESY_TOWN)
+  const seamlessReverse = hasDirectionalPair(traversable, FLOCCESY_TOWN, ROUTE_19)
+
+  if (!gateForward || !gateReverse) {
+    throw new Error('Known Aspertia City <-> Route 19 matrix adjacency was not quarantined through Aspertia Gate (zone 438). Refusing to publish an unsafe runtime boundary registry.')
+  }
+  if (!seamlessForward || !seamlessReverse) {
+    throw new Error('Known Route 19 <-> Floccesy Town seamless edge was incorrectly removed from the runtime boundary registry.')
+  }
+
+  return {
+    aspertiaGateIntercept: true,
+    route19FloccesySeamless: true,
+  }
+}
+
+function buildIndex(triggers, quarantined, validationAnchors) {
   const byZone = {}
   for (const trigger of triggers) {
     const key = String(trigger.sourceZoneId)
@@ -102,6 +146,7 @@ function buildIndex(triggers, quarantined) {
     traversableOnly: true,
     triggerCount: triggers.length,
     quarantinedCount: quarantined.length,
+    validationAnchors,
     byZone,
     quarantinedByZone,
   }
@@ -147,13 +192,14 @@ async function main() {
     })
   }
 
+  const validationAnchors = validateKnownAnchors(traversable, gateQuarantined)
   const quarantined = [...matrixQuarantined, ...gateQuarantined]
     .sort((a, b) =>
       a.sourceZoneId - b.sourceZoneId
       || a.destinationZoneId - b.destinationZoneId
       || a.direction.localeCompare(b.direction)
     )
-  const index = buildIndex(traversable, quarantined)
+  const index = buildIndex(traversable, quarantined, validationAnchors)
 
   await mkdir(path.dirname(runtimeOutput), { recursive: true })
   await writeFile(runtimeOutput, `${JSON.stringify(index, null, 2)}\n`)
@@ -161,6 +207,7 @@ async function main() {
   console.log(`[white2:runtime-boundaries] Traversable directional triggers: ${traversable.length}`)
   console.log(`[white2:runtime-boundaries] Quarantined matrix/header triggers: ${matrixQuarantined.length}`)
   console.log(`[white2:runtime-boundaries] Quarantined gate/tunnel bridge triggers: ${gateQuarantined.length}`)
+  console.log('[white2:runtime-boundaries] Validation anchors: Aspertia gate quarantined; Route 19 <-> Floccesy Town preserved')
   console.log(`[white2:runtime-boundaries] Wrote ${path.relative(root, runtimeOutput)}`)
   if (quarantined.length) {
     console.log('[white2:runtime-boundaries] Quarantined boundaries:')
