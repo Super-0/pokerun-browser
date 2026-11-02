@@ -6,7 +6,7 @@ import { White2ActorSystemProbe } from './White2ActorSystem'
 
 const NATIVE_COMM_UID = 0x00fc
 const FLD_ACT_GET_FIELD_EFFECTS = 0x02194f18
-const FLDEFF_EMOTION_BUBBLE_SET_ACTOR = 0x021b3f4c
+const FLDEFF_EMOTION_BUBBLE_START_HELD = 0x021b3f9c
 const NATIVE_STACK_RESERVE = 0x400
 
 // White 2's native emotion-bubble assets are:
@@ -54,7 +54,7 @@ export function White2NativeEmoteRuntime({ bridge, rom }: { bridge: MelonDsBridg
       }
 
       const effectCall = await runtimeBridge.callArm9Thumb4(
-        FLDEFF_EMOTION_BUBBLE_SET_ACTOR,
+        FLDEFF_EMOTION_BUBBLE_START_HELD,
         effectsCall.result,
         actor,
         nativeKind(kind),
@@ -62,7 +62,7 @@ export function White2NativeEmoteRuntime({ bridge, rom }: { bridge: MelonDsBridg
         NATIVE_STACK_RESERVE,
       )
       if (effectCall.status !== 1 || !isMainRamPointer(effectCall.result)) {
-        throw new Error(`FldeffEmotionBubble_SetActor failed for ${hex(actor)} (status ${effectCall.status}, result ${hex(effectCall.result)}).`)
+        throw new Error(`FldeffEmotionBubble_StartHeld failed for ${hex(actor)} (status ${effectCall.status}, result ${hex(effectCall.result)}).`)
       }
 
       console.info('[PokéRun interaction] NATIVE WHITE 2 EMOTE', {
@@ -73,6 +73,7 @@ export function White2NativeEmoteRuntime({ bridge, rom }: { bridge: MelonDsBridg
         actor: hex(actor),
         fieldEffects: hex(effectsCall.result),
         task: hex(effectCall.result),
+        lifecycle: 'auto-end',
       })
     }
 
