@@ -16,7 +16,7 @@ const EMOTES: { kind: MultiplayerEmoteKind; label: string; glyph: string }[] = [
   { kind: 'surprised', label: 'SURPRISED', glyph: '!' },
   { kind: 'cheer', label: 'CHEER', glyph: '★' },
 ]
-const EMOTE_VISIBLE_MS = 1800
+const EMOTE_VISIBLE_MS = 1150
 
 type MenuItem = typeof MENU_ITEMS[number]
 type MenuPage = 'root' | 'trainer' | 'emotes' | 'soon'
@@ -287,38 +287,46 @@ export function White2PlayerInteractionRuntime() {
         z-index: 14;
         display: grid;
         place-items: center;
-        min-width: 31px;
-        height: 27px;
-        padding: 0 6px;
+        min-width: 18px;
+        height: 18px;
+        padding: 0;
         transform: translate(-50%, -100%);
-        border: 2px solid #34393e;
-        border-radius: 50%;
-        background: #fff;
-        box-shadow: inset 0 0 0 2px #d7dde1, 2px 2px 0 rgba(0,0,0,.28);
-        color: #25384a;
-        font-size: 13px;
+        color: #f4f7fa;
+        font-family: Arial Black, Arial, Helvetica, sans-serif;
+        font-size: 16px;
         line-height: 1;
         font-weight: 900;
         white-space: nowrap;
-        animation: w2-emote-pop 180ms ease-out both;
+        text-shadow:
+          -1px -1px 0 #20272e,
+           1px -1px 0 #20272e,
+          -1px  1px 0 #20272e,
+           1px  1px 0 #20272e,
+           0 2px 0 rgba(0,0,0,.35);
+        animation: w2-emote-field-pop ${EMOTE_VISIBLE_MS}ms ease-out both;
       }
-      .w2-emote-bubble::after {
-        content: '';
-        position: absolute;
-        left: 50%;
-        bottom: -6px;
-        width: 7px;
-        height: 7px;
-        transform: translateX(-50%) rotate(45deg);
-        border-right: 2px solid #34393e;
-        border-bottom: 2px solid #34393e;
-        background: #fff;
+      .w2-emote-bubble.hello {
+        font-size: 9px;
+        letter-spacing: -.03em;
       }
-      .w2-emote-bubble.heart { color: #be3151; }
-      .w2-emote-bubble.cheer { color: #c18a16; }
-      @keyframes w2-emote-pop {
-        from { opacity: 0; transform: translate(-50%, -78%) scale(.65); }
-        to { opacity: 1; transform: translate(-50%, -100%) scale(1); }
+      .w2-emote-bubble.heart {
+        color: #e95c79;
+        font-size: 17px;
+      }
+      .w2-emote-bubble.surprised {
+        color: #f7f2d7;
+        font-size: 19px;
+      }
+      .w2-emote-bubble.cheer {
+        color: #f1c44d;
+        font-size: 17px;
+      }
+      @keyframes w2-emote-field-pop {
+        0% { opacity: 0; transform: translate(-50%, -72%) scale(.45); }
+        12% { opacity: 1; transform: translate(-50%, -108%) scale(1.18); }
+        24% { transform: translate(-50%, -100%) scale(1); }
+        72% { opacity: 1; transform: translate(-50%, -112%) scale(1); }
+        100% { opacity: 0; transform: translate(-50%, -142%) scale(.86); }
       }
       .w2-menu-layer {
         position: absolute;
