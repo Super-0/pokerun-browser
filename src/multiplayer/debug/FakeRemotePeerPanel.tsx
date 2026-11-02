@@ -227,14 +227,14 @@ class FakeRemotePeer {
     const hostWorld = host.worldPosition ?? worldFromGrid(host.x, host.y)
     const state: MultiplayerPlayerState = {
       location: { ...host.location },
-      x: host.x + 1,
-      y: host.y,
-      direction: 'west',
+      x: host.x,
+      y: host.y + 1,
+      direction: 'north',
       movementState: 'idle',
-      worldPosition: { x: hostWorld.x + TILE_WORLD, y: hostWorld.y, z: hostWorld.z },
+      worldPosition: { x: hostWorld.x, y: hostWorld.y, z: hostWorld.z + TILE_WORLD },
     }
     this.publish(state)
-    this.update({ phase: 'FAKE REMOTE RESET BESIDE HOST' })
+    this.update({ phase: 'FAKE REMOTE RESET SOUTH OF HOST' })
   }
 
   async walk(direction: MultiplayerDirection, tiles = 1) {
@@ -319,11 +319,11 @@ class FakeRemotePeer {
     const hostWorld = host.worldPosition ?? worldFromGrid(host.x, host.y)
     this.publish({
       location: { ...host.location },
-      x: host.x + 1,
-      y: host.y,
-      direction: 'west',
+      x: host.x,
+      y: host.y + 1,
+      direction: 'north',
       movementState: 'idle',
-      worldPosition: { x: hostWorld.x + TILE_WORLD, y: hostWorld.y, z: hostWorld.z },
+      worldPosition: { x: hostWorld.x, y: hostWorld.y, z: hostWorld.z + TILE_WORLD },
     })
   }
 
@@ -429,7 +429,7 @@ class FakeRemotePeer {
       this.update({ hostState: message.state })
       if (this.startId && !this.fakeState) {
         this.resetStateBesideHostWithoutStopping()
-        this.update({ phase: 'FAKE REMOTE ACTIVE BESIDE HOST' })
+        this.update({ phase: 'FAKE REMOTE ACTIVE SOUTH OF HOST' })
       }
     }
   }
