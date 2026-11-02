@@ -23,11 +23,23 @@ type BoundaryTrigger = {
   step: { x: number; y: number }
 }
 
+type BoundaryQuarantine = {
+  sourceZoneId: number
+  destinationZoneId: number
+  direction: MultiplayerDirection
+  matrixId: number
+  reason: 'matrix-header-mismatch' | 'intermediate-warp-bridge'
+  intermediateZoneId: number | null
+}
+
 type BoundaryIndex = {
   schemaVersion: number
   safeOnly: boolean
+  traversableOnly: boolean
   triggerCount: number
+  quarantinedCount: number
   byZone: Record<string, BoundaryTrigger[] | undefined>
+  quarantinedByZone: Record<string, BoundaryQuarantine[] | undefined>
 }
 
 type CompactState = {
@@ -76,11 +88,21 @@ void fetch('/dev-generated/white2-boundary-trigger-index.json', { cache: 'no-sto
   .then(async response => {
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const parsed = await response.json() as BoundaryIndex
-    if (parsed.schemaVersion !== 1 || !parsed.safeOnly || typeof parsed.byZone !== 'object') {
-      throw new Error('unexpected registry schema')
+    if (
+      parsed.schemaVersion !== 2
+      || !parsed.safeOnly
+      || !parsed.traversableOnly
+      || typeof parsed.byZone !== 'object'
+      || typeof parsed.quarantinedByZone !== 'object'
+    ) {
+      throw new Error('stale/unexpected registry schema; rerun white2:extract so gate/tunnel-intercepted edges are quarantined')
     }
     boundaryIndex = parsed
-    console.info('[PokéRun static boundaries] LOADED', { triggers: parsed.triggerCount })
+    console.info('[PokéRun static boundaries] LOADED', {
+      triggers: parsed.triggerCount,
+      quarantined: parsed.quarantinedCount,
+      traversableOnly: true,
+    })
   })
   .catch(reason => {
     console.info('[PokéRun static boundaries] registry unavailable; run white2:extract before multiplayer dev', reason)
@@ -133,6 +155,7 @@ function logCandidateEdges(senderId: string, mapId: number | string) {
   if (loggedCandidateZones.has(key)) return
   loggedCandidateZones.add(key)
   const candidates = boundaryIndex.byZone[String(mapId)] ?? []
+  const quarantined = boundaryIndex.quarantinedByZone[String(mapId)] ?? []
   console.info('[PokéRun static boundaries] P2 EDGE CANDIDATES', {
     mapId,
     count: candidates.length,
@@ -148,18 +171,27 @@ function logCandidateEdges(senderId: string, mapId: number | string) {
       },
       matrixId: trigger.matrixId,
     })),
+    quarantined: quarantined.map(entry => ({
+      toMapId: entry.destinationZoneId,
+      direction: entry.direction,
+      matrixId: entry.matrixId,
+      reason: entry.reason,
+      intermediateZoneId: entry.intermediateZoneId,
+    })),
     note: candidates.length
-      ? 'These are ROM-verified same-matrix edges. Put P2 anywhere on the listed edge span and press the listed direction to trigger a real map-edge packet.'
-      : 'This zone has no ROM-verified same-matrix edge in the safe runtime registry; transitions from here are field loads/warps instead.',
+      ? 'These are ROM-verified same-matrix edges after gate/tunnel warp-bridge filtering. Quarantined entries are geometric neighbors that normal gameplay must not cross directly.'
+      : quarantined.length
+        ? 'This zone has geometric matrix neighbors, but they are quarantined because ROM warp topology intercepts normal traversal (for example a route gate/tunnel).'
+        : 'This zone has no ROM-verified traversable same-matrix edge; transitions from here are field loads/warps instead.',
   })
 }
 
 /**
  * Development-only correction for the manual fake P2 controller. The controller
  * deliberately knows nothing about White 2 ROM structure; this transport layer
- * applies the validated static boundary registry to its normal GAME_STATE packets.
- * The state object is mutated in place so FakeRemoteDoorPeer's own authoritative
- * fakeState advances to the destination zone as well.
+ * applies the validated traversable boundary registry to its normal GAME_STATE
+ * packets. The state object is mutated in place so FakeRemoteDoorPeer's own
+ * authoritative fakeState advances to the destination zone as well.
  */
 export function normalizeWhite2FakeBoundaryMessage(message: MultiplayerMessage) {
   if (message.type !== 'GAME_STATE' || !message.senderId.startsWith('fake-remote-')) return
@@ -217,7 +249,7 @@ export function normalizeWhite2FakeBoundaryMessage(message: MultiplayerMessage) 
           to: { x: state.x, y: state.y },
           matrixId: trigger.matrixId,
           transitionId: transition.id,
-          note: 'ROM-verified fake P2 edge crossing now carries kind=map-edge metadata for immediate native rendezvous restore.',
+          note: 'ROM-verified traversable fake P2 edge crossing now carries kind=map-edge metadata for native seamless-edge preservation.',
         })
         logCandidateEdges(message.senderId, state.location.mapId)
       }
