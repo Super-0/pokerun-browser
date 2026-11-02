@@ -276,13 +276,13 @@ class FakeRemoteDoorPeer {
     const hostWorld = host.worldPosition ?? worldFromGrid(host.x, host.y)
     this.publish({
       location: { ...host.location },
-      x: host.x + 1,
-      y: host.y,
-      direction: 'west',
+      x: host.x,
+      y: host.y + 1,
+      direction: 'north',
       movementState: 'idle',
-      worldPosition: { x: hostWorld.x + TILE_WORLD, y: hostWorld.y, z: hostWorld.z },
+      worldPosition: { x: hostWorld.x, y: hostWorld.y, z: hostWorld.z + TILE_WORLD },
     })
-    this.update({ phase: 'FAKE REMOTE RESET BESIDE HOST' })
+    this.update({ phase: 'FAKE REMOTE RESET SOUTH OF HOST' })
   }
 
   stopScript() {
@@ -586,7 +586,7 @@ class FakeRemoteDoorPeer {
       this.update({ hostState: message.state })
       if (this.startId && !this.fakeState) {
         this.resetBesideHost()
-        this.update({ phase: 'FAKE REMOTE ACTIVE BESIDE HOST' })
+        this.update({ phase: 'FAKE REMOTE ACTIVE SOUTH OF HOST' })
       }
     }
   }
@@ -762,7 +762,7 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     </div>
 
     <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 10 }}>
-      <button disabled={controlsDisabled} onClick={() => peer.resetBesideHost()}>RESET BESIDE ME</button>
+      <button disabled={controlsDisabled} onClick={() => peer.resetBesideHost()}>RESET SOUTH OF ME</button>
       <button disabled={controlsDisabled} onClick={() => peer.stopScript()}>STOP</button>
     </div>
 
