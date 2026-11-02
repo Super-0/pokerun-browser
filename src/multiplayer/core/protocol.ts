@@ -9,6 +9,13 @@ export type MultiplayerPlayer = { id: string; label: string; ready: boolean; rom
 export type MultiplayerGameStart = { startId: string; gameId: GameId; startedAt: number }
 export type MultiplayerWorldPosition = { x: number; y: number; z: number }
 export type MultiplayerDirection = 'north' | 'south' | 'east' | 'west'
+export type MultiplayerEmoteKind = 'hello' | 'heart' | 'surprised' | 'cheer'
+export type MultiplayerEmote = {
+  /** Unique per activation so receivers never replay one emote as multiple animations. */
+  id: string
+  kind: MultiplayerEmoteKind
+  createdAt: number
+}
 export type MultiplayerTransitionKind = 'door' | 'map-edge' | 'warp' | 'unknown'
 export type MultiplayerMapTransition = {
   /** Unique within one player session so peers only replay a transition once. */
@@ -35,6 +42,8 @@ export type MultiplayerPlayerState = {
   movementState?: string
   /** Optional game-native continuous world position. Only peers on the same verified game/revision should interpret it. */
   worldPosition?: MultiplayerWorldPosition
+  /** One-shot social event. The UI expires it locally; movement/state packets do not need to repeat it. */
+  emote?: MultiplayerEmote
   /** Briefly repeated after a map change so the peer can replay the matching local-world entrance/door effect. */
   transition?: MultiplayerMapTransition
 }
