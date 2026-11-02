@@ -1,6 +1,6 @@
 # Pokémon White 2 Reverse-Engineering Notes
 
-Last updated: 2026-10-30
+Last updated: 2026-11-02
 Target: Pokémon White 2 US (IRDO), exact-ROM-fingerprint gated by PokéRun code.
 
 This file contains durable findings. Temporary experiment state belongs in `docs/POKERUN_MULTIPLAYER_STATE.md`.
@@ -22,12 +22,14 @@ Important live offsets:
 | `+0x00` | flags |
 | `+0x04` | movementFlags |
 | `+0x08` | UID |
+| `+0x0A` | zoneId |
 | `+0x0C` | model/object code |
 | `+0x0E` | moveCode |
 | `+0x18` | face direction |
 | `+0x2A` | draw status |
 | `+0x3C` | grid position |
 | `+0x44` | world `VecFx32` |
+| `+0x81` | shadow group |
 | `+0x84` | native actor TCB |
 | `+0x88` | actor-system backpointer |
 | `+0x8C` | move-code vtable |
@@ -131,6 +133,53 @@ On ordinary map 427, the following overlay-36 functions are resident:
 
 The live move-code table at `0x021CC418` matches the decomp and points to the expected init/move/delete callbacks.
 
+Other useful validated symbols:
+
+| Function | Address |
+| --- | --- |
+| `FindFieldActor` | `0x02167A54` |
+| `CreateNewActorByEntityNoWKOBJCODE` | `0x021668B4` |
+| `DeleteActor` | `0x02166980` |
+| billboard getter | `0x02167240` |
+| `SetActorHidden` | `0x02167574` |
+| `FldAct_SetHeightCalcDisabled` | `0x0216767C` |
+| `FldAct_SetActorFlag32` | `0x021676B0` |
+| `FldAct_SetShadowGroup` | `0x0216784C` |
+| `FldAct_GetShadowGroup` | `0x02167864` |
+| `FldAct_SetForceOffShadow` | `0x0216787C` |
+| `FldAct_IsForceOffShadow` | `0x02167898` |
+| `GetActorMovementFlags` | `0x02167024` |
+| `SetActorMovementFlag` | `0x02167028` |
+| `ClearActorMovementFlag` | `0x02167030` |
+| GFL TCB manager add | `0x0203A640` |
+| GFL TCB manager remove | `0x0203A6D4` |
+| `FldAct_GetFieldEffects` | `0x02194F18` |
+| `FldeffShadow_Start` | `0x021A3C30` |
+| `FieldEffect_Shadow_Create` | `0x021A3B74` |
+| `FieldEffect_Shadow_Free` | `0x021A3BC8` |
+| `GameData_GetFieldStatus` | `0x020175B4` |
+| `FieldStatus_GetBusyFlag` | `0x02019378` |
+
+`FLD_STATUS_BUSY_LOADING = 2`.
+
+## Native communication lifecycle
+
+White 2's own communication-player lifecycle is the strongest guide for safe PokéRun behavior.
+
+In `src/ov012/comm_player.c`:
+
+- `CommPlayer_HideActors` deletes active communication actors, frees the `FldCommActSys`, and nulls the actor controller before the field closes;
+- `CommPlayer_RestoreActors` creates a new `FldCommActSys` against the current field actor system and recreates players after the field is ready;
+- `CommPlayer_GetMyStatus` checks `FieldStatus_GetBusyFlag(GameData_GetFieldStatus(gameData)) == FLD_STATUS_BUSY_LOADING`.
+
+Therefore:
+
+- real field loads/warps/buildings must delete/free remote communication actors before teardown;
+- pointers to FieldActor, comm system, TCB manager, field effects, or billboard structures must not be carried across actual field teardown;
+- a stable actorSystem address alone does **not** prove the field identity is unchanged.
+
+Observed actorSystem `0x0223D968` remained the same across multiple map transitions while P1 actor addresses, TCB manager, field effects, and billboard resources changed.
+
 ## Native comm validation results
 
 ### Probe 6 — allocator/lifetime
@@ -182,6 +231,12 @@ Results:
 This proves the end-to-end chain:
 
 `fake peer -> GAME_STATE -> multiplayerPresence -> native backing state -> FieldCommActor`.
+
+## Native shadow behavior
+
+`FieldCommActor_Add` disables the ordinary movement-bit terrain-effect path, so communication actors do not automatically receive the standard floor shadow.
+
+PokéRun successfully starts White 2's native `FldeffShadow` task once for UID `0xFC` and sets movement flag `0x4000`. The shadow then follows P2 natively and is tied to the actor lifecycle.
 
 ## Billboard path
 
@@ -236,7 +291,7 @@ PokéRun heroine:
 - model `240`
 - material `13`
 
-Moving fake P2 separated the heroine from the stationary Youngster, visually confirming the diagnosis.
+The stale Youngster was persisted contamination, not a legitimate Aspertia event actor. It was removed once from the save with an exact-signature scrubber; the scrubber has since been removed.
 
 ## Current integration implication
 
@@ -244,28 +299,190 @@ The old design—generic actor creation, native TCB detachment, direct actor/bil
 
 The proven native architecture is:
 
-- persistent `FldCommActSys`;
+- persistent `FldCommActSys` while a field is valid;
 - native comm actor with attached updater;
 - PokéRun-owned backing values for direction, world position, and hidden state;
-- White 2-owned movement, facing, draw status, billboard animation, and visibility.
+- White 2-owned movement, facing, draw status, billboard animation, and visibility;
+- native shadow task attached to the remote actor.
 
-Probe 10 is the first cutover where the actual DEV fake P2 uses that architecture instead of a second mirror actor.
+## Door transitions versus seamless edges
+
+White 2 exposes two fundamentally different transition classes that must not share lifecycle rules.
+
+### Field-changing transitions
+
+Doors, buildings, gates, and other warps can enter field loading and replace field resources.
+
+For these transitions:
+
+- use `FLD_STATUS_BUSY_LOADING = 2` as the authoritative pre-teardown signal;
+- delete P2 and free the comm system before teardown;
+- wait for the destination field to stabilize;
+- recreate P2 only when local and remote map state rendezvous again.
+
+Door visuals may be staged/polished, but the native actor lifecycle must still respect field teardown.
+
+### True seamless map edges
+
+A true seamless overworld edge changes the logical map/zone ID while leaving the live field intact.
+
+The canonical proven pair is:
+
+`437 <-> 439`
+
+This corresponds to Route 19 <-> Floccesy Town.
+
+Across this edge:
+
+- P1 FieldActor stayed at `0x0223DFE4`;
+- actorSystem stayed `0x0223D968`;
+- the live billboard binding survived;
+- no `FLD_STATUS_BUSY_LOADING` field teardown occurred;
+- grid/world coordinates remained globally continuous;
+- world-position deltas could be smaller than a full tile;
+- map ID could flip before the next movement sample advanced, producing a valid zero-delta moving boundary sample.
+
+Therefore a seamless edge should **preserve the same remote native communication actor** rather than deleting/recreating it.
+
+PokéRun now latches a verified map pair while local and remote map IDs temporarily differ. During that latch the same FieldCommActor, comm system, TCB, shadow, and backing state stay alive until the players reunite or a real field load/different map pair invalidates the latch.
+
+## Map-edge classifier findings
+
+A map-ID change is classified as `kind: "map-edge"` only when the world/grid samples look continuous.
+
+Current durable criteria:
+
+- map IDs must differ;
+- grid Manhattan distance must be `<= 1`;
+- and either:
+  - the world horizontal movement is nonzero, small (`<= 0x10000`), directionally consistent with the actor's movement direction, and within the vertical/axis slop; or
+  - the boundary sample has zero grid/world delta, unchanged direction, and at least one side reports `movementState === "moving"`.
+
+Observed constants in the current classifier:
+
+- `MAP_EDGE_WORLD_MAX_STEP = 0x10000`
+- `MAP_EDGE_WORLD_AXIS_SLOP = 0x1000`
+- `MAP_EDGE_HEIGHT_SLOP = 0x10000`
+
+The zero-delta case is necessary because White 2 can change the zone ID one sample before the movement sample advances.
+
+Large coordinate jumps such as Aspertia City -> Aspertia Gate remain `unclassified` and correctly fall back to ordinary field/warp lifecycle handling.
 
 ## Static map/transition research
 
-White 2 static extraction already includes:
+White 2 static extraction includes:
 
-- map/zone relationships;
-- native warp data;
-- destination resolution;
-- static transition/boundary triggers.
+- map/zone headers;
+- native warp data and resolved destinations;
+- zone event metadata;
+- map matrices;
+- geometric same-matrix zone boundaries;
+- directional tile-edge triggers.
 
-Startup currently reports 182 static boundary triggers.
+The original matrix-only runtime registry contained **182 directional triggers**. That count represented same-matrix geometry, not guaranteed direct gameplay traversal.
 
-Door/transition integration should resume only after Probe 10 confirms the native comm actor is stable as the actual same-map remote P2.
+### Important zone identities
+
+Confirmed around the canonical test area:
+
+- `427` = Aspertia City
+- `438` = Aspertia Gate
+- `437` = Route 19
+- `439` = Floccesy Town
+
+The apparent geometric `427 <-> 437` adjacency is **not** directly traversable in gameplay. Real traversal is:
+
+`427 <-> 438 <-> 437`
+
+The gate map has reciprocal native warps to both outdoor zones.
+
+### Warp-bridge quarantine rule
+
+`runtime-boundary-export.mjs` now combines matrix adjacency with the native warp graph.
+
+For a geometric boundary `A <-> B`, if a third zone `G` forms a reciprocal native-warp bridge:
+
+`A <-> G <-> B`
+
+then the direct matrix boundary `A <-> B` is quarantined as `reason: "intermediate-warp-bridge"`.
+
+The reciprocal requirement prevents unrelated one-way/script warps from suppressing an otherwise legitimate edge.
+
+The exporter also quarantines matrix/header mismatches separately.
+
+Current generated runtime registry after filtering:
+
+- schema version `2`;
+- `traversableOnly: true`;
+- **140 traversable directional triggers**;
+- **44 quarantined directional triggers** total;
+- 42 quarantine entries are gate/tunnel warp bridges;
+- 2 quarantine entries are matrix/header mismatches.
+
+Known validation anchors:
+
+- `427 <-> 437` must be quarantined via intermediate zone `438`;
+- `437 <-> 439` must remain traversable.
+
+The exporter fails if either anchor is violated.
+
+This rule generalized beyond Aspertia and detected other gate/tunnel bridge structures, such as `446 <-> 448` via `447`.
+
+### Runtime boundary semantics
+
+The fake-P2 boundary normalizer loads only schema-v2 `traversableOnly` registries. Stale schema-v1 geometric-only registries are rejected.
+
+Candidate logs now distinguish:
+
+- usable traversable edges;
+- quarantined geometric neighbors and their reason/intermediate zone.
+
+Proven examples:
+
+- map 427: zero usable candidates; `437 north` quarantined via `438`;
+- map 437: usable `439 east` edge; `427 south` quarantined via `438`;
+- pressing fake P2 north on the old map-427 geometric boundary does not emit `FAKE P2 MAP EDGE`;
+- pressing fake P2 east at the real Route 19 boundary emits `FAKE P2 MAP EDGE 437 -> 439` and enters native actor preservation.
+
+## Runtime boundary rebuild
+
+After White 2 has already been extracted, the filtered runtime registry can be regenerated without rereading the ROM:
+
+```bash
+npm run white2:runtime-boundaries
+```
+
+Full extraction remains:
+
+```bash
+npm run white2:extract -- /path/to/PokemonWhite2.nds
+```
+
+## Known diagnostic noise
+
+The DEV harness can occasionally log:
+
+`Probe 10 timed out waiting for 1 emulated frames.`
+
+When the surrounding native status continues to report `healthy: true`, treat this as an idle diagnostic timeout rather than evidence that the actor failed.
+
+Cold startup can also briefly log invalid GameSystem/GameData pointers before White 2 has finished initializing.
 
 ## Research rules
 
 Prefer decomp confirmation, one-variable experiments, exact snapshots, native White 2 systems, safe scheduled calls, and explicit cleanup.
 
-Avoid copying arbitrary local-player pointers, changing multiple unknown actor fields at once, assuming a second emulator exists, or building transition polish on the old detached-actor architecture.
+Avoid:
+
+- copying arbitrary local-player pointers;
+- changing multiple unknown actor fields at once;
+- assuming a second emulator exists;
+- treating actorSystem alone as field identity;
+- treating same-matrix geometry as proof of direct traversal;
+- carrying native field pointers across real field teardown;
+- rebuilding transition polish on the old detached-actor architecture.
+
+For transition work, preserve the distinction:
+
+- real field load/warp -> delete/free/recreate;
+- verified seamless edge -> keep the same native communication actor alive.
