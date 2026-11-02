@@ -35,6 +35,37 @@ function samePanelState(a: MultiplayerPlayerState | undefined, b: MultiplayerPla
     && a.movementState === b.movementState
 }
 
+function classifyMapChange(previous: MultiplayerPlayerState, current: MultiplayerPlayerState) {
+  const gridDx = current.x - previous.x
+  const gridDy = current.y - previous.y
+  const gridDistance = Math.abs(gridDx) + Math.abs(gridDy)
+  const previousWorld = previous.worldPosition
+  const currentWorld = current.worldPosition
+  const worldDx = previousWorld && currentWorld ? (currentWorld.x | 0) - (previousWorld.x | 0) : null
+  const worldDy = previousWorld && currentWorld ? (currentWorld.y | 0) - (previousWorld.y | 0) : null
+  const worldDz = previousWorld && currentWorld ? (currentWorld.z | 0) - (previousWorld.z | 0) : null
+  const kind = gridDistance === 1 ? 'map-edge' as const : undefined
+
+  console.info('[PokéRun transition] PROBE 16 MAP CHANGE CLASSIFIED', {
+    kind: kind ?? 'unclassified',
+    fromMapId: previous.location.mapId,
+    toMapId: current.location.mapId,
+    fromGrid: { x: previous.x, y: previous.y },
+    toGrid: { x: current.x, y: current.y },
+    gridDelta: { x: gridDx, y: gridDy, manhattan: gridDistance },
+    fromWorld: previousWorld ?? null,
+    toWorld: currentWorld ?? null,
+    worldDelta: worldDx === null ? null : { x: worldDx, y: worldDy, z: worldDz },
+    fromDirection: previous.direction,
+    toDirection: current.direction,
+    note: kind === 'map-edge'
+      ? 'One-tile map change classified as a seamless map edge; door playback should be skipped.'
+      : 'Large/non-adjacent map change left unclassified so existing door/warp handling remains unchanged.',
+  })
+
+  return kind
+}
+
 /** One constructed session represents one browser-tab player and intentionally never reads identity storage. */
 export class LocalMultiplayerSession {
   readonly localPlayerId = crypto.randomUUID()
@@ -194,9 +225,11 @@ export class LocalMultiplayerSession {
       this.activeTransition = state.transition
       this.activeTransitionUntil = now + TRANSITION_REPEAT_MS
     } else if (previous && previous.location.mapId !== state.location.mapId) {
+      const kind = classifyMapChange(previous, state)
       this.activeTransition = {
         id: `transition:${this.localPlayerId}:${++this.transitionCounter}:${now}`,
         detectedAt: now,
+        kind,
         fromMapId: previous.location.mapId,
         toMapId: state.location.mapId,
         fromX: previous.x,
