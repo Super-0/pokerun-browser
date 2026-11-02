@@ -55,6 +55,7 @@ try {
 
 let boundaryIndex: BoundaryIndex | null = null
 const lastFakeState = new Map<string, CompactState>()
+const loggedCandidateZones = new Set<string>()
 
 void fetch('/dev-generated/white2-boundary-trigger-index.json', { cache: 'no-store' })
   .then(async response => {
@@ -101,6 +102,33 @@ function matchingTrigger(previous: CompactState, current: MultiplayerPlayerState
   ) ?? null
 }
 
+function logCandidateEdges(senderId: string, mapId: number | string) {
+  if (!boundaryIndex || typeof mapId !== 'number') return
+  const key = `${senderId}:${mapId}`
+  if (loggedCandidateZones.has(key)) return
+  loggedCandidateZones.add(key)
+  const candidates = boundaryIndex.byZone[String(mapId)] ?? []
+  console.info('[PokéRun static boundaries] P2 EDGE CANDIDATES', {
+    mapId,
+    count: candidates.length,
+    candidates: candidates.map(trigger => ({
+      toMapId: trigger.destinationZoneId,
+      direction: trigger.direction,
+      edge: {
+        fixedAxis: trigger.sourceEdge.fixedAxis,
+        fixedCoordinate: trigger.sourceEdge.fixedCoordinate,
+        spanAxis: trigger.sourceEdge.spanAxis,
+        spanStart: trigger.sourceEdge.spanStart,
+        spanEnd: trigger.sourceEdge.spanEnd,
+      },
+      matrixId: trigger.matrixId,
+    })),
+    note: candidates.length
+      ? 'These are ROM-verified same-matrix edges. Put P2 anywhere on the listed edge span and press the listed direction to trigger a real map-edge packet.'
+      : 'This zone has no ROM-verified same-matrix edge in the safe runtime registry; transitions from here are field loads/warps instead.',
+  })
+}
+
 /**
  * Development-only correction for the manual fake P2 controller. The controller
  * deliberately knows nothing about White 2 ROM structure; this transport layer
@@ -113,6 +141,7 @@ export function normalizeWhite2FakeBoundaryMessage(message: MultiplayerMessage) 
 
   const state = message.state
   const previous = lastFakeState.get(message.senderId)
+  logCandidateEdges(message.senderId, state.location.mapId)
 
   // Explicit door/warp scripts already own their map change. Never reinterpret them.
   if (state.transition) {
@@ -141,6 +170,7 @@ export function normalizeWhite2FakeBoundaryMessage(message: MultiplayerMessage) 
           to: { x: state.x, y: state.y },
           matrixId: trigger.matrixId,
         })
+        logCandidateEdges(message.senderId, state.location.mapId)
       }
     }
   }
