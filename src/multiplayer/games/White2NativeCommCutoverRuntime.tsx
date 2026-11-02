@@ -39,7 +39,7 @@ const UPDATE_MS = 40
 const STATUS_MS = 2000
 const TILE_WORLD = 0x10000
 const ARRIVAL_MAX_AGE_MS = 1600
-const ARRIVAL_REVEAL_MS = 90
+const ARRIVAL_REVEAL_FALLBACK_MS = 70
 const ARRIVAL_TRAVEL_MS = 320
 
 const FIELD_ACTOR_SIZE = 0x100
@@ -465,9 +465,9 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
               actor: hex(nativeRemote.actor),
               startWorld: arrivalStart,
               targetWorld: remote.worldPosition,
-              revealMs: ARRIVAL_REVEAL_MS,
+              revealFallbackMs: ARRIVAL_REVEAL_FALLBACK_MS,
               travelMs: ARRIVAL_TRAVEL_MS,
-              note: 'P2 was created hidden in the destination doorway; native movement begins behind the threshold before the actor is revealed.',
+              note: 'P2 was created hidden in the doorway; reveal waits for White 2 to enter its native walking draw state.',
             })
           }
           return
@@ -482,19 +482,7 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
           const elapsed = now - current.arrival.startedAt
           const fraction = elapsed / ARRIVAL_TRAVEL_MS
           targetWorld = interpolateWorld(current.arrival.startWorld, current.arrival.targetWorld, fraction)
-          hidden = elapsed < ARRIVAL_REVEAL_MS ? 1 : 0
-
-          if (!hidden && !current.arrival.revealed) {
-            current.arrival.revealed = true
-            console.info('[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL REVEALED', {
-              transitionId: current.arrival.transitionId,
-              actor: hex(current.actor),
-              elapsedMs: Math.round(elapsed),
-              progress: Number(Math.max(0, Math.min(1, fraction)).toFixed(3)),
-              world: targetWorld,
-              note: 'P2 became visible only after native movement had already crossed part of the doorway threshold.',
-            })
-          }
+          if (!current.arrival.revealed) hidden = 1
 
           if (fraction >= 1) {
             targetWorld = current.arrival.targetWorld
@@ -523,6 +511,28 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
         await waitForFrames(runtimeBridge, 1)
         const actor = await readActor(runtimeBridge, current.actor)
         if (actor.drawStatus !== 0) current.movementDrawStatusObserved = true
+
+        if (current.arrival && !current.arrival.revealed) {
+          const revealElapsed = performance.now() - current.arrival.startedAt
+          const revealFraction = revealElapsed / ARRIVAL_TRAVEL_MS
+          const nativeWalkStarted = actor.drawStatus !== 0
+          const fallback = revealElapsed >= ARRIVAL_REVEAL_FALLBACK_MS
+          if (nativeWalkStarted || fallback) {
+            await runtimeBridge.write32(current.hiddenAddress, 0)
+            hidden = 0
+            current.arrival.revealed = true
+            console.info('[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL REVEALED', {
+              transitionId: current.arrival.transitionId,
+              actor: hex(current.actor),
+              trigger: nativeWalkStarted ? 'native-walk-frame' : 'fallback',
+              drawStatus: actor.drawStatus,
+              elapsedMs: Math.round(revealElapsed),
+              progress: Number(Math.max(0, Math.min(1, revealFraction)).toFixed(3)),
+              world: targetWorld,
+              note: 'P2 became visible on the first confirmed native walking frame instead of waiting for a fixed doorway delay.',
+            })
+          }
+        }
 
         const expectedX = signed32(targetWorld.x)
         const expectedY = signed32(targetWorld.y)
