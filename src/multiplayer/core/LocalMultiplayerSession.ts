@@ -4,6 +4,7 @@ import { multiplayerPresence } from './MultiplayerPresence'
 import {
   MULTIPLAYER_PROTOCOL_VERSION,
   type MultiplayerConnectionState,
+  type MultiplayerEmoteKind,
   type MultiplayerGameStart,
   type MultiplayerMapTransition,
   type MultiplayerMessage,
@@ -106,6 +107,7 @@ export class LocalMultiplayerSession {
   private snapshot: MultiplayerSessionSnapshot = { connection: 'disconnected', room: null, error: null, localRom: null, remoteStates: {} }
   private unsubscribeMessage: (() => void) | null = null
   private unsubscribeConnection: (() => void) | null = null
+  private unsubscribeEmotePublisher: (() => void) | null = null
   private readonly handlePageHide = () => this.leave()
   private sequence = 0
   private readonly receivedSequences = new Map<string, number>()
@@ -118,6 +120,7 @@ export class LocalMultiplayerSession {
   private activeTransition: MultiplayerMapTransition | null = null
   private activeTransitionUntil = 0
   private transitionCounter = 0
+  private emoteCounter = 0
   private movementIdleTimer: number | null = null
 
   constructor(private readonly transport: MultiplayerTransport, private readonly label = 'PLAYER') {}
@@ -125,6 +128,8 @@ export class LocalMultiplayerSession {
   connect() {
     this.unsubscribeMessage = this.transport.onMessage(message => this.receive(message))
     this.unsubscribeConnection = this.transport.onConnectionChange(connection => this.update({ connection }))
+    this.unsubscribeEmotePublisher?.()
+    this.unsubscribeEmotePublisher = multiplayerPresence.setEmotePublisher(kind => this.publishEmote(kind))
     window.addEventListener('pagehide', this.handlePageHide)
     this.transport.connect()
   }
@@ -132,6 +137,8 @@ export class LocalMultiplayerSession {
   dispose() {
     this.leave()
     window.removeEventListener('pagehide', this.handlePageHide)
+    this.unsubscribeEmotePublisher?.()
+    this.unsubscribeEmotePublisher = null
     this.unsubscribeMessage?.()
     this.unsubscribeConnection?.()
     this.transport.disconnect()
@@ -220,6 +227,30 @@ export class LocalMultiplayerSession {
     }
   }
 
+  publishEmote(kind: MultiplayerEmoteKind) {
+    const state = this.lastPublishedGameState
+    const room = this.snapshot.room
+    if (!state || !room?.gameStart) return false
+
+    const now = Date.now()
+    const emote = {
+      id: `emote:${this.localPlayerId}:${++this.emoteCounter}:${now}`,
+      kind,
+      createdAt: now,
+    }
+    this.publishGameState({ ...state, emote })
+
+    // An emote is an event, not persistent player state. Keep the packet that was
+    // just sent intact, but strip it from the cached state used by idle/movement
+    // synthesis so later packets cannot replay the same bubble.
+    if (this.lastPublishedGameState?.emote?.id === emote.id) {
+      this.lastPublishedGameState = { ...this.lastPublishedGameState, emote: undefined }
+    }
+
+    console.info('[PokéRun interaction] EMOTE SENT', { id: emote.id, kind })
+    return true
+  }
+
   leave() {
     const room = this.snapshot.room
     multiplayerPresence.reset()
@@ -294,6 +325,7 @@ export class LocalMultiplayerSession {
     this.activeTransition = null
     this.activeTransitionUntil = 0
     this.transitionCounter = 0
+    this.emoteCounter = 0
   }
 
   private receive(message: MultiplayerMessage) {
@@ -332,6 +364,13 @@ export class LocalMultiplayerSession {
       if (message.sequence > previous) {
         this.receivedSequences.set(key, message.sequence)
         multiplayerPresence.setRemote(message.state)
+        if (message.state.emote) {
+          console.info('[PokéRun interaction] EMOTE RECEIVED', {
+            id: message.state.emote.id,
+            kind: message.state.emote.kind,
+            playerId: message.playerId,
+          })
+        }
         const previousState = this.snapshot.remoteStates[message.playerId]
         if (!samePanelState(previousState, message.state)) {
           this.update({ remoteStates: { ...this.snapshot.remoteStates, [message.playerId]: message.state } })
