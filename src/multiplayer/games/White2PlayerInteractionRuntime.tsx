@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
-import type { MultiplayerDirection, MultiplayerPlayerState } from '../core/protocol'
+import type { MultiplayerDirection, MultiplayerEmote, MultiplayerEmoteKind, MultiplayerPlayerState } from '../core/protocol'
 
 const GAME_KEYS = new Set([
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
@@ -10,9 +10,16 @@ const GAME_KEYS = new Set([
 ])
 
 const MENU_ITEMS = ['TRAINER CARD', 'EMOTE', 'FOLLOW', 'CLOSE'] as const
+const EMOTES: { kind: MultiplayerEmoteKind; label: string; glyph: string }[] = [
+  { kind: 'hello', label: 'HELLO', glyph: 'HI!' },
+  { kind: 'heart', label: 'HEART', glyph: '♥' },
+  { kind: 'surprised', label: 'SURPRISED', glyph: '!' },
+  { kind: 'cheer', label: 'CHEER', glyph: '★' },
+]
+const EMOTE_VISIBLE_MS = 1800
 
 type MenuItem = typeof MENU_ITEMS[number]
-type MenuPage = 'root' | 'trainer' | 'soon'
+type MenuPage = 'root' | 'trainer' | 'emotes' | 'soon'
 
 function facingDelta(direction: MultiplayerDirection) {
   if (direction === 'north') return { x: 0, y: -1 }
@@ -31,6 +38,21 @@ function describeDirection(direction: MultiplayerDirection) {
   return direction.toUpperCase()
 }
 
+function emoteGlyph(kind: MultiplayerEmoteKind) {
+  return EMOTES.find(emote => emote.kind === kind)?.glyph ?? '!'
+}
+
+function remoteBubblePosition(local: MultiplayerPlayerState | null, remote: MultiplayerPlayerState | null) {
+  if (!local || !remote || local.location.mapId !== remote.location.mapId) return null
+  const dx = remote.x - local.x
+  const dy = remote.y - local.y
+  if (Math.abs(dx) > 7 || Math.abs(dy) > 5) return null
+  return {
+    left: `${50 + dx * 6.25}%`,
+    top: `${42 + dy * (100 / 12)}%`,
+  }
+}
+
 export function White2PlayerInteractionRuntime() {
   const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const [menuOpen, setMenuOpen] = useState(false)
@@ -38,6 +60,10 @@ export function White2PlayerInteractionRuntime() {
   const [page, setPage] = useState<MenuPage>('root')
   const [soonFeature, setSoonFeature] = useState('')
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null)
+  const [visibleLocalEmote, setVisibleLocalEmote] = useState<MultiplayerEmote | null>(null)
+  const [visibleRemoteEmote, setVisibleRemoteEmote] = useState<MultiplayerEmote | null>(null)
+  const localEmoteTimer = useRef<number | null>(null)
+  const remoteEmoteTimer = useRef<number | null>(null)
 
   useEffect(() => multiplayerPresence.subscribe(setPresence), [])
 
@@ -53,6 +79,33 @@ export function White2PlayerInteractionRuntime() {
     return () => observer.disconnect()
   }, [])
 
+  useEffect(() => {
+    const emote = presence.local?.emote
+    if (!emote) return
+    setVisibleLocalEmote(previous => previous?.id === emote.id ? previous : emote)
+    if (localEmoteTimer.current !== null) window.clearTimeout(localEmoteTimer.current)
+    localEmoteTimer.current = window.setTimeout(() => {
+      setVisibleLocalEmote(previous => previous?.id === emote.id ? null : previous)
+      localEmoteTimer.current = null
+    }, EMOTE_VISIBLE_MS)
+  }, [presence.local?.emote?.id])
+
+  useEffect(() => {
+    const emote = presence.remote?.emote
+    if (!emote) return
+    setVisibleRemoteEmote(previous => previous?.id === emote.id ? previous : emote)
+    if (remoteEmoteTimer.current !== null) window.clearTimeout(remoteEmoteTimer.current)
+    remoteEmoteTimer.current = window.setTimeout(() => {
+      setVisibleRemoteEmote(previous => previous?.id === emote.id ? null : previous)
+      remoteEmoteTimer.current = null
+    }, EMOTE_VISIBLE_MS)
+  }, [presence.remote?.emote?.id])
+
+  useEffect(() => () => {
+    if (localEmoteTimer.current !== null) window.clearTimeout(localEmoteTimer.current)
+    if (remoteEmoteTimer.current !== null) window.clearTimeout(remoteEmoteTimer.current)
+  }, [])
+
   const interactable = useMemo(
     () => canInteract(presence.local, presence.remote),
     [presence.local, presence.remote],
@@ -65,8 +118,53 @@ export function White2PlayerInteractionRuntime() {
     if (!local || !remote || local.location.mapId !== remote.location.mapId) {
       setMenuOpen(false)
       setPage('root')
+      setSoonFeature('')
     }
   }, [menuOpen, presence.local, presence.remote])
+
+  const closeMenu = () => {
+    setMenuOpen(false)
+    setPage('root')
+    setSelection(0)
+    setSoonFeature('')
+    console.info('[PokéRun interaction] PLAYER MENU CLOSED')
+  }
+
+  const selectRootItem = (item: MenuItem) => {
+    if (item === 'CLOSE') {
+      closeMenu()
+      return
+    }
+    if (item === 'TRAINER CARD') {
+      setPage('trainer')
+      console.info('[PokéRun interaction] TRAINER CARD OPENED', {
+        remoteMapId: presence.remote?.location.mapId ?? null,
+        remoteX: presence.remote?.x ?? null,
+        remoteY: presence.remote?.y ?? null,
+      })
+      return
+    }
+    if (item === 'EMOTE') {
+      setSelection(0)
+      setPage('emotes')
+      return
+    }
+    setSoonFeature(item)
+    setPage('soon')
+    console.info('[PokéRun interaction] FEATURE SELECTED', { feature: item, implemented: false })
+  }
+
+  const sendEmote = (kind: MultiplayerEmoteKind) => {
+    const sent = multiplayerPresence.sendEmote(kind)
+    if (!sent) {
+      setSoonFeature('EMOTE UNAVAILABLE')
+      setPage('soon')
+      console.info('[PokéRun interaction] EMOTE BLOCKED', { kind, reason: 'No active multiplayer game state.' })
+      return
+    }
+    console.info('[PokéRun interaction] EMOTE SELECTED', { kind })
+    closeMenu()
+  }
 
   useEffect(() => {
     const block = (event: KeyboardEvent) => {
@@ -76,32 +174,6 @@ export function White2PlayerInteractionRuntime() {
       event.preventDefault()
       event.stopImmediatePropagation()
       return true
-    }
-
-    const closeMenu = () => {
-      setMenuOpen(false)
-      setPage('root')
-      setSoonFeature('')
-      console.info('[PokéRun interaction] PLAYER MENU CLOSED')
-    }
-
-    const selectItem = (item: MenuItem) => {
-      if (item === 'CLOSE') {
-        closeMenu()
-        return
-      }
-      if (item === 'TRAINER CARD') {
-        setPage('trainer')
-        console.info('[PokéRun interaction] TRAINER CARD OPENED', {
-          remoteMapId: presence.remote?.location.mapId ?? null,
-          remoteX: presence.remote?.x ?? null,
-          remoteY: presence.remote?.y ?? null,
-        })
-        return
-      }
-      setSoonFeature(item)
-      setPage('soon')
-      console.info('[PokéRun interaction] FEATURE SELECTED', { feature: item, implemented: false })
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
@@ -126,6 +198,7 @@ export function White2PlayerInteractionRuntime() {
       if (event.code === 'KeyZ' || event.code === 'Escape') {
         if (page !== 'root') {
           setPage('root')
+          setSelection(0)
           setSoonFeature('')
         } else {
           closeMenu()
@@ -133,20 +206,23 @@ export function White2PlayerInteractionRuntime() {
         return
       }
 
-      if (page !== 'root') {
+      if (page === 'trainer' || page === 'soon') {
         if (event.code === 'KeyX' || event.code === 'Enter') {
           setPage('root')
+          setSelection(0)
           setSoonFeature('')
         }
         return
       }
 
+      const itemCount = page === 'emotes' ? EMOTES.length : MENU_ITEMS.length
       if (event.code === 'ArrowUp') {
-        setSelection(value => (value + MENU_ITEMS.length - 1) % MENU_ITEMS.length)
+        setSelection(value => (value + itemCount - 1) % itemCount)
       } else if (event.code === 'ArrowDown') {
-        setSelection(value => (value + 1) % MENU_ITEMS.length)
+        setSelection(value => (value + 1) % itemCount)
       } else if (event.code === 'KeyX' || event.code === 'Enter') {
-        selectItem(MENU_ITEMS[selection])
+        if (page === 'emotes') sendEmote(EMOTES[selection].kind)
+        else selectRootItem(MENU_ITEMS[selection])
       }
     }
 
@@ -164,6 +240,10 @@ export function White2PlayerInteractionRuntime() {
   }, [interactable, menuOpen, page, presence.local, presence.remote, selection])
 
   if (!portalTarget) return null
+
+  const remoteBubble = remoteBubblePosition(presence.local, presence.remote)
+  const hasOverlay = menuOpen || interactable || visibleLocalEmote || (visibleRemoteEmote && remoteBubble)
+  if (!hasOverlay) return null
 
   const shellStyles = (
     <style>{`
@@ -201,6 +281,44 @@ export function White2PlayerInteractionRuntime() {
         display: inline-block;
         margin-right: 5px;
         color: #225d97;
+      }
+      .w2-emote-bubble {
+        position: absolute;
+        z-index: 14;
+        display: grid;
+        place-items: center;
+        min-width: 31px;
+        height: 27px;
+        padding: 0 6px;
+        transform: translate(-50%, -100%);
+        border: 2px solid #34393e;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: inset 0 0 0 2px #d7dde1, 2px 2px 0 rgba(0,0,0,.28);
+        color: #25384a;
+        font-size: 13px;
+        line-height: 1;
+        font-weight: 900;
+        white-space: nowrap;
+        animation: w2-emote-pop 180ms ease-out both;
+      }
+      .w2-emote-bubble::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        bottom: -6px;
+        width: 7px;
+        height: 7px;
+        transform: translateX(-50%) rotate(45deg);
+        border-right: 2px solid #34393e;
+        border-bottom: 2px solid #34393e;
+        background: #fff;
+      }
+      .w2-emote-bubble.heart { color: #be3151; }
+      .w2-emote-bubble.cheer { color: #c18a16; }
+      @keyframes w2-emote-pop {
+        from { opacity: 0; transform: translate(-50%, -78%) scale(.65); }
+        to { opacity: 1; transform: translate(-50%, -100%) scale(1); }
       }
       .w2-menu-layer {
         position: absolute;
@@ -322,89 +440,110 @@ export function White2PlayerInteractionRuntime() {
     `}</style>
   )
 
-  if (!menuOpen) {
-    if (!interactable) return null
-    return createPortal(
-      <div className="w2-interact-root">
-        {shellStyles}
-        <div className="w2-interact-prompt"><b>A</b>INTERACT</div>
-      </div>,
-      portalTarget,
-    )
-  }
-
   const remote = presence.remote
 
   return createPortal(
     <div className="w2-interact-root">
       {shellStyles}
-      <div
-        className="w2-menu-layer"
-        role="presentation"
-        onMouseDown={() => {
-          setMenuOpen(false)
-          setPage('root')
-          setSoonFeature('')
-        }}
-      >
-        {page === 'root' && (
-          <section
-            className="w2-menu-window"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Player interaction menu"
-            onMouseDown={event => event.stopPropagation()}
-          >
-            <div className="w2-menu-header">Partner</div>
-            <div className="w2-menu-list">
-              {MENU_ITEMS.map((item, index) => (
-                <button
-                  key={item}
-                  className={`w2-menu-item ${selection === index ? 'selected' : ''}`}
-                  onMouseEnter={() => setSelection(index)}
-                  onClick={() => {
-                    if (item === 'CLOSE') {
-                      setMenuOpen(false)
-                      setPage('root')
-                      setSoonFeature('')
-                      return
-                    }
-                    if (item === 'TRAINER CARD') {
-                      setPage('trainer')
-                      return
-                    }
-                    setSoonFeature(item)
-                    setPage('soon')
-                  }}
-                >
-                  <span>{item}</span>
-                  {(item === 'EMOTE' || item === 'FOLLOW') && <small>SOON</small>}
-                </button>
-              ))}
-            </div>
-          </section>
-        )}
 
-        {page === 'trainer' && (
-          <section className="w2-info-window" role="dialog" aria-label="Partner trainer card" onMouseDown={event => event.stopPropagation()}>
-            <strong>PARTNER</strong>
-            <div className="w2-info-grid">
-              <span>AREA</span><b>{String(remote?.location.mapId ?? '—')}</b>
-              <span>POSITION</span><b>{remote ? `${remote.x}, ${remote.y}` : '—'}</b>
-              <span>FACING</span><b>{remote ? describeDirection(remote.direction) : '—'}</b>
-            </div>
-          </section>
-        )}
+      {visibleLocalEmote && (
+        <div
+          className={`w2-emote-bubble ${visibleLocalEmote.kind}`}
+          style={{ left: '50%', top: '42%' }}
+          aria-label={`Your ${visibleLocalEmote.kind} emote`}
+        >
+          {emoteGlyph(visibleLocalEmote.kind)}
+        </div>
+      )}
 
-        {page === 'soon' && (
-          <section className="w2-info-window" role="dialog" aria-label={`${soonFeature} coming soon`} onMouseDown={event => event.stopPropagation()}>
-            <strong>{soonFeature}</strong>
-            <span>This multiplayer action isn't connected yet.</span>
-          </section>
-        )}
+      {visibleRemoteEmote && remoteBubble && (
+        <div
+          className={`w2-emote-bubble ${visibleRemoteEmote.kind}`}
+          style={remoteBubble}
+          aria-label={`Partner ${visibleRemoteEmote.kind} emote`}
+        >
+          {emoteGlyph(visibleRemoteEmote.kind)}
+        </div>
+      )}
 
-        <div className="w2-menu-help">↑↓ MOVE · A SELECT · B BACK</div>
-      </div>
+      {!menuOpen && interactable && <div className="w2-interact-prompt"><b>A</b>INTERACT</div>}
+
+      {menuOpen && (
+        <div
+          className="w2-menu-layer"
+          role="presentation"
+          onMouseDown={closeMenu}
+        >
+          {page === 'root' && (
+            <section
+              className="w2-menu-window"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Player interaction menu"
+              onMouseDown={event => event.stopPropagation()}
+            >
+              <div className="w2-menu-header">Partner</div>
+              <div className="w2-menu-list">
+                {MENU_ITEMS.map((item, index) => (
+                  <button
+                    key={item}
+                    className={`w2-menu-item ${selection === index ? 'selected' : ''}`}
+                    onMouseEnter={() => setSelection(index)}
+                    onClick={() => selectRootItem(item)}
+                  >
+                    <span>{item}</span>
+                    {item === 'FOLLOW' && <small>SOON</small>}
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {page === 'emotes' && (
+            <section
+              className="w2-menu-window"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Choose an emote"
+              onMouseDown={event => event.stopPropagation()}
+            >
+              <div className="w2-menu-header">Emote</div>
+              <div className="w2-menu-list">
+                {EMOTES.map((emote, index) => (
+                  <button
+                    key={emote.kind}
+                    className={`w2-menu-item ${selection === index ? 'selected' : ''}`}
+                    onMouseEnter={() => setSelection(index)}
+                    onClick={() => sendEmote(emote.kind)}
+                  >
+                    <span>{emote.glyph} {emote.label}</span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {page === 'trainer' && (
+            <section className="w2-info-window" role="dialog" aria-label="Partner trainer card" onMouseDown={event => event.stopPropagation()}>
+              <strong>PARTNER</strong>
+              <div className="w2-info-grid">
+                <span>AREA</span><b>{String(remote?.location.mapId ?? '—')}</b>
+                <span>POSITION</span><b>{remote ? `${remote.x}, ${remote.y}` : '—'}</b>
+                <span>FACING</span><b>{remote ? describeDirection(remote.direction) : '—'}</b>
+              </div>
+            </section>
+          )}
+
+          {page === 'soon' && (
+            <section className="w2-info-window" role="dialog" aria-label={`${soonFeature} coming soon`} onMouseDown={event => event.stopPropagation()}>
+              <strong>{soonFeature}</strong>
+              <span>{soonFeature === 'EMOTE UNAVAILABLE' ? 'Wait until multiplayer live state is ready, then try again.' : "This multiplayer action isn't connected yet."}</span>
+            </section>
+          )}
+
+          <div className="w2-menu-help">↑↓ MOVE · A SELECT · B BACK</div>
+        </div>
+      )}
     </div>,
     portalTarget,
   )
