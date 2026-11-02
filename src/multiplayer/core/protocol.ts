@@ -9,7 +9,7 @@ export type MultiplayerPlayer = { id: string; label: string; ready: boolean; rom
 export type MultiplayerGameStart = { startId: string; gameId: GameId; startedAt: number }
 export type MultiplayerWorldPosition = { x: number; y: number; z: number }
 export type MultiplayerDirection = 'north' | 'south' | 'east' | 'west'
-export type MultiplayerEmoteKind = 'hello' | 'heart' | 'surprised' | 'cheer'
+export type MultiplayerEmoteKind = 'hello' | 'heart' | 'surprised' | 'cheer' | 'question' | 'ellipsis'
 export type MultiplayerEmote = {
   /** Unique per activation so receivers never replay one emote as multiple animations. */
   id: string
