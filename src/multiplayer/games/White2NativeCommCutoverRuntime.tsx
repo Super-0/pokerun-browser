@@ -39,8 +39,8 @@ const UPDATE_MS = 40
 const STATUS_MS = 2000
 const TILE_WORLD = 0x10000
 const ARRIVAL_MAX_AGE_MS = 1600
-const ARRIVAL_HOLD_MS = 120
-const ARRIVAL_TRAVEL_MS = 260
+const ARRIVAL_REVEAL_MS = 90
+const ARRIVAL_TRAVEL_MS = 320
 
 const FIELD_ACTOR_SIZE = 0x100
 const TASK_DATA_OFFSET = 0x94
@@ -74,6 +74,7 @@ type NativeArrival = {
   startWorld: MultiplayerWorldPosition
   targetWorld: MultiplayerWorldPosition
   startedAt: number
+  revealed: boolean
 }
 
 type NativeRemote = {
@@ -275,6 +276,7 @@ async function createNativeRemote(
   probe: White2ActorSystemProbe,
   presence: MultiplayerPresenceSnapshot,
   initialWorldPosition?: MultiplayerWorldPosition,
+  initialHidden = false,
 ): Promise<NativeRemote | null> {
   const local = presence.local
   const remote = presence.remote
@@ -308,7 +310,7 @@ async function createNativeRemote(
 
   await writeVec(bridge, posAddress, initialWorld.x, initialWorld.y, initialWorld.z)
   await bridge.write16(dirAddress, DIR_TO_FIELD[remote.direction])
-  await bridge.write32(hiddenAddress, 0)
+  await bridge.write32(hiddenAddress, initialHidden ? 1 : 0)
 
   try {
     const createTask = await runScheduledCall6(
@@ -338,6 +340,7 @@ async function createNativeRemote(
       tcb: hex(snapshot.tcb),
       createTask,
       initialWorldPosition: initialWorld,
+      initialHidden,
       note: 'DEV is now rendering the actual fake P2 with White 2 FieldCommActor; old detached/manual P2 runtime is disabled.',
     })
 
@@ -442,50 +445,67 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
           const arrivalStart = transition
             ? doorwayWorldForArrival(transition, remote.worldPosition)
             : undefined
-          nativeRemote = await createNativeRemote(runtimeBridge, probe, presence, arrivalStart)
+          nativeRemote = await createNativeRemote(
+            runtimeBridge,
+            probe,
+            presence,
+            arrivalStart,
+            Boolean(transition),
+          )
           if (nativeRemote && transition && arrivalStart) {
             nativeRemote.arrival = {
               transitionId: transition.id,
               startWorld: { ...arrivalStart },
               targetWorld: { ...remote.worldPosition },
               startedAt: performance.now(),
+              revealed: false,
             }
             console.info('[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL STAGED', {
               transitionId: transition.id,
               actor: hex(nativeRemote.actor),
               startWorld: arrivalStart,
               targetWorld: remote.worldPosition,
-              holdMs: ARRIVAL_HOLD_MS,
+              revealMs: ARRIVAL_REVEAL_MS,
               travelMs: ARRIVAL_TRAVEL_MS,
-              note: 'P2 spawned in the destination doorway and will walk one native comm tile outward while the door is open.',
+              note: 'P2 was created hidden in the destination doorway; native movement begins behind the threshold before the actor is revealed.',
             })
           }
           return
         }
 
         const current = nativeRemote
-        const hidden = local.location.mapId === remote.location.mapId ? 0 : 1
+        let hidden = local.location.mapId === remote.location.mapId ? 0 : 1
         let targetWorld = remote.worldPosition
         const now = performance.now()
 
         if (current.arrival) {
           const elapsed = now - current.arrival.startedAt
-          if (elapsed < ARRIVAL_HOLD_MS) {
-            targetWorld = current.arrival.startWorld
-          } else {
-            const fraction = (elapsed - ARRIVAL_HOLD_MS) / ARRIVAL_TRAVEL_MS
-            if (fraction >= 1) {
-              targetWorld = current.arrival.targetWorld
-              console.info('[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL COMPLETE', {
-                transitionId: current.arrival.transitionId,
-                actor: hex(current.actor),
-                targetWorld,
-                note: 'Native P2 finished walking out of the destination doorway; ordinary authoritative following resumes.',
-              })
-              current.arrival = null
-            } else {
-              targetWorld = interpolateWorld(current.arrival.startWorld, current.arrival.targetWorld, fraction)
-            }
+          const fraction = elapsed / ARRIVAL_TRAVEL_MS
+          targetWorld = interpolateWorld(current.arrival.startWorld, current.arrival.targetWorld, fraction)
+          hidden = elapsed < ARRIVAL_REVEAL_MS ? 1 : 0
+
+          if (!hidden && !current.arrival.revealed) {
+            current.arrival.revealed = true
+            console.info('[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL REVEALED', {
+              transitionId: current.arrival.transitionId,
+              actor: hex(current.actor),
+              elapsedMs: Math.round(elapsed),
+              progress: Number(Math.max(0, Math.min(1, fraction)).toFixed(3)),
+              world: targetWorld,
+              note: 'P2 became visible only after native movement had already crossed part of the doorway threshold.',
+            })
+          }
+
+          if (fraction >= 1) {
+            targetWorld = current.arrival.targetWorld
+            hidden = 0
+            console.info('[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL COMPLETE', {
+              transitionId: current.arrival.transitionId,
+              actor: hex(current.actor),
+              targetWorld,
+              note: 'Native P2 finished walking out of the destination doorway; ordinary authoritative following resumes.',
+            })
+            current.arrival = null
           }
         }
 
