@@ -57,12 +57,18 @@ function classifyMapChange(previous: MultiplayerPlayerState, current: Multiplaye
     || (direction === 'north' && worldDz < 0 && Math.abs(worldDx) <= MAP_EDGE_WORLD_AXIS_SLOP)
     || (direction === 'south' && worldDz > 0 && Math.abs(worldDx) <= MAP_EDGE_WORLD_AXIS_SLOP)
   )
-  const continuousWorldStep = worldHorizontalDistance !== null
+  const directionalWorldStep = worldHorizontalDistance !== null
     && worldDy !== null
     && worldHorizontalDistance > 0
     && worldHorizontalDistance <= MAP_EDGE_WORLD_MAX_STEP
     && Math.abs(worldDy) <= MAP_EDGE_HEIGHT_SLOP
     && directionMatchesWorldStep
+  const zeroDeltaBoundarySample = worldHorizontalDistance === 0
+    && worldDy === 0
+    && gridDistance === 0
+    && previous.direction === current.direction
+    && (previous.movementState === 'moving' || current.movementState === 'moving')
+  const continuousWorldStep = directionalWorldStep || zeroDeltaBoundarySample
   const kind = gridDistance <= 1 && continuousWorldStep ? 'map-edge' as const : undefined
 
   console.info('[PokéRun transition] PROBE 16 MAP CHANGE CLASSIFIED', {
@@ -76,11 +82,17 @@ function classifyMapChange(previous: MultiplayerPlayerState, current: Multiplaye
     toWorld: currentWorld ?? null,
     worldDelta: worldDx === null ? null : { x: worldDx, y: worldDy, z: worldDz },
     worldHorizontalDistance,
+    directionalWorldStep,
+    zeroDeltaBoundarySample,
     continuousWorldStep,
     fromDirection: previous.direction,
     toDirection: current.direction,
+    fromMovementState: previous.movementState,
+    toMovementState: current.movementState,
     note: kind === 'map-edge'
-      ? 'Sub-tile world continuity matches movement direction; classified as a seamless map edge with no field teardown.'
+      ? zeroDeltaBoundarySample
+        ? 'Map ID flipped before the next movement sample advanced; identical moving boundary samples are accepted as a seamless map edge.'
+        : 'Sub-tile world continuity matches movement direction; classified as a seamless map edge with no field teardown.'
       : 'World coordinates do not look like one continuous overworld step; keep ordinary field/warp lifecycle handling.',
   })
 
