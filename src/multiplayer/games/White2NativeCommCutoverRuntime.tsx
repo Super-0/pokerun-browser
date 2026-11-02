@@ -41,6 +41,7 @@ const TILE_WORLD = 0x10000
 const ARRIVAL_MAX_AGE_MS = 1600
 const ARRIVAL_REVEAL_FALLBACK_MS = 70
 const ARRIVAL_TRAVEL_MS = 320
+const MAP_EDGE_ARRIVAL_TRAVEL_MS = 180
 
 const FIELD_ACTOR_SIZE = 0x100
 const TASK_DATA_OFFSET = 0x94
@@ -71,9 +72,11 @@ const SIX_ARG_FIELD_TASK_TRAMPOLINE = Uint8Array.from([
 
 type NativeArrival = {
   transitionId: string
+  mode: 'door' | 'map-edge'
   startWorld: MultiplayerWorldPosition
   targetWorld: MultiplayerWorldPosition
   startedAt: number
+  travelMs: number
   revealed: boolean
 }
 
@@ -133,6 +136,19 @@ function freshRemoteDoorArrival(presence: MultiplayerPresenceSnapshot): Multipla
   return transition
 }
 
+function freshRemoteMapEdgeArrival(presence: MultiplayerPresenceSnapshot): MultiplayerMapTransition | null {
+  const local = presence.local
+  const remote = presence.remote
+  const transition = remote?.transition
+  if (!local || !remote?.worldPosition || !transition || transition.kind !== 'map-edge') return null
+  if (transition.fromMapId === transition.toMapId) return null
+  if (local.location.mapId !== remote.location.mapId) return null
+  if (transition.toMapId !== local.location.mapId) return null
+  const age = Date.now() - transition.detectedAt
+  if (age < 0 || age >= ARRIVAL_MAX_AGE_MS) return null
+  return transition
+}
+
 function doorwayWorldForArrival(
   transition: MultiplayerMapTransition,
   fallback: MultiplayerWorldPosition,
@@ -157,6 +173,24 @@ function interpolateWorld(
     y: Math.round((start.y | 0) + ((target.y | 0) - (start.y | 0)) * t) >>> 0,
     z: Math.round((start.z | 0) + ((target.z | 0) - (start.z | 0)) * t) >>> 0,
   }
+}
+
+function mapEdgeWorldForArrival(
+  transition: MultiplayerMapTransition,
+  fallback: MultiplayerWorldPosition,
+): MultiplayerWorldPosition {
+  const destination = transition.toWorldPosition ?? fallback
+  if (transition.fromWorldPosition) {
+    return interpolateWorld(transition.fromWorldPosition, destination, 0.5)
+  }
+
+  const boundary = { ...destination }
+  const halfTile = TILE_WORLD >>> 1
+  if (transition.toDirection === 'north') boundary.z = (boundary.z + halfTile) >>> 0
+  else if (transition.toDirection === 'south') boundary.z = (boundary.z - halfTile) >>> 0
+  else if (transition.toDirection === 'west') boundary.x = (boundary.x + halfTile) >>> 0
+  else boundary.x = (boundary.x - halfTile) >>> 0
+  return boundary
 }
 
 async function waitForFrames(bridge: MelonDsBridge, count: number) {
@@ -441,10 +475,14 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
         if (!local || !remote?.worldPosition) return
 
         if (!nativeRemote) {
-          const transition = freshRemoteDoorArrival(presence)
-          const arrivalStart = transition
-            ? doorwayWorldForArrival(transition, remote.worldPosition)
-            : undefined
+          const doorTransition = freshRemoteDoorArrival(presence)
+          const mapEdgeTransition = doorTransition ? null : freshRemoteMapEdgeArrival(presence)
+          const transition = doorTransition ?? mapEdgeTransition
+          const arrivalStart = doorTransition
+            ? doorwayWorldForArrival(doorTransition, remote.worldPosition)
+            : mapEdgeTransition
+              ? mapEdgeWorldForArrival(mapEdgeTransition, remote.worldPosition)
+              : undefined
           nativeRemote = await createNativeRemote(
             runtimeBridge,
             probe,
@@ -453,22 +491,33 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
             Boolean(transition),
           )
           if (nativeRemote && transition && arrivalStart) {
+            const mode: NativeArrival['mode'] = mapEdgeTransition ? 'map-edge' : 'door'
+            const travelMs = mode === 'map-edge' ? MAP_EDGE_ARRIVAL_TRAVEL_MS : ARRIVAL_TRAVEL_MS
             nativeRemote.arrival = {
               transitionId: transition.id,
+              mode,
               startWorld: { ...arrivalStart },
               targetWorld: { ...remote.worldPosition },
               startedAt: performance.now(),
+              travelMs,
               revealed: false,
             }
-            console.info('[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL STAGED', {
-              transitionId: transition.id,
-              actor: hex(nativeRemote.actor),
-              startWorld: arrivalStart,
-              targetWorld: remote.worldPosition,
-              revealFallbackMs: ARRIVAL_REVEAL_FALLBACK_MS,
-              travelMs: ARRIVAL_TRAVEL_MS,
-              note: 'P2 was created hidden in the doorway; reveal waits for White 2 to enter its native walking draw state.',
-            })
+            console.info(
+              mode === 'map-edge'
+                ? '[PokéRun lifecycle] PROBE 16 NATIVE COMM MAP EDGE ARRIVAL STAGED'
+                : '[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL STAGED',
+              {
+                transitionId: transition.id,
+                actor: hex(nativeRemote.actor),
+                startWorld: arrivalStart,
+                targetWorld: remote.worldPosition,
+                revealFallbackMs: ARRIVAL_REVEAL_FALLBACK_MS,
+                travelMs,
+                note: mode === 'map-edge'
+                  ? 'P2 was created hidden on the actual seamless boundary; reveal waits for the first native walking frame while she completes the step into the destination zone.'
+                  : 'P2 was created hidden in the doorway; reveal waits for White 2 to enter its native walking draw state.',
+              },
+            )
           }
           return
         }
@@ -479,20 +528,31 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
         const now = performance.now()
 
         if (current.arrival) {
+          if (current.arrival.mode === 'map-edge') {
+            current.arrival.targetWorld = { ...remote.worldPosition }
+          }
           const elapsed = now - current.arrival.startedAt
-          const fraction = elapsed / ARRIVAL_TRAVEL_MS
+          const fraction = elapsed / current.arrival.travelMs
           targetWorld = interpolateWorld(current.arrival.startWorld, current.arrival.targetWorld, fraction)
           if (!current.arrival.revealed) hidden = 1
 
           if (fraction >= 1) {
-            targetWorld = current.arrival.targetWorld
+            const completedArrival = current.arrival
+            targetWorld = completedArrival.targetWorld
             hidden = 0
-            console.info('[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL COMPLETE', {
-              transitionId: current.arrival.transitionId,
-              actor: hex(current.actor),
-              targetWorld,
-              note: 'Native P2 finished walking out of the destination doorway; ordinary authoritative following resumes.',
-            })
+            console.info(
+              completedArrival.mode === 'map-edge'
+                ? '[PokéRun lifecycle] PROBE 16 NATIVE COMM MAP EDGE ARRIVAL COMPLETE'
+                : '[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL COMPLETE',
+              {
+                transitionId: completedArrival.transitionId,
+                actor: hex(current.actor),
+                targetWorld,
+                note: completedArrival.mode === 'map-edge'
+                  ? 'Native P2 finished the short seamless boundary step; ordinary authoritative following resumes.'
+                  : 'Native P2 finished walking out of the destination doorway; ordinary authoritative following resumes.',
+              },
+            )
             current.arrival = null
           }
         }
@@ -514,23 +574,30 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
 
         if (current.arrival && !current.arrival.revealed) {
           const revealElapsed = performance.now() - current.arrival.startedAt
-          const revealFraction = revealElapsed / ARRIVAL_TRAVEL_MS
+          const revealFraction = revealElapsed / current.arrival.travelMs
           const nativeWalkStarted = actor.drawStatus !== 0
           const fallback = revealElapsed >= ARRIVAL_REVEAL_FALLBACK_MS
           if (nativeWalkStarted || fallback) {
             await runtimeBridge.write32(current.hiddenAddress, 0)
             hidden = 0
             current.arrival.revealed = true
-            console.info('[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL REVEALED', {
-              transitionId: current.arrival.transitionId,
-              actor: hex(current.actor),
-              trigger: nativeWalkStarted ? 'native-walk-frame' : 'fallback',
-              drawStatus: actor.drawStatus,
-              elapsedMs: Math.round(revealElapsed),
-              progress: Number(Math.max(0, Math.min(1, revealFraction)).toFixed(3)),
-              world: targetWorld,
-              note: 'P2 became visible on the first confirmed native walking frame instead of waiting for a fixed doorway delay.',
-            })
+            console.info(
+              current.arrival.mode === 'map-edge'
+                ? '[PokéRun lifecycle] PROBE 16 NATIVE COMM MAP EDGE ARRIVAL REVEALED'
+                : '[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL REVEALED',
+              {
+                transitionId: current.arrival.transitionId,
+                actor: hex(current.actor),
+                trigger: nativeWalkStarted ? 'native-walk-frame' : 'fallback',
+                drawStatus: actor.drawStatus,
+                elapsedMs: Math.round(revealElapsed),
+                progress: Number(Math.max(0, Math.min(1, revealFraction)).toFixed(3)),
+                world: targetWorld,
+                note: current.arrival.mode === 'map-edge'
+                  ? 'P2 became visible on the first native walking frame at the seamless boundary instead of popping into the destination tile center.'
+                  : 'P2 became visible on the first confirmed native walking frame instead of waiting for a fixed doorway delay.',
+              },
+            )
           }
         }
 
