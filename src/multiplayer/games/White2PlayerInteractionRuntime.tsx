@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { PixelButton } from '../../components/PixelButton'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerDirection, MultiplayerPlayerState } from '../core/protocol'
@@ -13,7 +14,6 @@ const MENU_ITEMS = ['TRAINER CARD', 'EMOTE', 'FOLLOW', 'CLOSE'] as const
 
 type MenuItem = typeof MENU_ITEMS[number]
 type MenuPage = 'root' | 'trainer' | 'soon'
-type ScreenRect = { left: number; top: number; width: number; height: number; bottom: number }
 
 function facingDelta(direction: MultiplayerDirection) {
   if (direction === 'north') return { x: 0, y: -1 }
@@ -38,40 +38,20 @@ export function White2PlayerInteractionRuntime() {
   const [selection, setSelection] = useState(0)
   const [page, setPage] = useState<MenuPage>('root')
   const [soonFeature, setSoonFeature] = useState('')
-  const [screenRect, setScreenRect] = useState<ScreenRect | null>(null)
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null)
 
   useEffect(() => multiplayerPresence.subscribe(setPresence), [])
 
   useEffect(() => {
-    let resizeObserver: ResizeObserver | null = null
-    let observed: Element | null = null
-
-    const update = () => {
-      const screen = document.querySelector<HTMLCanvasElement>('canvas[aria-label="Nintendo DS top screen"]')
-      if (!screen) {
-        setScreenRect(null)
-        return
-      }
-      const rect = screen.getBoundingClientRect()
-      setScreenRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height, bottom: rect.bottom })
-      if (screen !== observed && typeof ResizeObserver !== 'undefined') {
-        resizeObserver?.disconnect()
-        observed = screen
-        resizeObserver = new ResizeObserver(update)
-        resizeObserver.observe(screen)
-      }
+    const findTarget = () => {
+      const target = document.querySelector<HTMLElement>('.melonds-screen-wrap')
+      setPortalTarget(previous => previous === target ? previous : target)
     }
 
-    update()
-    const timer = window.setInterval(update, 250)
-    window.addEventListener('resize', update)
-    window.addEventListener('scroll', update, true)
-    return () => {
-      window.clearInterval(timer)
-      window.removeEventListener('resize', update)
-      window.removeEventListener('scroll', update, true)
-      resizeObserver?.disconnect()
-    }
+    findTarget()
+    const observer = new MutationObserver(findTarget)
+    observer.observe(document.body, { childList: true, subtree: true })
+    return () => observer.disconnect()
   }, [])
 
   const interactable = useMemo(
@@ -184,15 +164,17 @@ export function White2PlayerInteractionRuntime() {
     }
   }, [interactable, menuOpen, page, presence.local, presence.remote, selection])
 
+  if (!portalTarget) return null
+
   if (!menuOpen) {
-    if (!interactable || !screenRect) return null
-    return (
+    if (!interactable) return null
+    return createPortal(
       <div style={{
-        position: 'fixed',
-        left: screenRect.left + screenRect.width / 2,
-        top: screenRect.bottom - 46,
+        position: 'absolute',
+        left: '50%',
+        bottom: 14,
         transform: 'translateX(-50%)',
-        zIndex: 12000,
+        zIndex: 12,
         padding: '7px 11px',
         border: '2px solid #243f54',
         boxShadow: '3px 3px 0 rgba(0,0,0,.24)',
@@ -204,14 +186,14 @@ export function White2PlayerInteractionRuntime() {
         pointerEvents: 'none',
       }}>
         X • INTERACT
-      </div>
+      </div>,
+      portalTarget,
     )
   }
 
   const remote = presence.remote
-  if (!screenRect) return null
 
-  return (
+  return createPortal(
     <div
       role="presentation"
       onMouseDown={() => {
@@ -220,12 +202,9 @@ export function White2PlayerInteractionRuntime() {
         setSoonFeature('')
       }}
       style={{
-        position: 'fixed',
-        left: screenRect.left,
-        top: screenRect.top,
-        width: screenRect.width,
-        height: screenRect.height,
-        zIndex: 13000,
+        position: 'absolute',
+        inset: 0,
+        zIndex: 13,
         display: 'grid',
         placeItems: 'center',
         background: 'rgba(9, 20, 31, .42)',
@@ -316,6 +295,7 @@ export function White2PlayerInteractionRuntime() {
 
         <small style={{ display: 'block', marginTop: 10, opacity: .65 }}>↑↓ MOVE • X/ENTER SELECT • Z/ESC BACK</small>
       </section>
-    </div>
+    </div>,
+    portalTarget,
   )
 }
