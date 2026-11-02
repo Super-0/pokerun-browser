@@ -412,17 +412,57 @@ class FakeRemoteDoorPeer {
         x: transition.fromX,
         y: transition.fromY,
         direction: transition.fromDirection,
-        movementState: 'idle',
+        movementState: 'moving',
         worldPosition: { ...exteriorWorld },
         transition: replayTransition,
       })
 
-      await sleep(DOOR_PREOPEN_MS)
+      // The door has already been opening while P2 approached it. Give the
+      // animation one short beat, then keep the native actor alive on the source
+      // map while it walks a full tile through the doorway. Only after P2 is
+      // visually behind the threshold do we publish the destination map.
+      await sleep(DOOR_INTENT_MS)
       if (generation !== this.scriptGeneration) return
 
-      // Keep the proven entrance timing. The pre-open beat counts as part of the
-      // departure lead once the authoritative destination-map packet arrives.
-      replayTransition.detectedAt = Date.now() - DOOR_PREOPEN_MS
+      const throughDoorWorld = stepWorld(exteriorWorld, transition.fromDirection)
+      const throughDeltaX = (throughDoorWorld.x | 0) - (exteriorWorld.x | 0)
+      const throughDeltaZ = (throughDoorWorld.z | 0) - (exteriorWorld.z | 0)
+
+      for (let step = 1; step <= WALK_STEPS; step += 1) {
+        if (generation !== this.scriptGeneration) return
+        const fraction = step / WALK_STEPS
+        this.publish({
+          // Keep the legal grid identity on the exterior door tile while the
+          // native world position travels behind the doorway geometry.
+          location: { mapId: transition.fromMapId },
+          x: transition.fromX,
+          y: transition.fromY,
+          direction: transition.fromDirection,
+          movementState: 'moving',
+          worldPosition: {
+            x: Math.round((exteriorWorld.x | 0) + throughDeltaX * fraction) >>> 0,
+            y: exteriorWorld.y >>> 0,
+            z: Math.round((exteriorWorld.z | 0) + throughDeltaZ * fraction) >>> 0,
+          },
+          transition: replayTransition,
+        })
+        await sleep(WALK_STEP_MS)
+      }
+
+      if (generation !== this.scriptGeneration) return
+      console.info('[PokéRun fake door] DEPARTURE THROUGH DOORWAY COMPLETE', {
+        transitionId: replayTransition.id,
+        fromMapId: transition.fromMapId,
+        toMapId: transition.toMapId,
+        doorWorld: exteriorWorld,
+        hiddenWorld: throughDoorWorld,
+        travelMs: WALK_STEP_MS * WALK_STEPS,
+      })
+
+      // Doorway travel already happened while the source-map actor was live.
+      // Backdate the transition beyond any generic departure window so the
+      // lifecycle layer can hide/delete it immediately after the map switch.
+      replayTransition.detectedAt = Date.now() - REMOTE_DEPARTURE_TOTAL_MS
       this.publish({
         ...destination,
         movementState: 'idle',
