@@ -1,4 +1,10 @@
-import type { MultiplayerDirection, MultiplayerMessage, MultiplayerPlayerState } from '../core/protocol'
+import type {
+  MultiplayerDirection,
+  MultiplayerMapTransition,
+  MultiplayerMessage,
+  MultiplayerPlayerState,
+  MultiplayerWorldPosition,
+} from '../core/protocol'
 
 type BoundaryEdge = {
   fixedAxis: 'x' | 'y'
@@ -28,9 +34,17 @@ type CompactState = {
   mapId: number | string
   x: number
   y: number
+  direction: MultiplayerDirection
+  worldPosition?: MultiplayerWorldPosition
+}
+
+type ActiveEdgeTransition = {
+  transition: MultiplayerMapTransition
+  until: number
 }
 
 const STALE_RENDER_CACHE_PREFIX = 'pokerun-white2-trainer-render-v4:'
+const EDGE_TRANSITION_REPEAT_MS = 1200
 
 // The dedicated runtime's v4 render cache predates the current authoritative
 // same-map renderer. During a cold dev load, a stale cached material family can
@@ -55,6 +69,7 @@ try {
 
 let boundaryIndex: BoundaryIndex | null = null
 const lastFakeState = new Map<string, CompactState>()
+const activeFakeEdgeTransitions = new Map<string, ActiveEdgeTransition>()
 const loggedCandidateZones = new Set<string>()
 
 void fetch('/dev-generated/white2-boundary-trigger-index.json', { cache: 'no-store' })
@@ -70,6 +85,16 @@ void fetch('/dev-generated/white2-boundary-trigger-index.json', { cache: 'no-sto
   .catch(reason => {
     console.info('[PokéRun static boundaries] registry unavailable; run white2:extract before multiplayer dev', reason)
   })
+
+function compactState(state: MultiplayerPlayerState): CompactState {
+  return {
+    mapId: state.location.mapId,
+    x: state.x,
+    y: state.y,
+    direction: state.direction,
+    worldPosition: state.worldPosition ? { ...state.worldPosition } : undefined,
+  }
+}
 
 function movementDirection(previous: CompactState, current: MultiplayerPlayerState): MultiplayerDirection | null {
   const dx = current.x - previous.x
@@ -141,11 +166,13 @@ export function normalizeWhite2FakeBoundaryMessage(message: MultiplayerMessage) 
 
   const state = message.state
   const previous = lastFakeState.get(message.senderId)
+  const now = Date.now()
   logCandidateEdges(message.senderId, state.location.mapId)
 
   // Explicit door/warp scripts already own their map change. Never reinterpret them.
   if (state.transition) {
-    lastFakeState.set(message.senderId, { mapId: state.location.mapId, x: state.x, y: state.y })
+    activeFakeEdgeTransitions.delete(message.senderId)
+    lastFakeState.set(message.senderId, compactState(state))
     return
   }
 
@@ -162,6 +189,26 @@ export function normalizeWhite2FakeBoundaryMessage(message: MultiplayerMessage) 
       const trigger = matchingTrigger(previous, state)
       if (trigger) {
         state.location.mapId = trigger.destinationZoneId
+        const transition: MultiplayerMapTransition = {
+          id: `fake-map-edge:${message.senderId}:${now}`,
+          detectedAt: now,
+          kind: 'map-edge',
+          fromMapId: trigger.sourceZoneId,
+          toMapId: trigger.destinationZoneId,
+          fromX: previous.x,
+          fromY: previous.y,
+          fromDirection: previous.direction,
+          fromWorldPosition: previous.worldPosition ? { ...previous.worldPosition } : undefined,
+          toX: state.x,
+          toY: state.y,
+          toDirection: state.direction,
+          toWorldPosition: state.worldPosition ? { ...state.worldPosition } : undefined,
+        }
+        state.transition = transition
+        activeFakeEdgeTransitions.set(message.senderId, {
+          transition,
+          until: now + EDGE_TRANSITION_REPEAT_MS,
+        })
         console.info('[PokéRun static boundaries] FAKE P2 MAP EDGE', {
           fromMapId: trigger.sourceZoneId,
           toMapId: trigger.destinationZoneId,
@@ -169,11 +216,22 @@ export function normalizeWhite2FakeBoundaryMessage(message: MultiplayerMessage) 
           from: { x: previous.x, y: previous.y },
           to: { x: state.x, y: state.y },
           matrixId: trigger.matrixId,
+          transitionId: transition.id,
+          note: 'ROM-verified fake P2 edge crossing now carries kind=map-edge metadata for immediate native rendezvous restore.',
         })
         logCandidateEdges(message.senderId, state.location.mapId)
       }
     }
   }
 
-  lastFakeState.set(message.senderId, { mapId: state.location.mapId, x: state.x, y: state.y })
+  if (!state.transition) {
+    const active = activeFakeEdgeTransitions.get(message.senderId)
+    if (active && now <= active.until && state.location.mapId === active.transition.toMapId) {
+      state.transition = active.transition
+    } else if (active && now > active.until) {
+      activeFakeEdgeTransitions.delete(message.senderId)
+    }
+  }
+
+  lastFakeState.set(message.senderId, compactState(state))
 }
