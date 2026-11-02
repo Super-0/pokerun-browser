@@ -1,4 +1,4 @@
-import type { MultiplayerPlayerState } from './protocol'
+import type { MultiplayerEmoteKind, MultiplayerPlayerState } from './protocol'
 
 export type MultiplayerPresenceSnapshot = {
   local: MultiplayerPlayerState | null
@@ -6,6 +6,7 @@ export type MultiplayerPresenceSnapshot = {
 }
 
 type Listener = (snapshot: MultiplayerPresenceSnapshot) => void
+type EmotePublisher = (kind: MultiplayerEmoteKind) => boolean
 
 /**
  * Per-tab in-memory bridge between the multiplayer session and emulator UI.
@@ -15,6 +16,7 @@ type Listener = (snapshot: MultiplayerPresenceSnapshot) => void
 class MultiplayerPresenceStore {
   private snapshot: MultiplayerPresenceSnapshot = { local: null, remote: null }
   private readonly listeners = new Set<Listener>()
+  private emotePublisher: EmotePublisher | null = null
 
   subscribe(listener: Listener) {
     this.listeners.add(listener)
@@ -30,6 +32,17 @@ class MultiplayerPresenceStore {
 
   setRemote(remote: MultiplayerPlayerState) {
     this.update({ remote })
+  }
+
+  setEmotePublisher(publisher: EmotePublisher | null) {
+    this.emotePublisher = publisher
+    return () => {
+      if (this.emotePublisher === publisher) this.emotePublisher = null
+    }
+  }
+
+  sendEmote(kind: MultiplayerEmoteKind) {
+    return this.emotePublisher?.(kind) ?? false
   }
 
   reset() {
