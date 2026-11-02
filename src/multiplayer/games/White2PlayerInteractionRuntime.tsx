@@ -13,6 +13,7 @@ const MENU_ITEMS = ['TRAINER CARD', 'EMOTE', 'FOLLOW', 'CLOSE'] as const
 
 type MenuItem = typeof MENU_ITEMS[number]
 type MenuPage = 'root' | 'trainer' | 'soon'
+type ScreenRect = { left: number; top: number; width: number; height: number; bottom: number }
 
 function facingDelta(direction: MultiplayerDirection) {
   if (direction === 'north') return { x: 0, y: -1 }
@@ -37,8 +38,41 @@ export function White2PlayerInteractionRuntime() {
   const [selection, setSelection] = useState(0)
   const [page, setPage] = useState<MenuPage>('root')
   const [soonFeature, setSoonFeature] = useState('')
+  const [screenRect, setScreenRect] = useState<ScreenRect | null>(null)
 
   useEffect(() => multiplayerPresence.subscribe(setPresence), [])
+
+  useEffect(() => {
+    let resizeObserver: ResizeObserver | null = null
+    let observed: Element | null = null
+
+    const update = () => {
+      const screen = document.querySelector<HTMLCanvasElement>('canvas[aria-label="Nintendo DS top screen"]')
+      if (!screen) {
+        setScreenRect(null)
+        return
+      }
+      const rect = screen.getBoundingClientRect()
+      setScreenRect({ left: rect.left, top: rect.top, width: rect.width, height: rect.height, bottom: rect.bottom })
+      if (screen !== observed && typeof ResizeObserver !== 'undefined') {
+        resizeObserver?.disconnect()
+        observed = screen
+        resizeObserver = new ResizeObserver(update)
+        resizeObserver.observe(screen)
+      }
+    }
+
+    update()
+    const timer = window.setInterval(update, 250)
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+      resizeObserver?.disconnect()
+    }
+  }, [])
 
   const interactable = useMemo(
     () => canInteract(presence.local, presence.remote),
@@ -151,15 +185,15 @@ export function White2PlayerInteractionRuntime() {
   }, [interactable, menuOpen, page, presence.local, presence.remote, selection])
 
   if (!menuOpen) {
-    if (!interactable) return null
+    if (!interactable || !screenRect) return null
     return (
       <div style={{
         position: 'fixed',
-        left: '50%',
-        bottom: 24,
+        left: screenRect.left + screenRect.width / 2,
+        top: screenRect.bottom - 46,
         transform: 'translateX(-50%)',
         zIndex: 12000,
-        padding: '8px 12px',
+        padding: '7px 11px',
         border: '2px solid #243f54',
         boxShadow: '3px 3px 0 rgba(0,0,0,.24)',
         background: 'rgba(248, 252, 255, .96)',
@@ -175,6 +209,7 @@ export function White2PlayerInteractionRuntime() {
   }
 
   const remote = presence.remote
+  if (!screenRect) return null
 
   return (
     <div
@@ -186,11 +221,15 @@ export function White2PlayerInteractionRuntime() {
       }}
       style={{
         position: 'fixed',
-        inset: 0,
+        left: screenRect.left,
+        top: screenRect.top,
+        width: screenRect.width,
+        height: screenRect.height,
         zIndex: 13000,
         display: 'grid',
         placeItems: 'center',
-        background: 'rgba(9, 20, 31, .34)',
+        background: 'rgba(9, 20, 31, .42)',
+        overflow: 'hidden',
       }}
     >
       <section
@@ -200,8 +239,10 @@ export function White2PlayerInteractionRuntime() {
         onMouseDown={event => event.stopPropagation()}
         className="pixel-border"
         style={{
-          width: 'min(390px, calc(100vw - 32px))',
-          padding: 18,
+          width: 'min(390px, calc(100% - 28px))',
+          maxHeight: 'calc(100% - 28px)',
+          overflow: 'auto',
+          padding: 16,
           background: '#f8fcff',
           color: '#243f54',
           boxShadow: '6px 6px 0 rgba(0,0,0,.28)',
@@ -209,10 +250,10 @@ export function White2PlayerInteractionRuntime() {
       >
         <span className="eyebrow">MULTIPLAYER • PARTNER</span>
         <h2 style={{ margin: '5px 0 4px' }}>PLAYER INTERACTION</h2>
-        <p style={{ margin: '0 0 14px', opacity: .75 }}>Choose what you want to do with the nearby player.</p>
+        <p style={{ margin: '0 0 12px', opacity: .75 }}>Choose what you want to do with the nearby player.</p>
 
         {page === 'root' && (
-          <div style={{ display: 'grid', gap: 8 }}>
+          <div style={{ display: 'grid', gap: 7 }}>
             {MENU_ITEMS.map((item, index) => (
               <button
                 key={item}
@@ -235,7 +276,7 @@ export function White2PlayerInteractionRuntime() {
                   justifyContent: 'space-between',
                   alignItems: 'center',
                   width: '100%',
-                  padding: '10px 12px',
+                  padding: '9px 11px',
                   border: selection === index ? '3px solid #243f54' : '2px solid #8ca1b0',
                   background: selection === index ? '#e8f5ff' : '#fff',
                   color: '#243f54',
@@ -273,7 +314,7 @@ export function White2PlayerInteractionRuntime() {
           </div>
         )}
 
-        <small style={{ display: 'block', marginTop: 12, opacity: .65 }}>↑↓ MOVE • X/ENTER SELECT • Z/ESC BACK</small>
+        <small style={{ display: 'block', marginTop: 10, opacity: .65 }}>↑↓ MOVE • X/ENTER SELECT • Z/ESC BACK</small>
       </section>
     </div>
   )
