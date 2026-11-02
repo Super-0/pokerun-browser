@@ -4,6 +4,7 @@ import { White2LocalRenderDiagnostics } from '../debug/White2LocalRenderDiagnost
 import { White2RenderTransitionDiagnostics } from '../debug/White2RenderTransitionDiagnostics'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import { White2NativeCommShadowRuntime } from './White2NativeCommShadowRuntime'
+import { White2PlayerInteractionRuntime } from './White2PlayerInteractionRuntime'
 import { White2RemoteTransitionRuntime } from './White2RemoteTransitionRuntime'
 
 // Compatibility wrapper used by MelonDsPlayer. Production keeps the existing
@@ -13,6 +14,7 @@ import { White2RemoteTransitionRuntime } from './White2RemoteTransitionRuntime'
 export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   return <>
     <White2RemoteTransitionRuntime bridge={bridge} rom={rom}/>
+    <White2PlayerInteractionRuntime/>
     {import.meta.env.DEV && <>
       <White2NativeCommShadowRuntime bridge={bridge} rom={rom}/>
       <White2RenderTransitionDiagnostics bridge={bridge} rom={rom}/>
