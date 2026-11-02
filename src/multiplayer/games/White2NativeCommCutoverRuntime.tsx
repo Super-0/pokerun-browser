@@ -123,6 +123,10 @@ function assertCall(call: Arm9NativeCallResult, label: string) {
   if (call.status !== 1) throw new Error(`${label} failed (status ${call.status}, PC ${hex(call.pc)}).`)
 }
 
+function mapPairKey(a: number | string, b: number | string) {
+  return [String(a), String(b)].sort().join('<->')
+}
+
 function freshRemoteDoorArrival(presence: MultiplayerPresenceSnapshot): MultiplayerMapTransition | null {
   const local = presence.local
   const remote = presence.remote
@@ -149,14 +153,15 @@ function freshRemoteMapEdgeArrival(presence: MultiplayerPresenceSnapshot): Multi
   return transition
 }
 
-function freshMapEdgeBridge(presence: MultiplayerPresenceSnapshot) {
+function freshMapEdgeBridgePair(presence: MultiplayerPresenceSnapshot) {
   const local = presence.local
   const remote = presence.remote
-  if (!local || !remote?.worldPosition || local.location.mapId === remote.location.mapId) return false
+  if (!local || !remote?.worldPosition || local.location.mapId === remote.location.mapId) return null
   const localMapId = local.location.mapId
   const remoteMapId = remote.location.mapId
+  const pair = mapPairKey(localMapId, remoteMapId)
 
-  return [local.transition, remote.transition].some(transition => {
+  const verified = [local.transition, remote.transition].some(transition => {
     if (!transition || transition.kind !== 'map-edge') return false
     if (transition.fromMapId === transition.toMapId) return false
     const age = Date.now() - transition.detectedAt
@@ -164,6 +169,7 @@ function freshMapEdgeBridge(presence: MultiplayerPresenceSnapshot) {
     return (transition.fromMapId === localMapId && transition.toMapId === remoteMapId)
       || (transition.fromMapId === remoteMapId && transition.toMapId === localMapId)
   })
+  return verified ? pair : null
 }
 
 function doorwayWorldForArrival(
@@ -479,6 +485,7 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
     let cancelled = false
     let busy = false
     let nativeRemote: NativeRemote | null = null
+    let latchedMapEdgePair = ''
     let lastError = ''
 
     async function tick() {
@@ -490,6 +497,12 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
         const remote = presence.remote
 
         if (!local || !remote?.worldPosition) return
+
+        const differentMaps = local.location.mapId !== remote.location.mapId
+        const currentMapPair = differentMaps ? mapPairKey(local.location.mapId, remote.location.mapId) : ''
+        const freshMapEdgePair = differentMaps ? freshMapEdgeBridgePair(presence) : null
+        if (freshMapEdgePair) latchedMapEdgePair = freshMapEdgePair
+        if (!differentMaps) latchedMapEdgePair = ''
 
         if (!nativeRemote) {
           const doorTransition = freshRemoteDoorArrival(presence)
@@ -540,7 +553,7 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
         }
 
         const current = nativeRemote
-        const preserveMapEdge = freshMapEdgeBridge(presence)
+        const preserveMapEdge = differentMaps && latchedMapEdgePair === currentMapPair
         let hidden = local.location.mapId === remote.location.mapId || preserveMapEdge ? 0 : 1
         let targetWorld = remote.worldPosition
         const now = performance.now()
@@ -671,6 +684,7 @@ export function White2NativeCommCutoverRuntime({ bridge, rom }: { bridge: MelonD
       window.clearInterval(timer)
       const current = nativeRemote
       nativeRemote = null
+      latchedMapEdgePair = ''
       if (current && runtimeBridge.status === 'running') void deleteNativeRemote(runtimeBridge, probe, current)
     }
   }, [bridge, rom.gameId, rom.sha256])
