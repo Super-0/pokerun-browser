@@ -61,6 +61,21 @@ function isFreshMapEdgeRendezvous(local: MultiplayerPlayerState, remote: Multipl
   return isFreshMapEdgeArrival(localMapId, local) || isFreshMapEdgeArrival(localMapId, remote)
 }
 
+function isFreshMapEdgeBridge(local: MultiplayerPlayerState, remote: MultiplayerPlayerState) {
+  const localMapId = local.location.mapId
+  const remoteMapId = remote.location.mapId
+  if (localMapId === remoteMapId) return false
+
+  return [local.transition, remote.transition].some(transition => {
+    if (!transition || transition.kind !== 'map-edge') return false
+    if (transition.fromMapId === transition.toMapId) return false
+    const age = Date.now() - transition.detectedAt
+    if (age < 0 || age >= MAP_EDGE_MAX_AGE_MS) return false
+    return (transition.fromMapId === localMapId && transition.toMapId === remoteMapId)
+      || (transition.fromMapId === remoteMapId && transition.toMapId === localMapId)
+  })
+}
+
 async function readFieldBusyFlag(bridge: MelonDsBridge, gameData: number) {
   const status = await bridge.callArm9Thumb4(
     GAME_DATA_GET_FIELD_STATUS,
@@ -103,6 +118,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
     let cancelled = false
     let busy = false
     let mountedSignature = ''
+    let mountedFieldIdentity = ''
     let stableSignature = ''
     let stableSince = 0
     let lastState = ''
@@ -117,6 +133,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
       if (!mountedSignature) return
       const previous = mountedSignature
       mountedSignature = ''
+      mountedFieldIdentity = ''
       setReleaseKey(null)
       console.info('[PokéRun lifecycle] PROBE 11 NATIVE COMM WITHDRAW', {
         reason,
@@ -137,8 +154,15 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
           return
         }
 
-        // If the peer is on another map, there should be no P2 actor in this field.
-        if (local.location.mapId !== remote.location.mapId) {
+        const differentMaps = local.location.mapId !== remote.location.mapId
+        const mapEdgeBridge = differentMaps && Boolean(mountedFieldIdentity) && isFreshMapEdgeBridge(local, remote)
+
+        // A verified same-matrix map edge does not tear down the White 2 field.
+        // Keep the already-mounted native communication actor alive while one
+        // peer's map ID has flipped and the other peer is still finishing the
+        // same continuous world-space step. All other map mismatches still
+        // remove P2 from this field immediately.
+        if (differentMaps && !mapEdgeBridge) {
           withdraw('players-on-different-maps', {
             localMapId: local.location.mapId,
             remoteMapId: remote.location.mapId,
@@ -190,6 +214,32 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
         }
 
         const signature = `${String(local.location.mapId)}:${hex(scan.actorSystem)}:${hex(player!.address)}:${modelId}`
+        const fieldIdentity = `${hex(scan.actorSystem)}:${hex(player!.address)}:${modelId}`
+
+        // Same-matrix edges only change the logical map ID. If the actual field,
+        // player actor, model and scheduler remain the same, preserve the child
+        // key so React never unmounts/recreates the native P2 actor.
+        if (mountedFieldIdentity && mountedFieldIdentity === fieldIdentity) {
+          mountedSignature = signature
+          if (mapEdgeBridge && lastState !== 'map-edge-preserved') {
+            console.info('[PokéRun lifecycle] PROBE 16 NATIVE COMM MAP EDGE PRESERVED', {
+              signature,
+              fieldIdentity,
+              localMapId: local.location.mapId,
+              remoteMapId: remote.location.mapId,
+              localTransitionId: local.transition?.id ?? null,
+              remoteTransitionId: remote.transition?.id ?? null,
+              actorSystem: hex(scan.actorSystem),
+              playerActor: hex(player!.address),
+              tcbManager: hex(tcbManager),
+              busyFlag: fieldBusy,
+              note: 'Verified same-matrix edge kept the existing native P2 actor, comm system, shadow and TCB alive across the temporary map-ID mismatch.',
+            })
+          }
+          lastState = mapEdgeBridge ? 'map-edge-preserved' : 'mounted'
+          return
+        }
+
         if (mountedSignature === signature) {
           lastState = 'mounted'
           return
@@ -213,6 +263,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
         if (now - stableSince < requiredStableMs) return
 
         mountedSignature = signature
+        mountedFieldIdentity = fieldIdentity
         setReleaseKey(signature)
         lastState = 'mounted'
         const logLabel = remoteDoorArrival
@@ -262,6 +313,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
       cancelled = true
       window.clearInterval(timer)
       mountedSignature = ''
+      mountedFieldIdentity = ''
       setReleaseKey(null)
     }
   }, [bridge, rom.gameId, rom.sha256])
