@@ -38,6 +38,10 @@ function isNormalPlayerModel(modelId: number) {
   return modelId === OBJ_CODE_HERO || modelId === OBJ_CODE_HEROINE
 }
 
+function mapPairKey(a: number | string, b: number | string) {
+  return [String(a), String(b)].sort().join('<->')
+}
+
 function isFreshRemoteDoorArrival(localMapId: number | string, remote: MultiplayerPlayerState) {
   const transition = remote.transition
   if (!transition || transition.kind === 'map-edge') return false
@@ -61,12 +65,13 @@ function isFreshMapEdgeRendezvous(local: MultiplayerPlayerState, remote: Multipl
   return isFreshMapEdgeArrival(localMapId, local) || isFreshMapEdgeArrival(localMapId, remote)
 }
 
-function isFreshMapEdgeBridge(local: MultiplayerPlayerState, remote: MultiplayerPlayerState) {
+function freshMapEdgeBridgePair(local: MultiplayerPlayerState, remote: MultiplayerPlayerState) {
   const localMapId = local.location.mapId
   const remoteMapId = remote.location.mapId
-  if (localMapId === remoteMapId) return false
+  if (localMapId === remoteMapId) return null
 
-  return [local.transition, remote.transition].some(transition => {
+  const pair = mapPairKey(localMapId, remoteMapId)
+  const verified = [local.transition, remote.transition].some(transition => {
     if (!transition || transition.kind !== 'map-edge') return false
     if (transition.fromMapId === transition.toMapId) return false
     const age = Date.now() - transition.detectedAt
@@ -74,6 +79,7 @@ function isFreshMapEdgeBridge(local: MultiplayerPlayerState, remote: Multiplayer
     return (transition.fromMapId === localMapId && transition.toMapId === remoteMapId)
       || (transition.fromMapId === remoteMapId && transition.toMapId === localMapId)
   })
+  return verified ? pair : null
 }
 
 async function readFieldBusyFlag(bridge: MelonDsBridge, gameData: number) {
@@ -119,6 +125,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
     let busy = false
     let mountedSignature = ''
     let mountedFieldIdentity = ''
+    let latchedMapEdgePair = ''
     let stableSignature = ''
     let stableSince = 0
     let lastState = ''
@@ -134,6 +141,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
       const previous = mountedSignature
       mountedSignature = ''
       mountedFieldIdentity = ''
+      latchedMapEdgePair = ''
       setReleaseKey(null)
       console.info('[PokéRun lifecycle] PROBE 11 NATIVE COMM WITHDRAW', {
         reason,
@@ -155,17 +163,25 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
         }
 
         const differentMaps = local.location.mapId !== remote.location.mapId
-        const mapEdgeBridge = differentMaps && Boolean(mountedFieldIdentity) && isFreshMapEdgeBridge(local, remote)
+        const currentMapPair = differentMaps ? mapPairKey(local.location.mapId, remote.location.mapId) : ''
+        const freshMapEdgePair = differentMaps && Boolean(mountedFieldIdentity)
+          ? freshMapEdgeBridgePair(local, remote)
+          : null
+        if (freshMapEdgePair) latchedMapEdgePair = freshMapEdgePair
+        if (!differentMaps) latchedMapEdgePair = ''
+        const mapEdgeBridge = differentMaps
+          && Boolean(mountedFieldIdentity)
+          && latchedMapEdgePair === currentMapPair
 
         // A verified same-matrix map edge does not tear down the White 2 field.
-        // Keep the already-mounted native communication actor alive while one
-        // peer's map ID has flipped and the other peer is still finishing the
-        // same continuous world-space step. All other map mismatches still
-        // remove P2 from this field immediately.
+        // Once that edge pair has been observed, latch it until the players reunite
+        // or one of them moves to a different map pair. This avoids treating the
+        // short-lived transition packet itself as the lifetime of the native actor.
         if (differentMaps && !mapEdgeBridge) {
           withdraw('players-on-different-maps', {
             localMapId: local.location.mapId,
             remoteMapId: remote.location.mapId,
+            latchedMapEdgePair: latchedMapEdgePair || null,
           })
           lastState = 'different-maps'
           return
@@ -225,6 +241,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
             console.info('[PokéRun lifecycle] PROBE 16 NATIVE COMM MAP EDGE PRESERVED', {
               signature,
               fieldIdentity,
+              mapPair: latchedMapEdgePair,
               localMapId: local.location.mapId,
               remoteMapId: remote.location.mapId,
               localTransitionId: local.transition?.id ?? null,
@@ -233,7 +250,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
               playerActor: hex(player!.address),
               tcbManager: hex(tcbManager),
               busyFlag: fieldBusy,
-              note: 'Verified same-matrix edge kept the existing native P2 actor, comm system, shadow and TCB alive across the temporary map-ID mismatch.',
+              note: 'Verified same-matrix edge pair is latched; the existing native P2 actor, comm system, shadow and TCB remain alive until both players reunite or leave this edge pair.',
             })
           }
           lastState = mapEdgeBridge ? 'map-edge-preserved' : 'mounted'
@@ -314,6 +331,7 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
       window.clearInterval(timer)
       mountedSignature = ''
       mountedFieldIdentity = ''
+      latchedMapEdgePair = ''
       setReleaseKey(null)
     }
   }, [bridge, rom.gameId, rom.sha256])
