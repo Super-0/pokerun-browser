@@ -29,7 +29,7 @@ Native communication actors use:
 - live pointers to direction, world position, hidden state, and a comm entry;
 - native facing, movement draw status, billboard animation, and visibility handling.
 
-PokéRun has now proven this path works end-to-end with the fake multiplayer peer.
+PokéRun has proven this path end-to-end with the fake multiplayer peer. The actual DEV P2 now uses a native FieldCommActor rather than the old detached/manual mirror actor.
 
 ## Resolved orange ghost actor
 
@@ -170,23 +170,11 @@ White 2's native `CommPlayer_HideActors` / `CommPlayer_RestoreActors` behavior w
 - wait while the new field is unavailable/unstable;
 - recreate P2 only when the new field is stable and P1/P2 are on the same map.
 
-Validated test:
-
-1. P1 + P2 started outside on map 427;
-2. P1 entered building map 433;
-3. Probe 11 logged `PROBE 11 NATIVE COMM WITHDRAW` with reason `field-busy-loading`;
-4. cleanup logged `safe: true` before the old billboard system disappeared;
-5. P2 remained absent while P1 was on map 433 and fake P2 stayed on 427;
-6. P1 returned to map 427;
-7. a fresh native P2 was created exactly once;
-8. native shadow was recreated;
-9. the new P2 remained healthy and followed fake-peer state.
-
-This validates the dangerous local-field teardown/rebuild lifecycle.
+Validated with map `427 -> 433 -> 427`. Cleanup was safe before field destruction and P2 recreated once after the stable return.
 
 ### Probe 12 — fake P2 remote door enter/exit — FULL PASS
 
-No new code was required. The existing `FakeRemoteDoorPeerPanel` captured a real P1 door transition and replayed it for fake P2.
+The existing `FakeRemoteDoorPeerPanel` captured a real P1 door transition and replayed it for fake P2.
 
 Captured door:
 
@@ -195,78 +183,248 @@ Captured door:
 - interior destination `(6, 11)`;
 - native door prop handle matched correctly.
 
-Forward remote transition validated:
+Forward and reverse remote door transitions both passed. P2 is removed when maps diverge and recreated at the authoritative destination when the maps match again.
 
-1. P1 remained on map 427;
-2. fake P2 walked into the captured door;
-3. `REMOTE DEPARTURE`, `PLAY NEAREST DOOR`, `HANDLE AT POS MATCH`, and `DOOR RESULT matched: true` all fired;
-4. fake P2 changed to map 433;
-5. Probe 11 withdrew native P2 with reason `players-on-different-maps`;
-6. native cutover cleanup completed with `safe: true`;
-7. no remote actor remained on P1's map while P2 was inside.
+### Probe 13 — cross-map rendezvous — FULL PASS
 
-Reverse remote transition validated:
+The missing rendezvous matrix was validated:
 
-1. fake P2 replayed the captured door from map 433 back to 427;
-2. the exterior door on P1's live map opened again;
-3. fake P2 changed back to map 427 at the expected outside destination;
-4. after the same-map field was stable, Probe 11 emitted `PROBE 11 NATIVE COMM RESTORE READY`;
-5. a fresh native comm P2 was created;
-6. native shadow was restored;
-7. P2 position/direction exactly matched the remote destination state and stayed healthy.
+1. P2 leaves P1's map;
+2. P2 waits on another map;
+3. P1 joins P2;
+4. a native P2 is created at the remote authoritative position;
+5. the native shadow is restored;
+6. P2 continues moving normally;
+7. P1 can leave first and P2 is safely destroyed again.
 
-This validates remote-player departure/return through an actual door while P1 stays in place.
+Important observed field identities:
+
+- actorSystem remained `0x0223D968` across several maps, so actorSystem alone is **not** a field identity;
+- outside map 427 P1 actor: `0x0223E1E4`;
+- inside map 433 P1 actor: `0x0223DCE4`;
+- outside TCB manager: `0x02309EEC`;
+- inside TCB manager: `0x022FDDEC`;
+- outside fieldEffects: `0x0230B768`;
+- inside fieldEffects: `0x022FF668`.
+
+### Probe 14 — remote arrival polish — FULL PASS
+
+Door arrivals were changed from visible pop-in to staged native movement.
+
+Final proven behavior:
+
+- remote door transition is recognized while fresh;
+- native P2 is created hidden at the doorway staging point;
+- the actor begins native walking toward the authoritative destination;
+- P2 is revealed on the first native walking frame (`drawStatus !== 0`), with a small fallback only if needed;
+- the door opens before P2 becomes visibly established;
+- P2 completes the step with correct position, shadow, facing, and health.
+
+Representative successful reveal used `trigger: "native-walk-frame"`, `drawStatus: 3`, and occurred about 34 ms into the staged motion.
+
+Door-arrival staging remains door-specific. Seamless map edges now use preservation instead of recreation.
+
+### Probe 15 — remote departure presentation — FULL PASS
+
+Remote door departures now present as a complete doorway traversal before the fake peer publishes the destination map.
+
+Final sequence:
+
+1. approach door;
+2. keep P2 on the source map;
+3. publish short departure intent;
+4. walk one full world tile through the doorway over about 240 ms;
+5. only after the actor is behind the doorway geometry, publish the destination map;
+6. Probe 11 then performs the ordinary map-mismatch cleanup.
+
+This removed the premature disappearance at the door while preserving safe lifecycle semantics.
+
+### Probe 16 — seamless map edges — FULL PASS
+
+Probe 16 established that seamless overworld boundaries are a fundamentally different lifecycle from doors, buildings, and gates.
+
+#### Gate/tunnel discovery
+
+A first candidate path from map 427 toward map 437 actually traversed:
+
+`427 -> 438 -> 437`
+
+and reverse:
+
+`437 -> 438 -> 427`
+
+Those transitions have huge grid/world jumps and field teardown/loading behavior. Map 438 is the Aspertia Gate. Therefore static matrix adjacency alone cannot prove direct gameplay traversal.
+
+The relevant White 2 identities are:
+
+- `427` = Aspertia City;
+- `438` = Aspertia Gate;
+- `437` = Route 19;
+- `439` = Floccesy Town.
+
+#### True seamless edge: 437 <-> 439
+
+`437 <-> 439` was proven to be a real seamless same-matrix boundary:
+
+- P1 actor stays `0x0223DFE4` across the transition;
+- actorSystem stays `0x0223D968`;
+- billboard binding survives;
+- no field-busy-loading teardown occurs;
+- grid/world coordinates remain globally continuous;
+- observed world deltas included sub-tile steps such as 8192 and 16384;
+- a zero-delta moving boundary sample can occur when the map ID flips before the next position sample.
+
+The map-change classifier therefore accepts either:
+
+1. a small directional continuous world step that matches movement direction; or
+2. a zero-delta boundary sample where the direction is unchanged and at least one sample is moving.
+
+Large gate/warp jumps remain `unclassified` and use ordinary lifecycle handling.
+
+#### Native actor preservation
+
+The first implementation recreated P2 after a map-edge rendezvous. That worked technically but caused visible pop-in.
+
+The final implementation instead latches a verified map pair such as `437<->439` and keeps the **same native P2 actor alive** while the players temporarily report different map IDs.
+
+During the latched pair:
+
+- same FieldCommActor remains alive;
+- same `FldCommActSys` remains alive;
+- same native TCB remains attached;
+- same native shadow remains active;
+- P2 stays visible;
+- transition metadata may expire without forcing teardown;
+- the latch clears when players reunite, leave the pair, or White 2 enters real field loading.
+
+Both directions passed visually and technically. P2 remained continuously visible while P1 stayed behind for several seconds, then P1 crossed later with no actor deletion/recreation.
+
+Representative preserved actor on 437/439 tests:
+
+- P2 actor `0x0223E0E4`;
+- TCB `0x02309E74`;
+- `hidden: false`;
+- `actorError: 0` after settling.
+
+#### Static boundary registry filtering
+
+The ROM matrix extractor originally produced 182 same-matrix directional triggers. That was too permissive because some geometric neighbors are intercepted by route gates/tunnels.
+
+`runtime-boundary-export.mjs` now combines:
+
+- static matrix adjacency;
+- zone header matrix validation;
+- native warp topology.
+
+A geometric `A <-> B` edge is quarantined when a reciprocal native warp bridge exists through a third zone `G`:
+
+`A <-> G <-> B`
+
+This detects gate/tunnel interception without hardcoding Aspertia.
+
+Current generated runtime registry:
+
+- **140 traversable directional triggers**;
+- **44 quarantined directional triggers** total;
+- of those, 42 are gate/tunnel warp-bridge triggers and 2 are matrix/header mismatches;
+- schema version 2;
+- `traversableOnly: true`.
+
+Validation anchors enforce:
+
+- `427 <-> 437` must be quarantined through `438`;
+- `437 <-> 439` must remain traversable.
+
+Runtime validation passed:
+
+- map 427 reports zero usable candidates and quarantines `427 -> 437` via 438;
+- pressing fake P2 north at the old geometric 427 boundary does **not** emit a fake map-edge transition;
+- map 437 exposes `437 -> 439 east` as a usable edge and quarantines `437 -> 427 south` via 438;
+- pressing fake P2 east at `(95, 696)` emits `FAKE P2 MAP EDGE 437 -> 439` and immediately enters the native map-edge preservation path.
 
 ## Current transition architecture
 
-The current DEV behavior is now:
+The current DEV transition behavior is:
 
 ```text
-same map
+SAME MAP
   -> one native P2 FieldCommActor + native shadow
 
-P1 begins field load
-  -> busy/loading signal
-  -> withdraw P2
+REAL FIELD LOAD / DOOR / BUILDING / GATE
+  -> White 2 busy/loading or ordinary non-seamless map mismatch
+  -> withdraw P2 before unsafe teardown
   -> delete actor + free comm system safely
-  -> wait for stable field
+  -> wait for stable destination field
+  -> recreate P2 only when local/remote maps match
 
-P1/P2 on different maps
-  -> no P2 actor exists locally
-
-same map becomes stable again
-  -> create fresh native comm system
-  -> create one native P2
-  -> start native shadow
-  -> resume live remote backing-state updates
+VERIFIED SEAMLESS SAME-MATRIX EDGE
+  -> classify as kind=map-edge
+  -> latch the verified map pair
+  -> DO NOT delete P2 when map IDs temporarily differ
+  -> keep same actor + comm system + TCB + shadow visible
+  -> continue authoritative world-position updates
+  -> clear latch when players reunite or leave the pair
 ```
 
-Remote door visuals are driven by the captured transition metadata and the existing door runtime; P2's native actor lifecycle is owned by Probe 11's transition-aware gate.
+Door presentation and seamless-edge presentation intentionally use different lifecycle rules:
 
-## Next test — cross-map rendezvous
+- doors/warps require cleanup/recreation because fields can teardown;
+- true seamless edges preserve the live native actor because the field remains intact.
 
-Before calling transition recovery complete, test the missing rendezvous case:
+## Static boundary tooling
 
-1. keep P1 outside on map 427;
-2. send fake P2 through the captured door into map 433;
-3. leave fake P2 inside;
-4. then have real P1 enter that same building;
-5. when P1 arrives on map 433, a native P2 should be created inside at fake P2's authoritative interior position;
-6. P2 should have a native shadow and should continue moving normally inside;
-7. then test the inverse: P1 leaves first while P2 stays inside, confirming P2 disappears locally when maps diverge again.
+Useful commands:
 
-No code change is required for this test unless the rendezvous fails.
+```bash
+npm run white2:extract -- /path/to/PokemonWhite2.nds
+npm run white2:runtime-boundaries
+```
+
+`white2:runtime-boundaries` rebuilds only the filtered runtime registry from existing `generated/white2` extraction data.
+
+The runtime refuses stale schema-v1 boundary registries so old geometric-only candidates cannot silently reappear.
+
+## Known diagnostic noise
+
+A recurring idle diagnostic may log:
+
+`Probe 10 timed out waiting for 1 emulated frames.`
+
+If surrounding native cutover status remains healthy, treat this as diagnostic noise rather than a multiplayer failure.
+
+Early cold-start `GameSystem pointer is invalid` / `GameData pointer is invalid` messages are also expected while White 2 is still initializing.
 
 ## Guardrails
 
 - Keep the one-emulator + headless fake-P2 harness model in mind.
-- Never carry a FieldActor/FldCommActSys pointer across White 2 field teardown.
+- Never carry a FieldActor/FldCommActSys pointer across actual White 2 field teardown.
+- Do not use actorSystem alone as field identity; it can remain stable across field changes.
 - Prefer White 2's own busy/loading signal and native actor lifecycle over map-ID-only heuristics.
+- Treat only `kind: "map-edge"` plus verified traversable boundaries as eligible for same-actor preservation.
+- `safeOnly` / same-matrix geometry is not sufficient to prove direct gameplay traversal.
 - Do not reintroduce the ghost scrubber; the save is repaired and the temporary repair runtime was removed.
-- Avoid unrelated protocol changes while transition recovery is being validated.
+- Avoid disturbing the proven door arrival/departure timings unless a targeted regression is demonstrated.
+- Leave unrelated dirty `third_party/ds-anywhere` worktree/submodule state alone.
+
+## Current checkpoint
+
+Probes 10 through 16 are now functionally validated for the current development scope:
+
+- native same-map P2 rendering and movement;
+- native shadow;
+- safe P1 field teardown/recovery;
+- remote P2 door enter/exit;
+- cross-map rendezvous;
+- polished remote door arrival;
+- polished remote door departure;
+- true seamless edge classification;
+- same-native-actor preservation across seamless edges;
+- ROM-derived gate/tunnel filtering for static edge candidates.
+
+`437 <-> 439` should now be treated as the canonical proven seamless-edge test pair. `427 <-> 437` must never be treated as direct; normal gameplay goes through map 438.
 
 ## New chat handoff
 
 Use:
 
-> Continue PokéRun multiplayer. First read `docs/POKERUN_MULTIPLAYER_STATE.md` and `docs/WHITE2_RESEARCH.md` on branch `mp/map-transition-recovery-v2`. The harness has ONE real White 2 emulator plus a headless fake P2 peer. Native P2 same-map rendering, movement, shadow, P1 field transitions, and fake-P2 door enter/exit have all passed. Probe 11 uses White 2's busy/loading lifecycle to delete/free P2 before field teardown and recreate it only on a stable same-map field. Probe 12 validated fake P2 entering map 433 and returning to 427 through the captured door with safe cleanup/restoration. The next test is cross-map rendezvous: P2 goes inside first, then P1 enters the same map and should find P2 already there.
+> Continue PokéRun multiplayer. First read `docs/POKERUN_MULTIPLAYER_STATE.md` and `docs/WHITE2_RESEARCH.md` on branch `mp/map-transition-recovery-v2`. The harness has ONE real White 2 emulator plus a headless fake P2 peer. Probes 10-16 have passed: native P2 same-map rendering/shadow, safe field teardown, remote door enter/exit, cross-map rendezvous, door arrival/departure polish, and seamless map-edge preservation. True seamless pair `437 <-> 439` keeps the SAME native FieldCommActor/comm system/TCB/shadow alive while map IDs temporarily differ. Geometric `427 <-> 437` is quarantined because gameplay is intercepted by gate map 438. The filtered ROM registry is schema v2 with 140 traversable and 44 quarantined directional triggers. Treat these docs and the current branch as canonical before proposing the next change.
