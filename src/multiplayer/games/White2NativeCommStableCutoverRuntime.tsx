@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
-import type { MultiplayerRomIdentity } from '../core/protocol'
+import type { MultiplayerPlayerState, MultiplayerRomIdentity } from '../core/protocol'
 import { White2ActorSystemProbe } from './White2ActorSystem'
 import { White2NativeCommCutoverRuntime } from './White2NativeCommCutoverRuntime'
 
@@ -20,6 +20,8 @@ const FLD_STATUS_BUSY_LOADING = 2
 const NATIVE_STACK_RESERVE = 0x400
 const POLL_MS = 50
 const STABLE_MS = 900
+const ARRIVAL_STABLE_MS = 0
+const ARRIVAL_MAX_AGE_MS = 1600
 const MAIN_RAM_START = 0x02000000
 const MAIN_RAM_END = 0x02400000
 
@@ -33,6 +35,15 @@ function isMainRamPointer(value: number) {
 
 function isNormalPlayerModel(modelId: number) {
   return modelId === OBJ_CODE_HERO || modelId === OBJ_CODE_HEROINE
+}
+
+function isFreshRemoteDoorArrival(localMapId: number | string, remote: MultiplayerPlayerState) {
+  const transition = remote.transition
+  if (!transition || transition.kind === 'map-edge') return false
+  if (transition.fromMapId === transition.toMapId) return false
+  if (transition.toMapId !== localMapId || remote.location.mapId !== localMapId) return false
+  const age = Date.now() - transition.detectedAt
+  return age >= 0 && age < ARRIVAL_MAX_AGE_MS
 }
 
 async function readFieldBusyFlag(bridge: MelonDsBridge, gameData: number) {
@@ -169,19 +180,23 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
           return
         }
 
+        const remoteDoorArrival = isFreshRemoteDoorArrival(local.location.mapId, remote)
+        const requiredStableMs = remoteDoorArrival ? ARRIVAL_STABLE_MS : STABLE_MS
         const now = performance.now()
         if (stableSignature !== signature) {
           stableSignature = signature
           stableSince = now
-          lastState = 'stabilizing'
+          lastState = remoteDoorArrival ? 'arrival-stabilizing' : 'stabilizing'
           return
         }
-        if (now - stableSince < STABLE_MS) return
+        if (now - stableSince < requiredStableMs) return
 
         mountedSignature = signature
         setReleaseKey(signature)
         lastState = 'mounted'
-        console.info('[PokéRun lifecycle] PROBE 11 NATIVE COMM RESTORE READY', {
+        console.info(remoteDoorArrival
+          ? '[PokéRun lifecycle] PROBE 14 NATIVE COMM ARRIVAL RESTORE READY'
+          : '[PokéRun lifecycle] PROBE 11 NATIVE COMM RESTORE READY', {
           signature,
           mapId: local.location.mapId,
           modelId,
@@ -189,7 +204,11 @@ export function White2NativeCommStableCutoverRuntime({ bridge, rom }: { bridge: 
           actorSystem: hex(scan.actorSystem),
           tcbManager: hex(tcbManager),
           busyFlag: fieldBusy,
-          note: 'Stable same-map field detected; a fresh native P2 may now be created.',
+          remoteDoorArrival,
+          transitionId: remote.transition?.id ?? null,
+          note: remoteDoorArrival
+            ? 'Fresh remote door arrival detected; create native P2 immediately while the destination door is still open.'
+            : 'Stable same-map field detected; a fresh native P2 may now be created.',
         })
       } catch (reason) {
         resetStableWindow()
