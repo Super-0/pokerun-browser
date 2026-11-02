@@ -22,6 +22,9 @@ type OutboundMessage = { type: MultiplayerMessage['type']; [key: string]: unknow
 const codeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const TRANSITION_REPEAT_MS = 1200
 const MOVEMENT_IDLE_MS = 180
+const MAP_EDGE_WORLD_MAX_STEP = 0x10000
+const MAP_EDGE_WORLD_AXIS_SLOP = 0x1000
+const MAP_EDGE_HEIGHT_SLOP = 0x10000
 
 function roomCode() { return Array.from({ length: 6 }, () => codeAlphabet[Math.floor(Math.random() * codeAlphabet.length)]).join('') }
 function missingRom(gameId: GameId): MultiplayerRomIdentity { return { gameId, status: 'missing' } }
@@ -44,7 +47,23 @@ function classifyMapChange(previous: MultiplayerPlayerState, current: Multiplaye
   const worldDx = previousWorld && currentWorld ? (currentWorld.x | 0) - (previousWorld.x | 0) : null
   const worldDy = previousWorld && currentWorld ? (currentWorld.y | 0) - (previousWorld.y | 0) : null
   const worldDz = previousWorld && currentWorld ? (currentWorld.z | 0) - (previousWorld.z | 0) : null
-  const kind = gridDistance === 1 ? 'map-edge' as const : undefined
+  const worldHorizontalDistance = worldDx === null || worldDz === null
+    ? null
+    : Math.abs(worldDx) + Math.abs(worldDz)
+  const direction = current.direction
+  const directionMatchesWorldStep = worldDx !== null && worldDz !== null && (
+    (direction === 'east' && worldDx > 0 && Math.abs(worldDz) <= MAP_EDGE_WORLD_AXIS_SLOP)
+    || (direction === 'west' && worldDx < 0 && Math.abs(worldDz) <= MAP_EDGE_WORLD_AXIS_SLOP)
+    || (direction === 'north' && worldDz < 0 && Math.abs(worldDx) <= MAP_EDGE_WORLD_AXIS_SLOP)
+    || (direction === 'south' && worldDz > 0 && Math.abs(worldDx) <= MAP_EDGE_WORLD_AXIS_SLOP)
+  )
+  const continuousWorldStep = worldHorizontalDistance !== null
+    && worldDy !== null
+    && worldHorizontalDistance > 0
+    && worldHorizontalDistance <= MAP_EDGE_WORLD_MAX_STEP
+    && Math.abs(worldDy) <= MAP_EDGE_HEIGHT_SLOP
+    && directionMatchesWorldStep
+  const kind = gridDistance <= 1 && continuousWorldStep ? 'map-edge' as const : undefined
 
   console.info('[PokéRun transition] PROBE 16 MAP CHANGE CLASSIFIED', {
     kind: kind ?? 'unclassified',
@@ -56,11 +75,13 @@ function classifyMapChange(previous: MultiplayerPlayerState, current: Multiplaye
     fromWorld: previousWorld ?? null,
     toWorld: currentWorld ?? null,
     worldDelta: worldDx === null ? null : { x: worldDx, y: worldDy, z: worldDz },
+    worldHorizontalDistance,
+    continuousWorldStep,
     fromDirection: previous.direction,
     toDirection: current.direction,
     note: kind === 'map-edge'
-      ? 'One-tile map change classified as a seamless map edge; door playback should be skipped.'
-      : 'Large/non-adjacent map change left unclassified so existing door/warp handling remains unchanged.',
+      ? 'Sub-tile world continuity matches movement direction; classified as a seamless map edge with no field teardown.'
+      : 'World coordinates do not look like one continuous overworld step; keep ordinary field/warp lifecycle handling.',
   })
 
   return kind
