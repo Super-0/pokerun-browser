@@ -11,13 +11,12 @@ const NATIVE_STACK_RESERVE = 0x400
 
 // White 2's native emotion-bubble assets are:
 // 0 = !, 1 = ?, 2 = music note, 3 = ellipsis.
-// Keep the current social protocol stable during the native-render probe; the
-// menu/protocol names will be cut over after the native effect is proven.
 function nativeKind(kind: MultiplayerEmoteKind) {
   if (kind === 'surprised') return 0
-  if (kind === 'hello') return 2
-  if (kind === 'cheer') return 2
-  return 3
+  if (kind === 'question') return 1
+  if (kind === 'hello' || kind === 'cheer') return 2
+  if (kind === 'ellipsis' || kind === 'heart') return 3
+  return 0
 }
 
 function hex(value: number) {
@@ -92,8 +91,6 @@ export function White2NativeEmoteRuntime({ bridge, rom }: { bridge: MelonDsBridg
           if (cancelled) return
 
           if (wantsLocal && localEmote) {
-            // Mark before invoking the native call so a failing field effect does
-            // not loop every presence update and destabilize the field runtime.
             handledLocal.current = localEmote.id
             if (scan.playerActor) {
               await play(scan.playerActor.address, localEmote.kind, 'local', localEmote.id)
@@ -127,8 +124,5 @@ export function White2NativeEmoteRuntime({ bridge, rom }: { bridge: MelonDsBridg
     }
   }, [bridge, rom.gameId, rom.sha256])
 
-  // During the native-emote probe, keep the existing HTML menu as the selector
-  // but explicitly suppress its old emote renderer. The menu itself is the next
-  // native subsystem to replace after this field-effect call is proven.
-  return <style>{`.w2-emote-bubble { display: none !important; }`}</style>
+  return null
 }
