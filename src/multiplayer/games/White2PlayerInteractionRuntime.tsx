@@ -362,7 +362,20 @@ export function White2PlayerInteractionRuntime() {
                   key={item}
                   className={`w2-menu-item ${selection === index ? 'selected' : ''}`}
                   onMouseEnter={() => setSelection(index)}
-                  onClick={() => selectItem(item)}
+                  onClick={() => {
+                    if (item === 'CLOSE') {
+                      setMenuOpen(false)
+                      setPage('root')
+                      setSoonFeature('')
+                      return
+                    }
+                    if (item === 'TRAINER CARD') {
+                      setPage('trainer')
+                      return
+                    }
+                    setSoonFeature(item)
+                    setPage('soon')
+                  }}
                 >
                   <span>{item}</span>
                   {(item === 'EMOTE' || item === 'FOLLOW') && <small>SOON</small>}
