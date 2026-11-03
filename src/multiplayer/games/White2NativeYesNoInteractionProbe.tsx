@@ -53,6 +53,16 @@ const NATIVE_STACK_RESERVE = 0x800
 const PRK31_ROM_RANGE_ONLY = false // Retained read-only diagnostic fallback.
 const PRK33_FOUR_ARG_BG2_VISUAL = true // PRK34 routes all calls through Thumb4; Thumb8 relocation is forbidden.
 const EXPECTED_STABLE_PLAYER_MODEL = 240
+// PRK36: exact-ROM data captured from PRK29/31. Used for read-only font
+// verification even when it is unsafe to inject ANY native guest call.
+const WHITE2_KNOWN_FIELD_MSGBG = 0x02271cb0
+// Nitro's DTCM stack worked in PRK34 at 0x02FE33C8. Restrict this
+// research probe to the observed safe upper DTCM band with a full 0x800
+// reserved below SP. SP=0x0214C470 belongs to the idle thread's BSS
+// stack region, where heap-backed calls repeatedly enter ARM9 abort mode.
+const PRK36_VALID_STACK_LO = 0x02fe2800
+const PRK36_VALID_STACK_HI = 0x02fe4000
+const PRK36_FRAME_POLLS = 240
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 
 type AtomicRuntime = {
@@ -92,7 +102,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BG2 THUMB4 FONT ROM PROBE EFFECT', {
+    console.info('[PokéRun interaction] BG2 SAFE-STACK FONT ROM PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -106,20 +116,56 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BG2 THUMB4 FONT ROM PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BG2 SAFE-STACK FONT ROM PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
     }
     // TypeScript does not preserve a nullable value's narrowing inside
     // nested functions; capture the validated bridge as a non-null const.
-    // Eight-argument export is checked for compatibility only, never called in PRK34.
+    // Eight-argument export is checked for compatibility only, never called.
+    let disposed = false
+    const validNativeStack = (sp: number) =>
+      sp >= PRK36_VALID_STACK_LO && sp < PRK36_VALID_STACK_HI && (sp & 7) === 0
+
+    async function waitForActiveNativeStack() {
+      const firstSp = await runtimeBridge.getArm9Sp()
+      if (validNativeStack(firstSp)) {
+        console.info('[PokéRun interaction] PRK36 ACTIVE STACK READY', {
+          sp: hex(firstSp), framePolls: 0, note: 'DTCM field stack is inside the PRK34 successful range.',
+        })
+        return true
+      }
+      const seen = new Set<string>([hex(firstSp)])
+      for (let framePoll = 1; framePoll <= PRK36_FRAME_POLLS; framePoll += 1) {
+        if (disposed || runtimeBridge.status !== 'running') return false
+        await new Promise<void>(resolve => { requestAnimationFrame(() => resolve()) })
+        if (disposed || runtimeBridge.status !== 'running') return false
+        const sp = await runtimeBridge.getArm9Sp()
+        seen.add(hex(sp))
+        if (validNativeStack(sp)) {
+          console.info('[PokéRun interaction] PRK36 ACTIVE STACK READY', {
+            sp: hex(sp), firstSp: hex(firstSp), framePolls: framePoll,
+            observedStacks: Array.from(seen).slice(0, 12),
+            note: 'Native calls start only after a DTCM-stack context is observed.',
+          })
+          return true
+        }
+      }
+      console.info('[PokéRun interaction] PRK36 UNSAFE STACK - NO NATIVE CALLS', {
+        firstSp: hex(firstSp),
+        observedStacks: Array.from(seen).slice(0, 12),
+        polledFrames: PRK36_FRAME_POLLS,
+        note: 'Skipped all injected field getters, heap allocation, and VRAM uploads. PRK35 ROM verification was attempted separately; X can retry later.',
+      })
+      return false
+    }
 
     const emitMenuState = (open: boolean) => {
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BG2 THUMB4 FONT ROM PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BG2 SAFE-STACK FONT ROM PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -142,14 +188,16 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk34-native-bg2-window-with-prk35-browser-rom-verification',
+      mode: 'prk36-stack-gated-prk34-visual-independent-prk35-rom',
+      stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK35 verifies live Font->ArcTool FSFile against NDS FAT/NARC member and local glyph bytes after the PRK34 visual passes.',
+      researchNote: 'PRK36 runs browser-ROM FAT/NARC verification before guest calls; PRK34 visuals are attempted only after a valid active DTCM stack is observed.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
 
+    // PRK36: native calls may also begin from the unsafe ARM9 idle stack.
     // PRK34: the PRK32 relocated eight-argument bridge is unsafe here.
     // getArm9Sp() was 0x0214C470; subtracting 0x200 landed at
     // OSi_ThreadInfo+4 (0x0214C270), corrupting Nitro OS thread state.
@@ -168,6 +216,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       if (a4 !== 0 || a5 !== 0 || a6 !== 0 || a7 !== 0) {
         throw new Error('PRK34 refuses calls requiring arguments 5-8; Thumb8 relocation overlaps Nitro OS thread data.')
       }
+      if (PRK33_FOUR_ARG_BG2_VISUAL) {
+        const currentSp = await runtimeBridge.getArm9Sp()
+        if (!validNativeStack(currentSp)) {
+          throw new Error(`PRK36 refused unsafe native call ${hex(address)} with ARM9 SP=${hex(currentSp)}; expected active DTCM stack.`)
+        }
+      }
       const call = await runtimeBridge.callArm9Thumb4(
         address >>> 0,
         r0 >>> 0,
@@ -185,9 +239,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       return { result: call.result >>> 0, instructions: call.instructions >>> 0 }
     }
 
-    // PRK35 runs only AFTER PRK34 has rendered its working native BG2 frame.
-    // Read existing Font/FSFile RAM metadata and compare to ROM bytes already
-    // held in this browser. This does not call any guest function or touch VRAM.
+    // PRK36: PRK35 now runs BEFORE any native field getter, allocator, or
+    // window write, so an unsafe CPU idle stack cannot block font research.
+    // This function is read-only and never touches the guest FS or VRAM.
     async function verifyBrowserHeldFontRom(msgBg: number) {
       if (!romBytes) {
         console.info('[PokéRun interaction] PRK35 BROWSER ROM UNAVAILABLE', {
@@ -267,7 +321,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
     async function runProbe() {
       if (openingRef.current || metadataCompleteRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current || metadataCompleteRef.current) {
-          console.info('[PokéRun interaction] BG2 THUMB4 FONT ROM PROBE HOLD', { window: stateRef.current ? hex(stateRef.current.window) : null, metadataComplete: metadataCompleteRef.current })
+          console.info('[PokéRun interaction] BG2 SAFE-STACK FONT ROM PROBE HOLD', { window: stateRef.current ? hex(stateRef.current.window) : null, metadataComplete: metadataCompleteRef.current })
         }
         return
       }
@@ -289,6 +343,19 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             note: 'Player is still in transitional model state. Do not enter native field getters or allocate a window until fully initialized.',
           })
           return
+        }
+        // Read-only ROM validation never needs a native call, so keep it
+        // independent of the graphics/heap execution context.
+        if (PRK33_FOUR_ARG_BG2_VISUAL) {
+          try {
+            await verifyBrowserHeldFontRom(WHITE2_KNOWN_FIELD_MSGBG)
+          } catch (reason) {
+            console.info('[PokéRun interaction] PRK35 ROM FAT NARC VERIFICATION REJECTED', {
+              reason: reason instanceof Error ? reason.message : String(reason),
+              note: 'Read-only verifier rejected the exact-ROM FieldMsgBG metadata. No native calls or emulator writes were made by verification.',
+            })
+          }
+          if (!(await waitForActiveNativeStack())) return
         }
         const effects = (await atomicCall(FLD_ACT_GET_FIELD_EFFECTS, playerActor)).result
         if (!isMainRamPointer(effects)) throw new Error(`FldAct_GetFieldEffects returned ${hex(effects)}.`)
@@ -578,14 +645,6 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             screenUploadInstructions,
             note: 'Native White 2 BG2 window tiles and border upload calls returned; visual confirmation requires screenshot. No BmpWin object, text printer, or menu lifecycle was created.',
           })
-          try {
-            await verifyBrowserHeldFontRom(msgBg)
-          } catch (reason) {
-            console.info('[PokéRun interaction] PRK35 ROM FAT NARC VERIFICATION REJECTED', {
-              reason: reason instanceof Error ? reason.message : String(reason),
-              note: 'Read-only ROM inspector failed. PRK34 native window and P2 state were not modified by this verifier.',
-            })
-          }
           return
         }
 
@@ -1257,7 +1316,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
 
 
       } catch (reason) {
-        console.info('[PokéRun interaction] BG2 THUMB4 FONT ROM PROBE FAILED', {
+        console.info('[PokéRun interaction] BG2 SAFE-STACK FONT ROM PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
@@ -1279,6 +1338,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
 
     window.addEventListener(WHITE2_INTERACT_EVENT, onInteract)
     return () => {
+      disposed = true
       window.removeEventListener(WHITE2_INTERACT_EVENT, onInteract)
       emitMenuState(false)
       // Diagnostic BmpWin remains allocated only in sessions that successfully create it; restart between tests.
