@@ -9,13 +9,14 @@ const patches = [
   resolve(root, 'third_party/patches/0002-real-hidden-fast-forward-frames.patch'),
   resolve(root, 'third_party/patches/0003-raise-arm9-native-call-budget.patch'),
   resolve(root, 'third_party/patches/0004-scheduler-aware-arm9-native-calls.patch'),
+  resolve(root, 'third_party/patches/0005-atomic-arm9-stack-args.patch'),
 ]
 const build = resolve(source, 'build-pokerun-wasm')
 const output = resolve(root, 'public/emulators/melonds')
 const expectedRevision = '53c7c6cb362560a9e362ae754a162f638fa3cd64'
 const requiredRuntimeSymbols = [
   'writeArm9U8', 'writeArm9U16', 'writeArm9U32',
-  'getArm9Sp', 'callArm9Thumb4', 'arm9CallStatus',
+  'getArm9Sp', 'callArm9Thumb4', 'callArm9Thumb8Atomic', 'arm9CallStatus',
   'arm9CallPc', 'arm9CallLr', 'arm9CallCpsr', 'arm9CallInstructions',
   'arm9CallBudget', 'pokerunRuntimeVersion',
 ]
@@ -61,10 +62,16 @@ try {
     throw new Error('PokéRun melonDS patch did not install the 1,000,000-instruction ARM9 native-call budget.')
   }
   if (!patchedCpp.includes('nds->RunFrame();')) {
-    throw new Error('PokéRun melonDS patch did not install scheduler-aware ARM9 native calls.')
+    throw new Error('PokéRun melonDS patch did not retain scheduler-aware four-argument ARM9 native calls.')
   }
-  if (!patchedCpp.includes('return 0x50524B39;')) {
-    throw new Error('PokéRun melonDS patch did not install the PRK9 runtime stamp.')
+  if (!patchedCpp.includes('u32 WasmEmulator::callArm9Thumb8Atomic')) {
+    throw new Error('PokéRun melonDS patch did not install the atomic stack-argument ARM9 bridge.')
+  }
+  if (!patchedCpp.includes('constexpr u32 maxInstructions = 1000000;')) {
+    throw new Error('PokéRun atomic stack-argument bridge is missing its 1,000,000-instruction bound.')
+  }
+  if (!patchedCpp.includes('return 0x50524B3A;')) {
+    throw new Error('PokéRun melonDS patch did not install the PRK10 runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new
