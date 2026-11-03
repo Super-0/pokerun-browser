@@ -18,20 +18,15 @@ const LIST_MENU_CORE_FREE_OPTION_LIST = 0x02024fd8
 const LIST_MENU_CORE_APPEND_STRBUF_OPTION = 0x02025008
 
 const MSG_BG_CREATE_MENU_FUNC = 0x02187ea0
-const MSG_BG_DELETE_MENU_FUNC = 0x02187ee0
-const LIST_MENU_UI_UPDATE = 0x02187f08
 const MSG_BG_DRAW_MENU_FUNC_FRAME = 0x02188048
 
 const FIELDMAP_CTRL_GRID = 0
 const STRBUF_MAGIC = 0xb6f8d2ec
 const STRBUF_TERMINATOR = 0xffff
-const LIST_WAITING = -1
 const LIST_MENU_REQUEST_SIZE = 0x20
 const MENU_RECOVERY_RADIUS = 0x4000
-const MENU_DECISION_INPUT_WINDOW_MS = 300
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 const NATIVE_STACK_RESERVE = 0x800
-const POLL_MS = 34
 
 const PROBE_ITEMS = [
   { label: 'EMOTE', value: 1 },
@@ -49,10 +44,6 @@ function isMainRamPointer(value: number) {
 
 function hex(value: number) {
   return `0x${(value >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
-}
-
-function signed32(value: number) {
-  return value | 0
 }
 
 function makeRequest(count: number) {
@@ -95,7 +86,6 @@ function makeStrBuf(text: string) {
 export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const stateRef = useRef<NativeMenuState | null>(null)
   const openingRef = useRef(false)
-  const pollingRef = useRef(false)
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
@@ -111,14 +101,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
     const runtimeBridge = bridge
     const probe = new White2ActorSystemProbe(runtimeBridge)
-    let lastDecisionInputAt = 0
-    let lastUnarmedResult: number | null = null
 
     const emitMenuState = (open: boolean) => {
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] DIRECT MENU PROBE MOUNTED', {
+    console.info('[PokéRun interaction] DIRECT MENU STABILITY PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
     })
@@ -136,7 +124,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
     async function freeScratch(pointer: number) {
       if (!isMainRamPointer(pointer)) return
-      try { await nativeCall(GFL_HEAP_FREE_CORE, pointer) } catch { /* best effort during teardown */ }
+      try { await nativeCall(GFL_HEAP_FREE_CORE, pointer) } catch { /* best effort */ }
     }
 
     async function createOptions(heapId: number) {
@@ -189,33 +177,13 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       return 0
     }
 
-    async function closeMenu() {
-      const state = stateRef.current
-      stateRef.current = null
-      emitMenuState(false)
-      lastDecisionInputAt = 0
-      lastUnarmedResult = null
-      if (!state) return
-
-      try {
-        if (isMainRamPointer(state.menu)) await nativeCall(MSG_BG_DELETE_MENU_FUNC, state.menu)
-      } catch (reason) {
-        console.info('[PokéRun interaction] DIRECT MENU CLEANUP MENU FAILED', {
-          reason: reason instanceof Error ? reason.message : String(reason),
-        })
-      }
-
-      try {
-        if (isMainRamPointer(state.field)) await nativeCall(FIELDMAP_CTRL_GRID_SET_UPDATE_DISABLE, state.field, 0)
-      } catch (reason) {
-        console.info('[PokéRun interaction] DIRECT MENU CLEANUP FIELD FAILED', {
-          reason: reason instanceof Error ? reason.message : String(reason),
-        })
-      }
-    }
-
     async function openMenu() {
-      if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') return
+      if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
+        if (stateRef.current) {
+          console.info('[PokéRun interaction] NATIVE MENU STABILITY HOLD', { menu: hex(stateRef.current.menu) })
+        }
+        return
+      }
       openingRef.current = true
 
       let field = 0
@@ -303,22 +271,19 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         await nativeCall(MSG_BG_DRAW_MENU_FUNC_FRAME, menu)
 
         stateRef.current = { field, menu }
-        lastDecisionInputAt = 0
-        lastUnarmedResult = null
         emitMenuState(true)
-        console.info('[PokéRun interaction] NATIVE DIRECT MENU OPEN', {
+        console.info('[PokéRun interaction] NATIVE DIRECT MENU STABLE OPEN', {
           field: hex(field),
           menu: hex(menu),
-          source: 'direct-strbuf',
+          source: 'direct-strbuf-no-update',
+          note: 'Stability probe intentionally does not call ListMenuUI_Update or DeleteMenuFunc.',
         })
       } catch (reason) {
         console.info('[PokéRun interaction] NATIVE DIRECT MENU FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
 
-        if (isMainRamPointer(menu)) {
-          try { await nativeCall(MSG_BG_DELETE_MENU_FUNC, menu) } catch { /* best effort */ }
-        } else if (isMainRamPointer(options)) {
+        if (isMainRamPointer(options)) {
           try { await nativeCall(LIST_MENU_CORE_FREE_OPTION_LIST, options) } catch { /* best effort */ }
         }
 
@@ -343,77 +308,16 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       void openMenu()
     }
 
-    const onMenuDecisionKey = (event: KeyboardEvent) => {
-      if (!stateRef.current || event.repeat || (event.code !== 'KeyX' && event.code !== 'KeyZ')) return
-      lastDecisionInputAt = performance.now()
-      lastUnarmedResult = null
-      console.info('[PokéRun interaction] NATIVE MENU DECISION INPUT', { code: event.code })
-    }
-
     window.addEventListener(WHITE2_INTERACT_EVENT, onInteract)
-    window.addEventListener('keydown', onMenuDecisionKey)
-
-    const timer = window.setInterval(() => {
-      const state = stateRef.current
-      if (!state || pollingRef.current || runtimeBridge.status !== 'running') return
-      pollingRef.current = true
-      void (async () => {
-        try {
-          const updateCall = await runtimeBridge.callArm9Thumb4(
-            LIST_MENU_UI_UPDATE,
-            state.menu,
-            0,
-            0,
-            0,
-            NATIVE_STACK_RESERVE,
-          )
-          if (updateCall.status !== 1) {
-            throw new Error(
-              `Native call ${hex(LIST_MENU_UI_UPDATE)} failed with status ${updateCall.status} at ${hex(updateCall.pc)}; `
-              + `lr=${hex(updateCall.lr)} instructions=${updateCall.instructions}.`,
-            )
-          }
-
-          const result = signed32(updateCall.result)
-          if (result === LIST_WAITING) {
-            lastUnarmedResult = null
-            return
-          }
-
-          const decisionAgeMs = lastDecisionInputAt > 0 ? performance.now() - lastDecisionInputAt : Number.POSITIVE_INFINITY
-          if (decisionAgeMs <= MENU_DECISION_INPUT_WINDOW_MS) {
-            console.info('[PokéRun interaction] NATIVE DIRECT MENU RESULT', {
-              result,
-              decisionAgeMs: Math.round(decisionAgeMs),
-            })
-            await closeMenu()
-            return
-          }
-
-          if (lastUnarmedResult !== result) {
-            lastUnarmedResult = result
-            console.info('[PokéRun interaction] NATIVE MENU IGNORED UNARMED RESULT', {
-              result,
-              raw: hex(updateCall.result),
-            })
-          }
-        } catch (reason) {
-          console.info('[PokéRun interaction] NATIVE DIRECT MENU UPDATE FAILED', {
-            reason: reason instanceof Error ? reason.message : String(reason),
-          })
-          await closeMenu()
-        } finally {
-          pollingRef.current = false
-        }
-      })()
-    }, POLL_MS)
 
     return () => {
       window.removeEventListener(WHITE2_INTERACT_EVENT, onInteract)
-      window.removeEventListener('keydown', onMenuDecisionKey)
-      window.clearInterval(timer)
       emitMenuState(false)
-      if (stateRef.current) void closeMenu()
+      const state = stateRef.current
+      stateRef.current = null
+      if (state && isMainRamPointer(state.field)) {
+        void nativeCall(FIELDMAP_CTRL_GRID_SET_UPDATE_DISABLE, state.field, 0).catch(() => undefined)
+      }
     }
   }, [bridge, rom.gameId, rom.sha256])
 
