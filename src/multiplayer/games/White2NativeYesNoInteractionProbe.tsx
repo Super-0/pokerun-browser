@@ -362,7 +362,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         // PRK33: prove native BG2 visual output without any >4-arg guest calls.
         // BmpWin_CreateDynamic remains below as research/reference only.
         if (PRK33_FOUR_ARG_BG2_VISUAL) {
-          console.info('[PokéRun interaction] PRK33 STACK-FREE BG2 DISPLAY PREFLIGHT', {
+          const originalArm9Sp = await runtimeBridge.getArm9Sp()
+          console.info('[PokéRun interaction] PRK33 FOUR ARG BG2 DISPLAY PREFLIGHT', {
+            observedArm9Sp: hex(originalArm9Sp),
+            injectedSpEstimate: hex((originalArm9Sp - NATIVE_STACK_RESERVE / 4) >>> 0),
             bg: bg2,
             heapId,
             expectedCharPos: 964,
@@ -384,6 +387,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg2, directCharPos, requestedBytes)
             return
           }
+          console.info('[PokéRun interaction] PRK33 BITMAP CREATE CALL', {
+            address: hex(GFL_BITMAP_CREATE),
+            args: [WINDOW_WIDTH, WINDOW_HEIGHT, bytesPerTile, heapId],
+            originalArm9Sp: hex(await runtimeBridge.getArm9Sp()),
+            note: 'Four register arguments; native allocates GFLBitmap and pixel buffer internally.',
+          })
           const bitmapAlloc = await atomicCall(GFL_BITMAP_CREATE, WINDOW_WIDTH, WINDOW_HEIGHT, bytesPerTile, heapId)
           const directBitmap = bitmapAlloc.result
           if (!isMainRamPointer(directBitmap)) {
@@ -487,7 +496,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             widthTiles: WINDOW_WIDTH, heightTiles: WINDOW_HEIGHT,
             blackCharTiles: tileCount, interiorScreenCalls: screenCalls, borderScreenCalls: borderCalls,
             screenUploadInstructions,
-            note: 'Native White 2 BG2 window tiles and border are visible. No BmpWin object, text printer, or menu lifecycle was created.',
+            note: 'Native White 2 BG2 window tiles and border upload calls returned; visual confirmation requires screenshot. No BmpWin object, text printer, or menu lifecycle was created.',
           })
           return
         }
