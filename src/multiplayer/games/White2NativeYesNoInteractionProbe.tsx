@@ -50,7 +50,7 @@ const STRBUF_PROBE_CHAR = 0x0041 // 'A', the standard Unicode character code sup
 const AREAMAN_FAIL = 0xffffffff
 const NATIVE_STACK_RESERVE = 0x800
 const PRK31_ROM_RANGE_ONLY = false // Retained read-only diagnostic fallback.
-const PRK33_FOUR_ARG_BG2_VISUAL = true // Avoid BmpWin_CreateDynamic and other guest functions requiring stack arguments.
+const PRK33_FOUR_ARG_BG2_VISUAL = true // PRK34 routes all calls through Thumb4; Thumb8 relocation is forbidden.
 const EXPECTED_STABLE_PLAYER_MODEL = 240
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 
@@ -91,7 +91,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BG2 FOUR ARG VISUAL PROBE EFFECT', {
+    console.info('[PokéRun interaction] BG2 THUMB4 VISUAL PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -105,20 +105,20 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BG2 FOUR ARG VISUAL PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BG2 THUMB4 VISUAL PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
     }
     // TypeScript does not preserve a nullable value's narrowing inside
     // nested functions; capture the validated bridge as a non-null const.
-    const readyAtomicRuntime: AtomicRuntime = atomicRuntime
+    // Eight-argument export is checked for compatibility only, never called in PRK34.
 
     const emitMenuState = (open: boolean) => {
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BG2 FOUR ARG VISUAL PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BG2 THUMB4 VISUAL PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -141,11 +141,16 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'four-arg-native-bg2-window-visual',
+      mode: 'four-arg-thumb4-native-bg2-window-visual',
+      nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       nativeStackRuntimeStamp: '0x50524B3C',
-      note: 'PRK33 bypasses BmpWin_CreateDynamic after the PRK32 abort. Create bitmap using four-arg GFL_BitmapCreate, allocate BG2 char memory with three-arg helper, and upload the native 12x5 framed visual through 32-byte char and <=28-byte screen CPU transfers. No streamed glyph I/O or menu lifecycle.',
+      note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
 
+    // PRK34: the PRK32 relocated eight-argument bridge is unsafe here.
+    // getArm9Sp() was 0x0214C470; subtracting 0x200 landed at
+    // OSi_ThreadInfo+4 (0x0214C270), corrupting Nitro OS thread state.
+    // Never invoke Thumb8, even when the four extra arguments are zero.
     async function atomicCall(
       address: number,
       r0 = 0,
@@ -157,37 +162,30 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       a6 = 0,
       a7 = 0,
     ) {
-      const result = readyAtomicRuntime.callArm9Thumb8Atomic(
+      if (a4 !== 0 || a5 !== 0 || a6 !== 0 || a7 !== 0) {
+        throw new Error('PRK34 refuses calls requiring arguments 5-8; Thumb8 relocation overlaps Nitro OS thread data.')
+      }
+      const call = await runtimeBridge.callArm9Thumb4(
         address >>> 0,
         r0 >>> 0,
         r1 >>> 0,
         r2 >>> 0,
         r3 >>> 0,
-        a4 >>> 0,
-        a5 >>> 0,
-        a6 >>> 0,
-        a7 >>> 0,
         NATIVE_STACK_RESERVE,
-      ) >>> 0
-      const status = readyAtomicRuntime.arm9CallStatus() >>> 0
-      const pc = readyAtomicRuntime.arm9CallPc() >>> 0
-      const lr = readyAtomicRuntime.arm9CallLr() >>> 0
-      const cpsr = readyAtomicRuntime.arm9CallCpsr() >>> 0
-      const instructions = readyAtomicRuntime.arm9CallInstructions() >>> 0
-
-      if (status !== 1) {
+      )
+      if (call.status !== 1) {
         throw new Error(
-          `Atomic native call ${hex(address)} failed with status ${status} at ${hex(pc)}; `
-          + `lr=${hex(lr)} cpsr=${hex(cpsr)} instructions=${instructions}.`,
+          `PRK34 Thumb4 native call ${hex(address)} failed with status ${call.status} at ${hex(call.pc)}; `
+          + `lr=${hex(call.lr)} cpsr=${hex(call.cpsr)} instructions=${call.instructions}.`,
         )
       }
-      return { result, instructions }
+      return { result: call.result >>> 0, instructions: call.instructions >>> 0 }
     }
 
     async function runProbe() {
       if (openingRef.current || metadataCompleteRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current || metadataCompleteRef.current) {
-          console.info('[PokéRun interaction] BG2 FOUR ARG VISUAL PROBE HOLD', { window: stateRef.current ? hex(stateRef.current.window) : null, metadataComplete: metadataCompleteRef.current })
+          console.info('[PokéRun interaction] BG2 THUMB4 VISUAL PROBE HOLD', { window: stateRef.current ? hex(stateRef.current.window) : null, metadataComplete: metadataCompleteRef.current })
         }
         return
       }
@@ -363,7 +361,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         // BmpWin_CreateDynamic remains below as research/reference only.
         if (PRK33_FOUR_ARG_BG2_VISUAL) {
           const originalArm9Sp = await runtimeBridge.getArm9Sp()
-          console.info('[PokéRun interaction] PRK33 FOUR ARG BG2 DISPLAY PREFLIGHT', {
+          console.info('[PokéRun interaction] PRK34 FOUR ARG BG2 DISPLAY PREFLIGHT', {
             observedArm9Sp: hex(originalArm9Sp),
             injectedSpEstimate: hex((originalArm9Sp - NATIVE_STACK_RESERVE / 4) >>> 0),
             bg: bg2,
@@ -377,17 +375,17 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           const charAlloc = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg2, requestedBytes, 1)
           const directCharPos = charAlloc.result
           if (directCharPos === AREAMAN_FAIL) {
-            throw new Error('PRK33 BG2 character allocation failed.')
+            throw new Error('PRK34 BG2 character allocation failed.')
           }
           if (directCharPos !== 964 || directCharPos + tileCount !== 1024) {
-            console.info('[PokéRun interaction] PRK33 BG2 ALLOCATION GUARD', {
+            console.info('[PokéRun interaction] PRK34 BG2 ALLOCATION GUARD', {
               charPos: directCharPos, expectedCharPos: 964, tileCount,
               note: 'Abort before bitmap or VRAM writes; free the unexpected allocation.',
             })
             await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg2, directCharPos, requestedBytes)
             return
           }
-          console.info('[PokéRun interaction] PRK33 BITMAP CREATE CALL', {
+          console.info('[PokéRun interaction] PRK34 BITMAP CREATE CALL', {
             address: hex(GFL_BITMAP_CREATE),
             args: [WINDOW_WIDTH, WINDOW_HEIGHT, bytesPerTile, heapId],
             originalArm9Sp: hex(await runtimeBridge.getArm9Sp()),
@@ -410,7 +408,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             directTileSize === bytesPerTile &&
             directStorage === 0
           )
-          console.info('[PokéRun interaction] PRK33 FOUR ARG BITMAP GEOMETRY', {
+          console.info('[PokéRun interaction] PRK34 FOUR ARG BITMAP GEOMETRY', {
             bitmap: hex(directBitmap), pixels: hex(directPixels),
             widthPx: directWidth, heightPx: directHeight,
             tileSize: directTileSize, storage: directStorage,
@@ -431,7 +429,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             )
             characterUploadInstructions += result.instructions
           }
-          console.info('[PokéRun interaction] PRK33 BG2 CHAR CPU UPLOAD SUCCESS', {
+          console.info('[PokéRun interaction] PRK34 BG2 CHAR CPU UPLOAD SUCCESS', {
             charPos: directCharPos, tiles: tileCount, bytes: requestedBytes,
             instructions: characterUploadInstructions, fillInstructions: fillCall.instructions,
           })
@@ -446,7 +444,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             const bytes = tiles.length * 2
             if (bytes < 2 || bytes > SCREEN_DMA_THRESHOLD ||
                 x < 0 || y < 0 || x + tiles.length > TEXT_BG_WIDTH_TILES || y >= TEXT_BG_WIDTH_TILES) {
-              throw new Error('Unsafe PRK33 map segment x=' + x + ' y=' + y + ' tiles=' + tiles.length)
+              throw new Error('Unsafe PRK34 map segment x=' + x + ' y=' + y + ' tiles=' + tiles.length)
             }
             const entries = new Uint8Array(bytes)
             for (let i = 0; i < tiles.length; i += 1) {
@@ -486,11 +484,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             await runtimeBridge.writeBytes(directPixels, screenScratch)
           }
           if (screenCalls !== WINDOW_HEIGHT || borderCalls !== 2 + WINDOW_HEIGHT * 2) {
-            throw new Error('PRK33 upload count mismatch: interior=' + screenCalls + ' border=' + borderCalls)
+            throw new Error('PRK34 upload count mismatch: interior=' + screenCalls + ' border=' + borderCalls)
           }
           stateRef.current = { window: directBitmap }
           emitMenuState(false)
-          console.info('[PokéRun interaction] PRK33 NATIVE BG2 FRAMED WINDOW SUCCESS', {
+          console.info('[PokéRun interaction] PRK34 NATIVE BG2 FRAMED WINDOW SUCCESS', {
             bg: bg2, bitmap: hex(directBitmap), charPos: directCharPos,
             x: WINDOW_X, y: WINDOW_Y,
             widthTiles: WINDOW_WIDTH, heightTiles: WINDOW_HEIGHT,
@@ -1169,7 +1167,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
 
       } catch (reason) {
-        console.info('[PokéRun interaction] BG2 FOUR ARG VISUAL PROBE FAILED', {
+        console.info('[PokéRun interaction] BG2 THUMB4 VISUAL PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
