@@ -116,5 +116,5 @@ diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/fron
  
    u32 WasmEmulator::pokerunRuntimeVersion() {
 -    return 0x50524B36;
-+    return 0x50524B37;
++    return 0x50524B39;
    }
