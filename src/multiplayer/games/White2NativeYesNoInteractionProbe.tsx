@@ -12,7 +12,7 @@ const FIELD_GET_CONTROLLER_TYPE_ID = 0x0218056c
 
 const GFL_BGSYS_ALLOC_CHAR = 0x02044590
 const GFL_BGSYS_FREE_CHAR_MEMORY = 0x02044694
-const GFL_BGSYS_LOAD_SCR = 0x02044fbc
+const GFL_BGSYS_LOAD_SCR_CORE = 0x02044fdc
 const GFL_BGSYS_LOAD_CHAR = 0x020450ac
 const GFL_BGSYS_GET_BG_MODE = 0x0204587c
 const GFL_BGSYS_GET_BG_COLOR_PALETTE_MODE = 0x02045890
@@ -29,8 +29,10 @@ const WINDOW_WIDTH = 12
 const WINDOW_HEIGHT = 5
 const WINDOW_X = 18
 const WINDOW_Y = 2
+const TEXT_BG_WIDTH_TILES = 32
 const CHAR_DMA_THRESHOLD = 48
 const SCREEN_DMA_THRESHOLD = 28
+const SCREEN_ROW_BYTES = WINDOW_WIDTH * 2
 const AREAMAN_FAIL = 0xffffffff
 const NATIVE_STACK_RESERVE = 0x800
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
@@ -71,7 +73,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BG SCREEN DMA PROBE EFFECT', {
+    console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -85,7 +87,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BG SCREEN DMA PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -95,17 +97,18 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BG SCREEN DMA PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
       fillAddress: hex(GFL_BITMAP_FILL),
       flushMapAddress: hex(BMP_WIN_FLUSH_MAP),
       loadCharAddress: hex(GFL_BGSYS_LOAD_CHAR),
-      loadScrAddress: hex(GFL_BGSYS_LOAD_SCR),
+      loadScrCoreAddress: hex(GFL_BGSYS_LOAD_SCR_CORE),
       charDmaThreshold: CHAR_DMA_THRESHOLD,
       screenDmaThreshold: SCREEN_DMA_THRESHOLD,
-      note: 'PRK20 repeats the proven full 60x32-byte CPU character upload, then isolates GFL_BGSysLoadScr(BG2). GX_LoadBG2Scr uses GXi_DmaCopy16, whose DMA threshold is >28 bytes. No frame draw follows.',
+      screenBytesPerCall: SCREEN_ROW_BYTES,
+      note: 'PRK21 repeats the proven 60x32-byte CPU character upload, then uploads the 12x5 BG2 tilemap as five 24-byte rows through GFL_BGSysLoadScrCore. Each row remains below the GXi_DmaCopy16 >28-byte DMA threshold. No frame draw follows.',
     })
 
     async function atomicCall(
@@ -149,7 +152,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BG SCREEN DMA PROBE HOLD', { window: hex(stateRef.current.window) })
+          console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -190,8 +193,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         if (bytesPerTile !== 32 || bytesPerTile > CHAR_DMA_THRESHOLD) {
           throw new Error(`BG2 tile size is ${bytesPerTile} bytes; expected a 32-byte tile below the ${CHAR_DMA_THRESHOLD}-byte character DMA threshold.`)
         }
+        if (bgMode !== 0 || SCREEN_ROW_BYTES > SCREEN_DMA_THRESHOLD) {
+          throw new Error(`BG2 screen-row control requires text mode and <=${SCREEN_DMA_THRESHOLD} bytes; mode=${bgMode} rowBytes=${SCREEN_ROW_BYTES}.`)
+        }
 
-        console.info('[PokéRun interaction] BG SCREEN DMA FIELD PATH READY', {
+        console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU FIELD PATH READY', {
           actor: hex(playerActor),
           effects: hex(effects),
           field: hex(field),
@@ -205,6 +211,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           bytesPerTile,
           tileCount,
           requestedBytes,
+          screenRowBytes: SCREEN_ROW_BYTES,
         })
 
         const allocCall = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg2, requestedBytes, 1)
@@ -296,16 +303,16 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           note: 'Uploads all sixty tiles one at a time. Each 32-byte GFL_BGSysLoadChar call remains on the MIi_CpuCopy32 path.',
         })
 
-        let totalUploadInstructions = 0
-        let firstUploadInstructions = 0
-        let lastUploadInstructions = 0
+        let totalCharUploadInstructions = 0
+        let firstCharUploadInstructions = 0
+        let lastCharUploadInstructions = 0
         for (let tile = 0; tile < tileCount; tile += 1) {
           const source = (pixelData + tile * bytesPerTile) >>> 0
           const destCharPos = charPos + tile
           const uploadCall = await atomicCall(GFL_BGSYS_LOAD_CHAR, nativeBg, source, bytesPerTile, destCharPos)
-          totalUploadInstructions += uploadCall.instructions
-          if (tile === 0) firstUploadInstructions = uploadCall.instructions
-          if (tile === tileCount - 1) lastUploadInstructions = uploadCall.instructions
+          totalCharUploadInstructions += uploadCall.instructions
+          if (tile === 0) firstCharUploadInstructions = uploadCall.instructions
+          if (tile === tileCount - 1) lastCharUploadInstructions = uploadCall.instructions
         }
 
         console.info('[PokéRun interaction] BG CHAR CHUNKED CPU SUCCESS', {
@@ -313,39 +320,78 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           charPos,
           uploadedTiles: tileCount,
           uploadedBytes: requestedBytes,
-          firstUploadInstructions,
-          lastUploadInstructions,
-          totalUploadInstructions,
-          note: 'Complete character bitmap is now in BG2 VRAM. Next call isolates the RAM screen-buffer upload.',
+          firstUploadInstructions: firstCharUploadInstructions,
+          lastUploadInstructions: lastCharUploadInstructions,
+          totalUploadInstructions: totalCharUploadInstructions,
+          note: 'Complete character bitmap is now in BG2 VRAM. Next phase uploads only the five window tilemap rows via the <=28-byte CPU screen path.',
         })
 
-        console.info('[PokéRun interaction] BG SCREEN DMA CALL', {
-          address: hex(GFL_BGSYS_LOAD_SCR),
+        console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU CALL', {
+          address: hex(GFL_BGSYS_LOAD_SCR_CORE),
           bg: nativeBg,
+          rows: WINDOW_HEIGHT,
+          entriesPerRow: WINDOW_WIDTH,
+          bytesPerCall: SCREEN_ROW_BYTES,
+          totalBytes: SCREEN_ROW_BYTES * WINDOW_HEIGHT,
+          firstEntryOffset: WINDOW_Y * TEXT_BG_WIDTH_TILES + WINDOW_X,
+          lastEntryOffset: (WINDOW_Y + WINDOW_HEIGHT - 1) * TEXT_BG_WIDTH_TILES + WINDOW_X,
           dmaThreshold: SCREEN_DMA_THRESHOLD,
-          note: 'GFL_BGSysLoadScr uploads BG2 screen RAM through GX_LoadBG2Scr -> GXi_DmaCopy16. Any normal BG screen buffer is above the >28-byte DMA threshold. No frame drawing follows.',
+          note: 'Synthesizes the same 12x5 text-BG map entries as BmpWin_FlushMap and uploads one 24-byte row at a time through GFL_BGSysLoadScrCore. No frame drawing follows.',
         })
-        const screenUploadCall = await atomicCall(GFL_BGSYS_LOAD_SCR, nativeBg)
+
+        const scratchBefore = await runtimeBridge.readBytes(pixelData, SCREEN_ROW_BYTES)
+        let totalScreenUploadInstructions = 0
+        let firstScreenUploadInstructions = 0
+        let lastScreenUploadInstructions = 0
+        try {
+          for (let row = 0; row < WINDOW_HEIGHT; row += 1) {
+            const rowData = new Uint8Array(SCREEN_ROW_BYTES)
+            for (let col = 0; col < WINDOW_WIDTH; col += 1) {
+              const tile = charPos + row * WINDOW_WIDTH + col
+              const entry = ((MSGBG_PLTT_BG2 << 12) | tile) & 0xffff
+              rowData[col * 2] = entry & 0xff
+              rowData[col * 2 + 1] = entry >>> 8
+            }
+            await runtimeBridge.writeBytes(pixelData, rowData)
+            const screenEntryOffset = (WINDOW_Y + row) * TEXT_BG_WIDTH_TILES + WINDOW_X
+            const uploadCall = await atomicCall(
+              GFL_BGSYS_LOAD_SCR_CORE,
+              nativeBg,
+              pixelData,
+              SCREEN_ROW_BYTES,
+              screenEntryOffset,
+            )
+            totalScreenUploadInstructions += uploadCall.instructions
+            if (row === 0) firstScreenUploadInstructions = uploadCall.instructions
+            if (row === WINDOW_HEIGHT - 1) lastScreenUploadInstructions = uploadCall.instructions
+          }
+        } finally {
+          await runtimeBridge.writeBytes(pixelData, scratchBefore)
+        }
 
         stateRef.current = { window: nativeWindow }
         emitMenuState(false)
-        console.info('[PokéRun interaction] BG SCREEN DMA SUCCESS', {
+        console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU SUCCESS', {
           window: hex(nativeWindow),
           bitmap: hex(bitmap),
           pixelData: hex(pixelData),
           charPos,
           preflightCharPos: preflightPos,
-          uploadedTiles: tileCount,
-          uploadedBytes: requestedBytes,
+          characterBytes: requestedBytes,
+          screenRows: WINDOW_HEIGHT,
+          screenBytesPerCall: SCREEN_ROW_BYTES,
+          totalScreenBytes: SCREEN_ROW_BYTES * WINDOW_HEIGHT,
+          firstScreenUploadInstructions,
+          lastScreenUploadInstructions,
+          totalScreenUploadInstructions,
           createInstructions: createCall.instructions,
           fillInstructions: fillCall.instructions,
           flushMapInstructions: flushMapCall.instructions,
-          totalCharUploadInstructions: totalUploadInstructions,
-          screenUploadInstructions: screenUploadCall.instructions,
-          note: 'BG2 character and screen VRAM uploads both completed. BmpWin_DrawFrame has not run.',
+          totalCharUploadInstructions,
+          note: 'Complete BG2 character bitmap and the 12x5 window tilemap region are now in VRAM without invoking either DMA threshold. BmpWin_DrawFrame has not run.',
         })
       } catch (reason) {
-        console.info('[PokéRun interaction] BG SCREEN DMA PROBE FAILED', {
+        console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
