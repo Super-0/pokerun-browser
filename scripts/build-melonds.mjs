@@ -11,6 +11,7 @@ const patches = [
   resolve(root, 'third_party/patches/0004-scheduler-aware-arm9-native-calls.patch'),
   resolve(root, 'third_party/patches/0005-atomic-arm9-stack-args.patch'),
   resolve(root, 'third_party/patches/0006-scheduler-aware-arm9-stack-args.patch'),
+  resolve(root, 'third_party/patches/0007-isolate-arm9-injected-stack.patch'),
 ]
 const build = resolve(source, 'build-pokerun-wasm')
 const output = resolve(root, 'public/emulators/melonds')
@@ -71,8 +72,12 @@ try {
   if (!patchedCpp.includes('PRK11 scheduler-aware stack-argument bridge')) {
     throw new Error('PokéRun stack-argument bridge is not scheduler-aware PRK11.')
   }
-  if (!patchedCpp.includes('return 0x50524B3B;')) {
-    throw new Error('PokéRun melonDS patch did not install the PRK11 runtime stamp.')
+  if (!patchedCpp.includes('const u32 injectedSp = originalSp - (stackReserve >> 2);') ||
+      !patchedCpp.includes('arm.R[13] = injectedSp;')) {
+    throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
+  }
+  if (!patchedCpp.includes('return 0x50524B3C;')) {
+    throw new Error('PokéRun melonDS patch did not install the PRK32 runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new
