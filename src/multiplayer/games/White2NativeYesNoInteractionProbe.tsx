@@ -21,6 +21,9 @@ const GFL_BITMAP_FILL = 0x02047168
 const BMP_WIN_CREATE_DYNAMIC = 0x020480ec
 const BMP_WIN_FLUSH_MAP = 0x02048298
 const BMP_WIN_DRAW_FRAME = 0x02024eac
+const GFL_STRBUF_CREATE = 0x0204855c
+const GFL_STRBUF_APPEND = 0x02048760
+const GFL_STRBUF_FREE = 0x02048590
 
 const FIELDMAP_CTRL_GRID = 0
 const MSGBG_BG2 = 2
@@ -38,6 +41,9 @@ const CHAR_DMA_THRESHOLD = 48
 const SCREEN_DMA_THRESHOLD = 28
 const SCREEN_ROW_BYTES = WINDOW_WIDTH * 2
 const FRAME_FULL_ROW_BYTES = (WINDOW_WIDTH + 2) * 2
+const STRBUF_MAGIC = 0xb6f8d2ec
+const STRBUF_TERMINATOR = 0xffff
+const STRBUF_PROBE_CHAR = 0x0041 // 'A', the standard Unicode character code supported by the decompiled font map.
 const AREAMAN_FAIL = 0xffffffff
 const NATIVE_STACK_RESERVE = 0x800
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
@@ -78,7 +84,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BMPWIN FRAME CPU VRAM PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN STRBUF PREFLIGHT PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -92,7 +98,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BMPWIN FRAME CPU VRAM PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN STRBUF PREFLIGHT PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -102,7 +108,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BMPWIN FRAME CPU VRAM PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN STRBUF PREFLIGHT PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -119,7 +125,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       screenBytesPerCall: SCREEN_ROW_BYTES,
       frameMaxBytesPerCall: FRAME_FULL_ROW_BYTES,
       expectedFrameUploadCalls: 2 + WINDOW_HEIGHT * 2,
-      note: 'PRK24 tests the exact native window border in BG2 VRAM via two 28-byte CPU top/bottom rows and ten 2-byte CPU side transfers, after proven geometry, fill, map and frame-RAM calls. No text or full-screen DMA.',
+      strBufCreateAddress: hex(GFL_STRBUF_CREATE),
+      strBufAppendAddress: hex(GFL_STRBUF_APPEND),
+      strBufFreeAddress: hex(GFL_STRBUF_FREE),
+      note: 'PRK25 keeps the fully validated PRK24 framed window, then isolates native StrBuf allocation/append/free and live FieldMsgBG font pointer preflight. No text rasterization, new VRAM upload, asynchronous printer or menu lifecycle follows.',
     })
 
     async function atomicCall(
@@ -163,7 +172,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BMPWIN FRAME CPU VRAM PROBE HOLD', { window: hex(stateRef.current.window) })
+          console.info('[PokéRun interaction] BMPWIN STRBUF PREFLIGHT PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -577,8 +586,85 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           note: 'The 14x7 border region, including eight frame segment types, has been uploaded to BG2 VRAM without DMA. No text/menu functionality follows.',
         })
 
+        // PRK25: before calling any text renderer, prove the live font pointer is plausible
+        // and the game's StrBuf allocation + append + lifetime match the decompiled layout.
+        const fieldFont = await runtimeBridge.read32(msgBg + 0x08)
+        if (!isMainRamPointer(fieldFont)) {
+          throw new Error(`FieldMsgBG font is invalid (${hex(fieldFont)}).`)
+        }
+        const fontLoadType = await runtimeBridge.read32(fieldFont + 0x00)
+        const fontGetGlyph = await runtimeBridge.read32(fieldFont + 0x04)
+        console.info('[PokéRun interaction] NATIVE TEXT FONT PREFLIGHT', {
+          msgBg: hex(msgBg),
+          font: hex(fieldFont),
+          loadType: fontLoadType,
+          getGlyphAddress: hex(fontGetGlyph),
+          note: 'Only reads FieldMsgBG.font at +0x08 and its first two words. No font routine called.',
+        })
+
+        console.info('[PokéRun interaction] NATIVE STRBUF PREFLIGHT CALL', {
+          createAddress: hex(GFL_STRBUF_CREATE),
+          appendAddress: hex(GFL_STRBUF_APPEND),
+          freeAddress: hex(GFL_STRBUF_FREE),
+          heapId,
+          size: 8,
+          char: STRBUF_PROBE_CHAR,
+          note: 'Allocates a small StrBuf, validates its header, appends the single codepoint U+0041, validates contents, then frees it.',
+        })
+        const strCreateCall = await atomicCall(GFL_STRBUF_CREATE, 8, heapId)
+        const probeStrBuf = strCreateCall.result
+        if (!isMainRamPointer(probeStrBuf)) {
+          throw new Error(`GFL_StrBufCreate returned ${hex(probeStrBuf)}.`)
+        }
+        let strAppendInstructions = 0
+        let strFreeInstructions = 0
+        let strValidationSucceeded = false
+        try {
+          const magicBefore = await runtimeBridge.read32(probeStrBuf + 0x04)
+          const sizeBefore = await runtimeBridge.read16(probeStrBuf + 0x00)
+          const lengthBefore = await runtimeBridge.read16(probeStrBuf + 0x02)
+          const terminatorBefore = await runtimeBridge.read16(probeStrBuf + 0x08)
+          if (magicBefore !== STRBUF_MAGIC || sizeBefore !== 8 || lengthBefore !== 0 || terminatorBefore !== STRBUF_TERMINATOR) {
+            throw new Error(`Unexpected native StrBuf header (magic=${hex(magicBefore)} size=${sizeBefore} length=${lengthBefore} terminator=${hex(terminatorBefore)}).`)
+          }
+          const appendCall = await atomicCall(GFL_STRBUF_APPEND, probeStrBuf, STRBUF_PROBE_CHAR)
+          strAppendInstructions = appendCall.instructions
+          const magicAfter = await runtimeBridge.read32(probeStrBuf + 0x04)
+          const lengthAfter = await runtimeBridge.read16(probeStrBuf + 0x02)
+          const characterAfter = await runtimeBridge.read16(probeStrBuf + 0x08)
+          const terminatorAfter = await runtimeBridge.read16(probeStrBuf + 0x0a)
+          if (magicAfter !== STRBUF_MAGIC || lengthAfter !== 1 || characterAfter !== STRBUF_PROBE_CHAR || terminatorAfter !== STRBUF_TERMINATOR) {
+            throw new Error(`Native StrBuf append did not match expected layout (magic=${hex(magicAfter)} length=${lengthAfter} char=${hex(characterAfter)} terminator=${hex(terminatorAfter)}).`)
+          }
+          strValidationSucceeded = true
+          console.info('[PokéRun interaction] NATIVE STRBUF CONTENTS VERIFIED', {
+            strBuf: hex(probeStrBuf),
+            size: sizeBefore,
+            length: lengthAfter,
+            magic: hex(magicAfter),
+            char: hex(characterAfter),
+            terminator: hex(terminatorAfter),
+            createInstructions: strCreateCall.instructions,
+            appendInstructions: strAppendInstructions,
+          })
+        } finally {
+          const freeCall = await atomicCall(GFL_STRBUF_FREE, probeStrBuf)
+          strFreeInstructions = freeCall.instructions
+        }
+        console.info('[PokéRun interaction] NATIVE STRBUF PREFLIGHT SUCCESS', {
+          window: hex(nativeWindow),
+          font: hex(fieldFont),
+          strBuf: hex(probeStrBuf),
+          strValidationSucceeded,
+          createInstructions: strCreateCall.instructions,
+          appendInstructions: strAppendInstructions,
+          freeInstructions: strFreeInstructions,
+          note: 'Native StrBuf allocate/append/free validated. No text rendering has been invoked.',
+        })
+
+
       } catch (reason) {
-        console.info('[PokéRun interaction] BMPWIN FRAME CPU VRAM PROBE FAILED', {
+        console.info('[PokéRun interaction] BMPWIN STRBUF PREFLIGHT PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
