@@ -27,6 +27,7 @@ const STRBUF_MAGIC = 0xb6f8d2ec
 const STRBUF_TERMINATOR = 0xffff
 const LIST_WAITING = -1
 const LIST_MENU_REQUEST_SIZE = 0x20
+const MENU_RECOVERY_RADIUS = 0x4000
 const NATIVE_STACK_RESERVE = 0x800
 const POLL_MS = 34
 
@@ -160,6 +161,32 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       }
     }
 
+    async function recoverMenuPointer(msgBg: number, options: number, anchor: number) {
+      const start = Math.max(0x02000000, (anchor - MENU_RECOVERY_RADIUS) & ~3)
+      const end = Math.min(0x02400000 - 0x14, (anchor + MENU_RECOVERY_RADIUS) & ~3)
+
+      for (let address = start; address <= end; address += 4) {
+        if ((await runtimeBridge.read32(address)) !== msgBg) continue
+        if ((await runtimeBridge.read32(address + 0x0c)) !== options) continue
+
+        const printer = await runtimeBridge.read32(address + 0x04)
+        const window = await runtimeBridge.read32(address + 0x08)
+        const list = await runtimeBridge.read32(address + 0x10)
+        if (!isMainRamPointer(printer) || !isMainRamPointer(window) || !isMainRamPointer(list)) continue
+
+        console.info('[PokéRun interaction] NATIVE MENU POINTER RECOVERED', {
+          menu: hex(address),
+          printer: hex(printer),
+          window: hex(window),
+          options: hex(options),
+          list: hex(list),
+        })
+        return address
+      }
+
+      return 0
+    }
+
     async function closeMenu() {
       const state = stateRef.current
       stateRef.current = null
@@ -236,8 +263,36 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         })
 
         options = await createOptions(heapId)
-        menu = await nativeCall(MSG_BG_CREATE_MENU_FUNC, msgBg, requestPtr, options)
-        if (!isMainRamPointer(menu)) throw new Error(`MsgBGPrinter_CreateMenuFunc returned ${hex(menu)}.`)
+        const createCall = await runtimeBridge.callArm9Thumb4(
+          MSG_BG_CREATE_MENU_FUNC,
+          msgBg,
+          requestPtr,
+          options,
+          0,
+          NATIVE_STACK_RESERVE,
+        )
+
+        if (createCall.status === 1 && isMainRamPointer(createCall.result)) {
+          menu = createCall.result >>> 0
+        } else {
+          menu = await recoverMenuPointer(msgBg, options, requestPtr)
+          if (!isMainRamPointer(menu)) {
+            throw new Error(
+              `MsgBGPrinter_CreateMenuFunc did not yield a recoverable menu `
+              + `(status=${createCall.status} result=${hex(createCall.result)} pc=${hex(createCall.pc)} `
+              + `lr=${hex(createCall.lr)} instructions=${createCall.instructions}).`,
+            )
+          }
+
+          console.info('[PokéRun interaction] NATIVE MENU BRIDGE RETURN RECOVERED', {
+            status: createCall.status,
+            result: hex(createCall.result),
+            pc: hex(createCall.pc),
+            lr: hex(createCall.lr),
+            instructions: createCall.instructions,
+            menu: hex(menu),
+          })
+        }
 
         options = 0
         await nativeCall(MSG_BG_DRAW_MENU_FUNC_FRAME, menu)
