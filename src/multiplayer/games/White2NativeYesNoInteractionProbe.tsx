@@ -23,7 +23,7 @@ const BMP_WIN_FLUSH_MAP = 0x02048298
 const BMP_WIN_DRAW_FRAME = 0x02024eac
 const GFL_STRBUF_CREATE = 0x0204855c
 const GFL_FONT_GET_CHAR_WIDTH = 0x02023208
-const GFL_FONT_GET_GLYPH = 0x020230a0
+const GFL_FONT_GET_CHAR_INDEX = 0x020230bc
 const GFL_STRBUF_APPEND = 0x02048760
 const GFL_STRBUF_FREE = 0x02048590
 
@@ -46,9 +46,6 @@ const FRAME_FULL_ROW_BYTES = (WINDOW_WIDTH + 2) * 2
 const STRBUF_MAGIC = 0xb6f8d2ec
 const STRBUF_TERMINATOR = 0xffff
 const STRBUF_PROBE_CHAR = 0x0041 // 'A', the standard Unicode character code supported by the decompiled font map.
-const GLYPH_SCRATCH_TILE_BYTES = 2 * 2 * 32
-const GLYPH_INFO_BYTES = 4
-const GLYPH_SCRATCH_BYTES = GLYPH_SCRATCH_TILE_BYTES + GLYPH_INFO_BYTES
 const AREAMAN_FAIL = 0xffffffff
 const NATIVE_STACK_RESERVE = 0x800
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
@@ -89,7 +86,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BMPWIN DIRECT GLYPH PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN FONT ARCHIVE METADATA PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -103,7 +100,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BMPWIN DIRECT GLYPH PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN FONT ARCHIVE METADATA PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -113,7 +110,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BMPWIN DIRECT GLYPH PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN FONT ARCHIVE METADATA PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -134,9 +131,8 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       strBufAppendAddress: hex(GFL_STRBUF_APPEND),
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
-      getGlyphAddress: hex(GFL_FONT_GET_GLYPH),
-      glyphScratchBytes: GLYPH_SCRATCH_BYTES,
-      note: 'PRK28 repeats the proven native font-width lookup, then calls only GFL_FontGetGlyph(font, U+0041, scratchDest, scratchInfo) with 132 bytes of temporary bitmap-RAM scratch. Compares and restores scratch even after a timeout. No full text renderer, PrintStream, or VRAM upload.',
+      getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
+      note: 'PRK29 replaces unsafe streamed glyph retrieval with read-only native Font struct and CMAP inspection plus the pure-RAM GFL_FontGetCharIndex lookup. Captures glyph byte offset in the already-open font archive without calling FS_ReadFile, OS_LoadContext, or VRAM uploads.',
     })
 
     async function atomicCall(
@@ -180,7 +176,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BMPWIN DIRECT GLYPH PROBE HOLD', { window: hex(stateRef.current.window) })
+          console.info('[PokéRun interaction] BMPWIN FONT ARCHIVE METADATA PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -686,90 +682,129 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             note: 'Cached font data path works without a streamed FS/CARD read. Next investigation must isolate glyph retrieval before attempting full text rendering.',
           })
 
-          // PRK28: call the standalone native glyph getter with a scratch 2x2-tile
-          // destination and a separate four-byte GlyphInfo, both within bitmap RAM.
-          // Save and restore the 132-byte region even if atomic execution times out.
-          const glyphScratchBefore = await runtimeBridge.readBytes(pixelData, GLYPH_SCRATCH_BYTES)
-          if (glyphScratchBefore.length !== GLYPH_SCRATCH_BYTES) {
-            throw new Error(`Glyph scratch read length ${glyphScratchBefore.length} != ${GLYPH_SCRATCH_BYTES}.`)
-          }
-          const glyphDestination = pixelData
-          const glyphInfo = pixelData + GLYPH_SCRATCH_TILE_BYTES
-          let glyphCallInstructions: number | null = null
-          let glyphError: unknown = null
-          let glyphChangedBytes = 0
-          let glyphDestChangedBytes = 0
-          let glyphInfoChangedBytes = 0
-          let glyphInfoAfter: number[] = []
-          console.info('[PokéRun interaction] NATIVE DIRECT GLYPH CALL', {
-            address: hex(GFL_FONT_GET_GLYPH),
+          // PRK29: the streamed font uses FS_ReadFile and can switch real Nitro threads.
+          // Never invoke GFL_FontGetGlyph or GFL_TextRendererDrawToBitmap from this
+          // atomic-call context. Read stable font metadata and in-RAM CMAP only.
+          // Offsets follow the decompiled White 2 US Font/FontInfo/FontGlyphInfo layout.
+          const fontCopyBitmap = await runtimeBridge.read32(fieldFont + 0x08)
+          const cachedGlyphs = await runtimeBridge.read32(fieldFont + 0x0c)
+          const archiveHandle = await runtimeBridge.read32(fieldFont + 0x50)
+          const fontFileId = await runtimeBridge.read32(fieldFont + 0x54)
+          const fontType = await runtimeBridge.read8(fieldFont + 0x58)
+          const lineFeed = await runtimeBridge.read8(fieldFont + 0x59)
+          const fontInfoGlyphOffset = await runtimeBridge.read32(fieldFont + 0x60)
+          const fontInfoWidthOffset = await runtimeBridge.read32(fieldFont + 0x64)
+          const fontInfoMapOffset = await runtimeBridge.read32(fieldFont + 0x68)
+          const getWidthPointer = await runtimeBridge.read32(fieldFont + 0x6c)
+          const unknownGlyphIndex = await runtimeBridge.read16(fieldFont + 0x70)
+          const fixedWidth = await runtimeBridge.read8(fieldFont + 0x72)
+          const glyphCellWidth = await runtimeBridge.read8(fieldFont + 0x74)
+          const glyphCellHeight = await runtimeBridge.read8(fieldFont + 0x75)
+          const glyphCellSize = await runtimeBridge.read16(fieldFont + 0x76)
+          const glyphBpp = await runtimeBridge.read8(fieldFont + 0x7a)
+          const tilesWide = await runtimeBridge.read8(fieldFont + 0x7e)
+          const tilesHigh = await runtimeBridge.read8(fieldFont + 0x7f)
+          const fontFileOffset = await runtimeBridge.read32(fieldFont + 0x80)
+          const fontWidths = await runtimeBridge.read32(fieldFont + 0x84)
+          const fontMaps = await runtimeBridge.read32(fieldFont + 0x88)
+          const fontGlyphsOffset = await runtimeBridge.read32(fieldFont + 0x8c)
+          const fontCell = await runtimeBridge.read32(fieldFont + 0x90)
+          const fontMetadataValid = (
+            fontLoadType === 0 && cachedGlyphs === 0 &&
+            isMainRamPointer(archiveHandle) &&
+            isMainRamPointer(fontWidths) &&
+            isMainRamPointer(fontMaps) &&
+            isMainRamPointer(fontCell) &&
+            glyphCellSize >= 4 && glyphCellSize <= 512 &&
+            glyphCellWidth > 0 && glyphCellWidth <= 16 &&
+            glyphCellHeight > 0 && glyphCellHeight <= 16 &&
+            tilesWide >= 1 && tilesWide <= 2 &&
+            tilesHigh >= 1 && tilesHigh <= 2 &&
+            fontInfoGlyphOffset > 0 &&
+            fontGlyphsOffset === fontInfoGlyphOffset + 8
+          )
+          console.info('[PokéRun interaction] NATIVE FONT ARCHIVE METADATA', {
             font: hex(fieldFont),
-            fontLoadType,
-            streamedCallback: hex(fontGetGlyph),
-            character: STRBUF_PROBE_CHAR,
-            dest: hex(glyphDestination),
-            destBytes: GLYPH_SCRATCH_TILE_BYTES,
-            info: hex(glyphInfo),
-            infoBytes: GLYPH_INFO_BYTES,
-            scratchBytes: GLYPH_SCRATCH_BYTES,
-            note: 'Calls native GFL_FontGetGlyph directly, bypassing TextRenderer. The font is streamed; glyph retrieval may enter Nitro FS/CARD task handling.',
+            loadType: fontLoadType,
+            getGlyphPointer: hex(fontGetGlyph),
+            copyBitmapPointer: hex(fontCopyBitmap),
+            cachedGlyphs: hex(cachedGlyphs),
+            archiveHandle: hex(archiveHandle),
+            fileId: fontFileId,
+            fontType,
+            lineFeed,
+            getWidthPointer: hex(getWidthPointer),
+            unknownGlyphIndex,
+            fixedWidth,
+            fontInfoGlyphOffset,
+            fontInfoWidthOffset,
+            fontInfoMapOffset,
+            fontFileOffset,
+            fontGlyphsOffset,
+            widthsPointer: hex(fontWidths),
+            mapsPointer: hex(fontMaps),
+            glyphCellPointer: hex(fontCell),
+            glyphCellWidth,
+            glyphCellHeight,
+            glyphCellSize,
+            glyphBpp,
+            tilesWide,
+            tilesHigh,
+            fontMetadataValid,
+            note: 'Read-only White 2 Font metadata. Offsets refer to an already-open font archive file; do not confuse with absolute ROM offsets.',
           })
-          try {
-            try {
-              const glyphCall = await atomicCall(
-                GFL_FONT_GET_GLYPH,
-                fieldFont,
-                STRBUF_PROBE_CHAR,
-                glyphDestination,
-                glyphInfo,
-              )
-              glyphCallInstructions = glyphCall.instructions
-            } catch (reason) {
-              glyphError = reason
-            }
-            const glyphScratchAfter = await runtimeBridge.readBytes(pixelData, GLYPH_SCRATCH_BYTES)
-            if (glyphScratchAfter.length !== GLYPH_SCRATCH_BYTES) {
-              throw new Error(`Glyph scratch after-read length ${glyphScratchAfter.length} != ${GLYPH_SCRATCH_BYTES}.`)
-            }
-            for (let i = 0; i < GLYPH_SCRATCH_BYTES; i += 1) {
-              if (glyphScratchBefore[i] !== glyphScratchAfter[i]) {
-                glyphChangedBytes += 1
-                if (i < GLYPH_SCRATCH_TILE_BYTES) glyphDestChangedBytes += 1
-                else glyphInfoChangedBytes += 1
-              }
-            }
-            glyphInfoAfter = Array.from(glyphScratchAfter.slice(GLYPH_SCRATCH_TILE_BYTES))
-            console.info('[PokéRun interaction] NATIVE DIRECT GLYPH RESULT', {
-              font: hex(fieldFont),
-              character: STRBUF_PROBE_CHAR,
-              completed: glyphError === null,
-              failure: glyphError instanceof Error ? glyphError.message : (glyphError === null ? null : String(glyphError)),
-              instructions: glyphCallInstructions,
-              changedBytes: glyphChangedBytes,
-              changedDestBytes: glyphDestChangedBytes,
-              changedInfoBytes: glyphInfoChangedBytes,
-              glyphInfoBytes: glyphInfoAfter,
-              note: 'Temporary scratch difference recorded before mandatory restore. A failed native call does not prove no glyph data was written.',
-            })
-          } finally {
-            await runtimeBridge.writeBytes(pixelData, glyphScratchBefore)
-            console.info('[PokéRun interaction] NATIVE DIRECT GLYPH SCRATCH RESTORED', {
-              address: hex(pixelData),
-              bytes: GLYPH_SCRATCH_BYTES,
-              note: 'No bitmap/VRAM state from the direct glyph experiment is retained.',
-            })
+          if (!fontMetadataValid) {
+            throw new Error('Streamed font layout differs from expected White 2 Font layout; refusing unsafe archive-offset assumptions.')
           }
-          if (glyphError !== null) throw glyphError
-          if (glyphChangedBytes === 0) {
-            throw new Error('GFL_FontGetGlyph returned but did not alter the expected glyph destination or GlyphInfo.')
-          }
-          console.info('[PokéRun interaction] NATIVE DIRECT GLYPH SUCCESS', {
+
+          // Only CMAP header reads; actual index is computed by the game's pure
+          // in-memory map lookup, which GFL_FontGetCharWidth already exercised.
+          const mapFirstChar = await runtimeBridge.read16(fontMaps + 0x00)
+          const mapLastChar = await runtimeBridge.read16(fontMaps + 0x02)
+          const mapMethod = await runtimeBridge.read16(fontMaps + 0x04)
+          const mapNextFileOffset = await runtimeBridge.read32(fontMaps + 0x08)
+          const mapFirstData = await runtimeBridge.read16(fontMaps + 0x0c)
+          console.info('[PokéRun interaction] NATIVE FONT CMAP HEADER', {
+            mapPointer: hex(fontMaps),
+            firstChar: mapFirstChar,
+            lastChar: mapLastChar,
+            method: mapMethod,
+            nextMapFileOffset: mapNextFileOffset,
+            firstData: mapFirstData,
+            charRequested: STRBUF_PROBE_CHAR,
+            note: 'Reads just the first FontMap header. No filesystem operations.',
+          })
+
+          console.info('[PokéRun interaction] NATIVE FONT CHAR INDEX CALL', {
+            address: hex(GFL_FONT_GET_CHAR_INDEX),
             font: hex(fieldFont),
-            character: STRBUF_PROBE_CHAR,
-            instructions: glyphCallInstructions,
-            glyphChangedBytes,
-            glyphInfoBytes: glyphInfoAfter,
-            note: 'Standalone streamed glyph retrieval returned and wrote scratch; full text rendering remains untested.',
+            char: STRBUF_PROBE_CHAR,
+            note: 'GFL_FontGetCharIndex reads font->maps in RAM; never retrieves glyph image bytes.',
+          })
+          const glyphIndexCall = await atomicCall(GFL_FONT_GET_CHAR_INDEX, fieldFont, STRBUF_PROBE_CHAR)
+          const glyphIndex = glyphIndexCall.result
+          const glyphWithinFontOffset = fontGlyphsOffset + glyphIndex * glyphCellSize
+          const glyphArchiveOffset = fontFileOffset + glyphWithinFontOffset
+          if (
+            glyphIndex > 65535 ||
+            !Number.isSafeInteger(glyphArchiveOffset) ||
+            glyphArchiveOffset < fontFileOffset ||
+            glyphArchiveOffset > 0x0fffffff
+          ) {
+            throw new Error(`Unexpected glyph index or archive offset (index=${glyphIndex} fileOffset=${glyphArchiveOffset}).`)
+          }
+          console.info('[PokéRun interaction] NATIVE FONT ARCHIVE OFFSET SUCCESS', {
+            font: hex(fieldFont),
+            char: STRBUF_PROBE_CHAR,
+            width: charWidth,
+            glyphIndex,
+            glyphCellSize,
+            glyphWithinFontOffset,
+            glyphArchiveOffset,
+            archiveHandle: hex(archiveHandle),
+            fileId: fontFileId,
+            instructions: glyphIndexCall.instructions,
+            note: 'Native CMAP index + glyph cell position computed without reading any glyph bytes. This is an offset in the open NARC archive file, not an absolute ROM offset.',
           })
         } finally {
           const freeCall = await atomicCall(GFL_STRBUF_FREE, probeStrBuf)
@@ -783,12 +818,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           createInstructions: strCreateCall.instructions,
           appendInstructions: strAppendInstructions,
           freeInstructions: strFreeInstructions,
-          note: 'Native StrBuf and font-width lookup completed; standalone glyph retrieval ran with restored scratch. No TextRenderer or VRAM upload occurred.',
+          note: 'Native StrBuf, font-width lookup and read-only glyph index/archive-offset inspection completed. No glyph pixels fetched and no post-frame VRAM upload occurred.',
         })
 
 
       } catch (reason) {
-        console.info('[PokéRun interaction] BMPWIN DIRECT GLYPH PROBE FAILED', {
+        console.info('[PokéRun interaction] BMPWIN FONT ARCHIVE METADATA PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
