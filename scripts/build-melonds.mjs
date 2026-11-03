@@ -40,7 +40,7 @@ function applyExactWasmCppPatch(patchPath) {
 
   for (const line of lines) {
     if (line.startsWith('diff --git ')) {
-      if (line !== targetHeader) throw new Error(`Unexpected file in \${patchPath}: \${line}`)
+      if (line !== targetHeader) throw new Error(`Unexpected file in ${patchPath}: ${line}`)
       target = true
       current = null
     } else if (target && line.startsWith('@@ ')) {
@@ -49,20 +49,20 @@ function applyExactWasmCppPatch(patchPath) {
     } else if (target && current && /^[ +\-]/.test(line)) {
       current.operations.push(line)
     } else if (target && current && line.startsWith('\\ No newline')) {
-      throw new Error(`Unsupported non-terminated patch hunk in \${patchPath}`)
+      throw new Error(`Unsupported non-terminated patch hunk in ${patchPath}`)
     }
   }
 
   const expectedHunks = patchPath.includes('0006-') ? 6 : 3
   if (hunks.length !== expectedHunks) {
-    throw new Error(`Expected \${expectedHunks} validated C++ hunks in \${patchPath}, got \${hunks.length}`)
+    throw new Error(`Expected ${expectedHunks} validated C++ hunks in ${patchPath}, got ${hunks.length}`)
   }
 
   const sourceLines = readFileSync(cppPath, 'utf8').split('\n')
   for (const hunk of hunks) {
     const before = hunk.operations.filter(op => op[0] !== '+').map(op => op.slice(1))
     const after = hunk.operations.filter(op => op[0] !== '-').map(op => op.slice(1))
-    if (!before.length) throw new Error(`Refusing insertion-only hunk in \${patchPath}: \${hunk.header}`)
+    if (!before.length) throw new Error(`Refusing insertion-only hunk in ${patchPath}: ${hunk.header}`)
     const hits = []
     for (let offset = 0; offset <= sourceLines.length - before.length; offset += 1) {
       if (sourceLines[offset] === before[0] && before.every((line, idx) => sourceLines[offset + idx] === line)) {
@@ -70,13 +70,13 @@ function applyExactWasmCppPatch(patchPath) {
       }
     }
     if (hits.length !== 1) {
-      throw new Error(`Patch \${patchPath} \${hunk.header} matched \${hits.length} locations (expected exactly one)`)
+      throw new Error(`Patch ${patchPath} ${hunk.header} matched ${hits.length} locations (expected exactly one)`)
     }
     sourceLines.splice(hits[0], before.length, ...after)
   }
 
   writeFileSync(cppPath, sourceLines.join('\n'))
-  console.log(`[PokéRun] Strictly applied \${hunks.length} C++ hunks from \${patchPath}`)
+  console.log(`[PokéRun] Strictly applied ${hunks.length} C++ hunks from ${patchPath}`)
 }
 
 function restorePinnedSource() {
