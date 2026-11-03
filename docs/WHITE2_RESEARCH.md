@@ -1,6 +1,6 @@
 # Pokémon White 2 Reverse-Engineering Notes
 
-Last updated: 2026-11-02
+Last updated: 2026-11-03
 Target: Pokémon White 2 US (IRDO), exact-ROM-fingerprint gated by PokéRun code.
 
 This file contains durable findings. Temporary experiment state belongs in `docs/POKERUN_MULTIPLAYER_STATE.md`.
@@ -467,6 +467,92 @@ The DEV harness can occasionally log:
 When the surrounding native status continues to report `healthy: true`, treat this as an idle diagnostic timeout rather than evidence that the actor failed.
 
 Cold startup can also briefly log invalid GameSystem/GameData pointers before White 2 has finished initializing.
+
+## Native BG2 interaction-window reverse engineering (2026-11-03)
+
+This section records **research-only** injected native calls for the White 2 US field message window in the one-real-emulator / headless-fake-P2 harness. No functional yes/no menu, text stream, input choice, or close lifecycle is established by these probes. Preserve the proven P2 native comm actor and keep each subsequent phase isolated.
+
+### FieldMsgBG / native window offsets
+
+On stable normal field map 427, `FldAct_GetFieldEffects(actor) -> FieldEffects_GetField -> Field_GetMsgBGSys(field)` resolves the live field message background. Validated `FieldMsgBG` fields:
+
+| Offset | Type | Meaning |
+| --- | --- | --- |
+| `+0x00` | `HeapID` / `u16` | heap ID |
+| `+0x02` | `u16` | primary BG |
+| `+0x04` | `u16` | secondary BG |
+| `+0x06` | `u16` | palette |
+
+Stable values in tested field: `heapId=21`, `bg=1`, `bg2=2`, `palette=14`; text BG mode `0`, 4bpp BG color mode `0`, 32 bytes/tile. Cold startup may transiently report `bg2=255` or invalid GameSystem/GameData pointers, so fail fast until valid rather than patching those fields.
+
+`BmpWin` at US address `0x020480EC` (`BmpWin_CreateDynamic`) accepts seven arguments `(bg,x,y,width,height,palette,fromEnd)`. The test uses `(2,18,2,12,5,14,1)`, with the final three arguments supplied on the injected ARM9 stack. `BmpWin` layout:
+
+| Offset | Data |
+| --- | --- |
+| `+0x00` | `magic=0x7fb2` (15 bits), color mode (1 bit) |
+| `+0x02` | BG byte |
+| `+0x03/+0x04` | x/y bytes |
+| `+0x05/+0x06` | sizeX/sizeY bytes |
+| `+0x07/+0x08` | width/height bytes |
+| `+0x09` | palette byte |
+| `+0x0A` | character tile position (`u16`) |
+| `+0x0C` | `GFLBitmap*` |
+
+`GFLBitmap` fields: pixel pointer `+0x00`; width/height in pixels `+0x04/+0x06`; tile size `+0x08`; storage `+0x0A`. A valid 12×5 window has 96×40 pixels, tile size 32, storage 0, and 1,920 bytes of character pixels.
+
+### Native window creation and allocation
+
+The decompiled `FieldMsgBG_CreateBmpWin` sequence is:
+
+1. `BmpWin_CreateDynamic`
+2. `GFL_BitmapFill` color `0xff`
+3. `BmpWin_FlushMap`
+4. `BmpWin_FlushChar`
+5. `GFL_BGSysLoadScr(bg)`
+6. `BmpWin_DrawFrame(window, WINFRAME_TRANSFER_NOW, 1, palette==14 ? 13 : 10)`
+
+`GFL_BGSysAllocChar(bg=2,size=1920,fromEnd=1)` can return `AREAMAN_FAIL=0xffffffff` when space is unavailable. An exact preflight allocation followed by `GFL_BGSysFreeCharMemory` often returns `charPos=964`, and the subsequent native CreateDynamic also uses `964`, occupying BG2 character indices 964..1023. Do not assume allocator state remains usable indefinitely; another run created a window at `charPos=4` despite a preflight result of `964`.
+
+**Unresolved anomaly:** two earlier runs returned `preflightCharPos=964` but `BmpWin.charPos=1` or `4`, with much larger instruction counts (e.g. create `27063`, fill `24513`, flushMap `19048`). These figures are consistent with an unexpectedly larger allocation, but this is *not proven to be bad stack arguments*; no window-geometry readout was taken in those anomalous runs. PRK22 and later introduced a read-only guard on the actual native `BmpWin` and bitmap geometry and fail **before any fill/VRAM upload** if dimensions or charPos differ from the exact preflight. Normal validated counts: create `2943`, fill `1473`, flushMap `2888`.
+
+### DMA boundary is the synchronous injected-call wait, not necessarily the transfer
+
+The PRK11 scheduler-aware atomic runtime (`callArm9Thumb8Atomic`, up to eight arguments, 1M instruction cap) advances emulator scheduling yet **cannot reliably exit synchronous Nitro DMA completion waits** once a native call requests DMA. White 2's normal game DMA is not shown to be broken.
+
+- `BmpWin_FlushChar` `0x02048270` attempts BG2 `GFL_BGSysLoadChar -> GX_LoadBG2Char -> GXi_DmaCopy32` with 1,920 bytes. PRK16 hung at `MIi_DmaCopy32` `0x02078108/0x0207810A` after 1M instructions.
+- PRK17 passed a **32-byte** (one 4bpp tile) `GFL_BGSysLoadChar` call in **116 instructions**. Nitro's `GXi_DmaCopy32` uses CPU copy for sizes <=48 bytes.
+- PRK18 attempted **64 bytes**, the smallest two-tile payload above that threshold, and stalled at `0x0207810A`.
+- The PRK20 full `GFL_BGSysLoadScr(bg2)` used `GX_LoadBG2Scr -> GXi_DmaCopy16`, stalled in `MIi_DmaCopy16` near `0x0207816C` at 1M instructions. A visible 12×5 black rectangle nevertheless appeared in the screenshot, indicating at least the relevant window map entries reached VRAM before timeout. Do **not** infer that every DMA transfer itself fails; the injected *waiting code* is the established problem.
+
+### Proven DMA-free character and tilemap upload
+
+- **PRK19:** `60 × GFL_BGSysLoadChar(bg2,pixelData+32*i,32,charPos+i)` uploaded all **1,920 character bytes** in **6,960 instructions**, 116 each.
+- **PRK21/PRK22:** for a 32-tile-wide text BG, construct each `BmpWin_FlushMap` map entry as `(palette << 12) | (charPos + row*12 + col)`. Upload **five 24-byte rows** using `GFL_BGSysLoadScrCore(bg2,scratch,24,(y+row)*32+x)` at `0x02044FDC`. `GXi_DmaCopy16` uses CPU copy for sizes <=28 bytes. Five uploads took **675 instructions total**, 135 each. The first 24 bytes of the bitmap RAM were used as temporary scratch and restored afterward.
+- On PRK22 the geometry guard reported expected and actual `12×5`, `96×40`, `charPos=964`; create/fill/flushMap instruction counts returned to 2943/1473/2888. P2 remained healthy.
+
+The program's BG2 character upload uses physical tile offsets; `GFL_BGSysLoadChar` accepts tile indices, while `GFL_BGSysLoadScrCore` accepts **screen entry offsets** and multiplies them by two bytes internally.
+
+### Native frame draw and screen transfer
+
+White 2 US frame routine `BmpWin_DrawFrame` is at **`0x02024EAC`**. Decomp source: `src/system/bmp_winframe.c`. It writes eight border segment types using `GFL_BGSysFillScrArea`; `WINFRAME_TRANSFER_NONE=2` skips its dangerous immediate `GFL_BGSysLoadScr`. Normal BG2 frame is **character 1, palette 13**. For test window interior `(18,2,12,5)`, frame occupies the surrounding rectangle `(17,1,14,7)` with 38 border entries.
+
+- **PRK23:** `BmpWin_DrawFrame(win,2,1,13)` succeeded in **1,681 instructions**, modifying the BG2 RAM screen map only. No frame VRAM upload occurred.
+- **PRK24:** reconstruct the eight segment types exactly as `BmpWin_DrawFrameCore` does, then upload **two 28-byte full rows** (top and bottom) and **ten 2-byte side entries** (`GFL_BGSysLoadScrCore`), **12 calls / 38 entries / 76 bytes**. All remain on the <=28-byte CPU path, total **1,040 instructions**.
+- Screenshot and PRK24 log independently confirmed a clean native White 2 black interior with its usual gray/white/black border at the expected BG2 screen position; frame graphics and palette are already available in this field state. P2 remained healthy at 6, 8 and 10 seconds after the probe.
+
+**Validated research pipeline:** exact allocator preflight -> geometry guard -> native BmpWin create -> bitmap fill -> native RAM map flush -> 60 CPU-sized character uploads -> 5 CPU-sized interior map uploads -> native RAM frame draw (transfer NONE) -> 12 CPU-sized border uploads. The one-shot diagnostic intentionally leaves its native window allocated until a fresh emulator session. It is not a production ownership/cleanup pattern.
+
+### Next isolated research topics
+
+1. Investigate native font/glyph/StrBuf to render a *single fixed string* in an existing bitmap, with **no native scheduled PrintStream** and no immediate DMA. Inspect changes to bitmap RAM before uploading anything, then test the smallest CPU-sized character refresh. Fonts should use the live `FieldMsgBG.font` pointer at `+0x08` (do not overwrite).
+2. Establish reversible teardown: clear the exact interior+border tilemap using CPU-sized calls, `BmpWin_Free` allocation lifetime, field teardown and map warp invalidation.
+3. Only after these are validated, research native choice selection, cursor movement, input, and interaction task lifecycle. Preserve the existing fake-P2/native-comm actor implementation.
+
+### Sources for symbols and behavior
+
+- `fuddlesworth/pokebw2` at commit `41f42ca1afe6291f00b0ba0ec3f6099b9ff1346c`, notably `src/gfl/bmp_win.c`, `src/gfl/bg_sys.c`, `src/gfl/bmp.c`, `src/system/bmp_winframe.c`, `src/ov036/field_msgbg.c`, and `config/w2_us/arm9/symbols.txt`.
+- Probe implementation: `src/multiplayer/games/White2NativeYesNoInteractionProbe.tsx` on `mp/map-transition-recovery-v2`.
+- Representative log: PRK24 (2026-11-03 18:31 uploaded snapshot) with geometry at 877–913, frame RAM at 996–1022, border upload at 1024–1047 and healthy P2 through 1146.
 
 ## Research rules
 
