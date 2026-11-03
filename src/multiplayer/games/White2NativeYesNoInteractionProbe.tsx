@@ -48,7 +48,7 @@ const STRBUF_TERMINATOR = 0xffff
 const STRBUF_PROBE_CHAR = 0x0041 // 'A', the standard Unicode character code supported by the decompiled font map.
 const AREAMAN_FAIL = 0xffffffff
 const NATIVE_STACK_RESERVE = 0x800
-const PRK31_ROM_RANGE_ONLY = true
+const PRK31_ROM_RANGE_ONLY = false // PRK32 restores the visible 12x5 window; read-only branch remains for fallback.
 const EXPECTED_STABLE_PLAYER_MODEL = 240
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 
@@ -89,7 +89,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] FONT ROM RANGE READONLY PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN RESTORED FONT RANGE PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -103,7 +103,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] FONT ROM RANGE READONLY PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN RESTORED FONT RANGE PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -113,7 +113,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] FONT ROM RANGE READONLY PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN RESTORED FONT RANGE PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -135,8 +135,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'font-rom-range-only',
-      note: 'PRK31 tests ArcTool FSFile metadata only. No BmpWin allocation, bitmap/window drawing, StrBuf, glyph fetching, or guest FS calls. Requires a stable model-240 field actor before any native getter.',
+      mode: 'visible-native-window-plus-font-rom-range',
+      nativeStackRuntimeStamp: '0x50524B3C',
+      note: 'PRK32 restores PRK24 native framed window graphics with new isolated ARM9 stack argument bridge (0x50524B3C). The geometry guard remains mandatory. Then log PRK29-30 ROM file offset safely; no streamed glyph calls or menu input.',
     })
 
     async function atomicCall(
@@ -180,7 +181,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || metadataCompleteRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current || metadataCompleteRef.current) {
-          console.info('[PokéRun interaction] FONT ROM RANGE READONLY PROBE HOLD', { window: stateRef.current ? hex(stateRef.current.window) : null, metadataComplete: metadataCompleteRef.current })
+          console.info('[PokéRun interaction] BMPWIN RESTORED FONT RANGE PROBE HOLD', { window: stateRef.current ? hex(stateRef.current.window) : null, metadataComplete: metadataCompleteRef.current })
         }
         return
       }
@@ -370,6 +371,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           address: hex(BMP_WIN_CREATE_DYNAMIC),
           preflightCharPos: preflightPos,
         })
+        console.info('[PokéRun interaction] PRK32 WINDOW CREATE STACK ABI CHECK', {
+          address: hex(BMP_WIN_CREATE_DYNAMIC),
+          registerArgs: [bg2, WINDOW_X, WINDOW_Y, WINDOW_WIDTH],
+          injectedStackArgs: [WINDOW_HEIGHT, MSGBG_PLTT_BG2, 1, 0],
+          note: 'Extra arguments now enter a backed-up isolated SP area via the PRK32 melonDS native bridge.',
+        })
         const createCall = await atomicCall(
           BMP_WIN_CREATE_DYNAMIC,
           bg2,
@@ -457,6 +464,19 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           })
           return
         }
+
+        console.info('[PokéRun interaction] PRK32 WINDOW GEOMETRY VERIFIED', {
+          window: hex(nativeWindow),
+          charPos,
+          expectedCharPos: preflightPos,
+          x: actualX,
+          y: actualY,
+          width: actualWidth,
+          height: actualHeight,
+          palette: actualPalette,
+          createInstructions: createCall.instructions,
+          note: 'The native BmpWin passed strict geometry and allocation checks before graphics were uploaded.',
+        })
 
         const pixelData = await runtimeBridge.read32(bitmap + 0x00)
         if (!isMainRamPointer(pixelData)) throw new Error(`GFLBitmap pixel data is invalid (${hex(pixelData)}).`)
@@ -1001,7 +1021,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
 
       } catch (reason) {
-        console.info('[PokéRun interaction] FONT ROM RANGE READONLY PROBE FAILED', {
+        console.info('[PokéRun interaction] BMPWIN RESTORED FONT RANGE PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
@@ -1025,7 +1045,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     return () => {
       window.removeEventListener(WHITE2_INTERACT_EVENT, onInteract)
       emitMenuState(false)
-      // Deliberately leave the one-shot diagnostic BmpWin allocated; a fresh emulator session owns it.
+      // Diagnostic BmpWin remains allocated only in sessions that successfully create it; restart between tests.
       stateRef.current = null
       metadataCompleteRef.current = false
     }
