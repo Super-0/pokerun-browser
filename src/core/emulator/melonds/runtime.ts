@@ -1,12 +1,13 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v5'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v6'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B35
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B36
+export const POKERUN_ARM9_CALL_BUDGET = 1000000
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
 type WasmEmulator = {
@@ -33,6 +34,7 @@ type WasmEmulator = {
   arm9CallLr(): number
   arm9CallCpsr(): number
   arm9CallInstructions(): number
+  arm9CallBudget(): number
   pokerunRuntimeVersion(): number
   delete?: () => void
 }
@@ -79,7 +81,29 @@ export function loadMelonDsRuntime() {
           configurable: true,
           get: () => window.HEAPU8,
         })
-        resolve(window.Module as MelonDsModule)
+
+        const module = window.Module as MelonDsModule
+        let probe: WasmEmulator | null = null
+        try {
+          probe = new module.WasmEmulator()
+          const stamp = probe.pokerunRuntimeVersion?.()
+          const budget = probe.arm9CallBudget?.()
+          if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET) {
+            reject(new Error(
+              `Stale melonDS runtime loaded (stamp=0x${(stamp ?? 0).toString(16).toUpperCase()}, ARM9 budget=${budget ?? 0}); ` +
+              `expected stamp=0x${POKERUN_MELONDS_RUNTIME_STAMP.toString(16).toUpperCase()} and budget=${POKERUN_ARM9_CALL_BUDGET}. ` +
+              'Run npm run build:melonds, restart Vite, and reopen the tab.',
+            ))
+            return
+          }
+        } catch (error) {
+          reject(error instanceof Error ? error : new Error('Could not verify the PokéRun melonDS runtime.'))
+          return
+        } finally {
+          probe?.delete?.()
+        }
+
+        resolve(module)
       },
     }
     const script = document.createElement('script')
