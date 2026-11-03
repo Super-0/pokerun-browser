@@ -26,7 +26,7 @@ const FIELDMAP_CTRL_GRID = 0
 const STRBUF_MAGIC = 0xb6f8d2ec
 const STRBUF_TERMINATOR = 0xffff
 const LIST_WAITING = -1
-const LIST_MENU_REQUEST_SIZE = 0x1c
+const LIST_MENU_REQUEST_SIZE = 0x20
 const NATIVE_STACK_RESERVE = 0x800
 const POLL_MS = 34
 
@@ -53,42 +53,31 @@ function signed32(value: number) {
 }
 
 function makeRequest(count: number) {
-  // Exact ARM layout of White 2's ListMenuRequest (sizeof = 0x1c).
-  // The bitfields from bgColor through pageSkip share the 32-bit storage
-  // unit at 0x08. In particular pageSkip is bits 25-26; 0x0c is already
-  // fontSizeX, not a standalone pageSkip field.
+  // White 2 US overlay 36 places sYesNoMenuRequest at 0x021CAAC8 and the
+  // following symbol at 0x021CAAE8, proving the compiled request is 0x20 bytes.
+  // Mirror the game's own yes/no defaults for every packed field, then provide
+  // our two-item geometry. Mixed-base-type bitfields occupy separate storage
+  // units here: u8 nibbles at 0x07/0x08, u16 spacing bits at 0x0A, and the
+  // signed 32-bit pageSkip bitfield at 0x0C.
   const bytes = new Uint8Array(LIST_MENU_REQUEST_SIZE)
   const view = new DataView(bytes.buffer)
   view.setUint16(0x00, count, true) // count
   view.setUint16(0x02, count, true) // maxShown
   bytes[0x04] = 0 // labelX
-  bytes[0x05] = 12 // itemX
+  bytes[0x05] = 13 // itemX (sYesNoMenuRequest)
   bytes[0x06] = 0 // cursorX
-  bytes[0x07] = 0x10 // listY=0, fgColor=1
-
-  const bgColor = 15
-  const shadowColor = 2
-  const letterSpacing = 0
-  const lineSpacing = 0
-  const unknownBits = 0
-  const pageSkip = 1 // BMPMENULIST_SKIP_LR_KEY
-  const packed = (
-    bgColor
-    | (shadowColor << 4)
-    | (letterSpacing << 8)
-    | (lineSpacing << 11)
-    | (unknownBits << 16)
-    | (pageSkip << 25)
-  ) >>> 0
-  view.setUint32(0x08, packed, true)
-
-  view.setUint16(0x0c, 12, true) // fontSizeX
-  view.setUint16(0x0e, 16, true) // rowHeight
-  view.setUint16(0x10, 18, true) // x (tiles)
-  view.setUint16(0x12, 2, true) // y (tiles)
-  view.setUint16(0x14, 12, true) // width (tiles)
-  view.setUint16(0x16, 5, true) // height (tiles)
-  view.setUint32(0x18, 0, true) // printCallback
+  bytes[0x07] = 0x13 // listY=3, fgColor=1
+  bytes[0x08] = 0x2f // bgColor=15, shadowColor=2
+  bytes[0x09] = 0 // alignment padding
+  view.setUint16(0x0a, 0x0008, true) // letterSpacing=0, lineSpacing=1, unk=0
+  view.setUint32(0x0c, 0, true) // pageSkip=0
+  view.setUint16(0x10, 12, true) // fontSizeX
+  view.setUint16(0x12, 13, true) // rowHeight
+  view.setUint16(0x14, 18, true) // x (tiles)
+  view.setUint16(0x16, 2, true) // y (tiles)
+  view.setUint16(0x18, 12, true) // width (tiles)
+  view.setUint16(0x1a, 5, true) // height (tiles)
+  view.setUint32(0x1c, 0, true) // printCallback
   return bytes
 }
 
