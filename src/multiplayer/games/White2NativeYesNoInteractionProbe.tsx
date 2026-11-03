@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerDirection, MultiplayerPlayerState, MultiplayerRomIdentity } from '../core/protocol'
@@ -41,23 +41,31 @@ function hex(value: number) {
 
 export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
   const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
+  const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const menuRef = useRef(0)
   const fieldRef = useRef(0)
   const openingRef = useRef(false)
   const pollingRef = useRef(false)
 
-  useEffect(() => multiplayerPresence.subscribe(setPresence), [])
+  useEffect(() => multiplayerPresence.subscribe(snapshot => {
+    presenceRef.current = snapshot
+    setPresence(snapshot)
+  }), [])
 
-  const interactable = useMemo(
-    () => canInteract(presence.local, presence.remote),
-    [presence.local, presence.remote],
-  )
+  const interactable = canInteract(presence.local, presence.remote)
+  const interactableRef = useRef(false)
+  interactableRef.current = interactable
 
   useEffect(() => {
     if (!bridge || !White2ActorSystemProbe.supportsRom(rom)) return
 
     const runtimeBridge = bridge
     const probe = new White2ActorSystemProbe(runtimeBridge)
+
+    console.info('[PokéRun interaction] YES/NO PROBE LISTENER MOUNTED', {
+      bridgeStatus: runtimeBridge.status,
+      rom: rom.gameId,
+    })
 
     async function nativeCall(address: number, r0 = 0, r1 = 0, r2 = 0, r3 = 0) {
       const call = await runtimeBridge.callArm9Thumb4(address, r0, r1, r2, r3, NATIVE_STACK_RESERVE)
@@ -143,27 +151,29 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.code !== 'KeyX' && event.code !== 'KeyS') || event.repeat) return
 
+      const latest = presenceRef.current
+      const latestInteractable = interactableRef.current
       console.info('[PokéRun interaction] INTERACT KEY SEEN', {
         code: event.code,
-        interactable,
+        interactable: latestInteractable,
         bridgeStatus: runtimeBridge.status,
         menuOpen: Boolean(menuRef.current),
         opening: openingRef.current,
-        local: presence.local ? {
-          mapId: presence.local.location.mapId,
-          x: presence.local.x,
-          y: presence.local.y,
-          direction: presence.local.direction,
+        local: latest.local ? {
+          mapId: latest.local.location.mapId,
+          x: latest.local.x,
+          y: latest.local.y,
+          direction: latest.local.direction,
         } : null,
-        remote: presence.remote ? {
-          mapId: presence.remote.location.mapId,
-          x: presence.remote.x,
-          y: presence.remote.y,
-          direction: presence.remote.direction,
+        remote: latest.remote ? {
+          mapId: latest.remote.location.mapId,
+          x: latest.remote.x,
+          y: latest.remote.y,
+          direction: latest.remote.direction,
         } : null,
       })
 
-      if (!interactable || menuRef.current || openingRef.current) return
+      if (!latestInteractable || menuRef.current || openingRef.current) return
       const target = event.target as HTMLElement | null
       if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
       event.preventDefault()
@@ -200,7 +210,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.clearInterval(timer)
       if (menuRef.current || fieldRef.current) void closeMenu()
     }
-  }, [bridge, interactable, presence.local, presence.remote, rom.gameId, rom.sha256])
+  }, [bridge, rom.gameId, rom.sha256])
 
   return null
 }
