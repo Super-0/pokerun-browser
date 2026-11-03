@@ -108,6 +108,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       })
       return
     }
+    // TypeScript does not preserve a nullable value's narrowing inside
+    // nested functions; capture the validated bridge as a non-null const.
+    const readyAtomicRuntime: AtomicRuntime = atomicRuntime
 
     const emitMenuState = (open: boolean) => {
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
@@ -151,7 +154,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       a6 = 0,
       a7 = 0,
     ) {
-      const result = atomicRuntime.callArm9Thumb8Atomic(
+      const result = readyAtomicRuntime.callArm9Thumb8Atomic(
         address >>> 0,
         r0 >>> 0,
         r1 >>> 0,
@@ -163,11 +166,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         a7 >>> 0,
         NATIVE_STACK_RESERVE,
       ) >>> 0
-      const status = atomicRuntime.arm9CallStatus() >>> 0
-      const pc = atomicRuntime.arm9CallPc() >>> 0
-      const lr = atomicRuntime.arm9CallLr() >>> 0
-      const cpsr = atomicRuntime.arm9CallCpsr() >>> 0
-      const instructions = atomicRuntime.arm9CallInstructions() >>> 0
+      const status = readyAtomicRuntime.arm9CallStatus() >>> 0
+      const pc = readyAtomicRuntime.arm9CallPc() >>> 0
+      const lr = readyAtomicRuntime.arm9CallLr() >>> 0
+      const cpsr = readyAtomicRuntime.arm9CallCpsr() >>> 0
+      const instructions = readyAtomicRuntime.arm9CallInstructions() >>> 0
 
       if (status !== 1) {
         throw new Error(
