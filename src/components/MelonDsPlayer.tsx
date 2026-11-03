@@ -42,6 +42,7 @@ const SPEED_STORAGE_KEY = 'pokerun-melonds-speed'
 const SPEED_OPTIONS: DsSpeedMultiplier[] = [1, 2, 4]
 const directionGlyph = { north: '↑', south: '↓', east: '→', west: '←' } as const
 const WHITE2_INTERACT_EVENT = 'pokerun:white2-interact'
+const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 
 function storedSpeed(): DsSpeedMultiplier {
   const value = Number(localStorage.getItem(SPEED_STORAGE_KEY))
@@ -97,6 +98,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   const [speed, setSpeed] = useState<DsSpeedMultiplier>(storedSpeed)
   const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
+  const nativeMenuOpenRef = useRef(false)
   const [runtimeSpeedStats, setRuntimeSpeedStats] = useState<RuntimeSpeedStats>({ bridgeSpeed: speed, processFramesPerSecond: 0 })
   const speedRef = useRef<DsSpeedMultiplier>(speed)
   const isNativeWhite2 = game.id === 'white2' && suppliedRom?.sha256.toLowerCase() === TESTED_WHITE2_SHA256
@@ -107,8 +109,22 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   }), [])
 
   useEffect(() => {
+    const onNativeMenuState = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : undefined
+      nativeMenuOpenRef.current = detail?.open === true
+    }
+
+    window.addEventListener(WHITE2_NATIVE_MENU_STATE_EVENT, onNativeMenuState)
+    return () => {
+      nativeMenuOpenRef.current = false
+      window.removeEventListener(WHITE2_NATIVE_MENU_STATE_EVENT, onNativeMenuState)
+    }
+  }, [])
+
+  useEffect(() => {
     const onInteractionKey = (event: KeyboardEvent) => {
       if (event.repeat || (event.code !== 'KeyX' && event.code !== 'KeyS')) return
+      if (nativeMenuOpenRef.current) return
 
       const latest = presenceRef.current
       const interactable = canInteractWithRemote(latest)
