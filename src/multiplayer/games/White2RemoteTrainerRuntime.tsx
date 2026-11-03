@@ -13,11 +13,11 @@ import { White2RemoteTransitionRuntime } from './White2RemoteTransitionRuntime'
 // dedicated remote-trainer stack; development additionally mounts read-only
 // diagnostics and an in-app console so test logs can be copied without opening
 // browser developer tools.
-export function White2RemoteTrainerRuntime({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
+export function White2RemoteTrainerRuntime({ bridge, rom, romBytes }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity; romBytes?: Uint8Array }) {
   return <>
     <White2RemoteTransitionRuntime bridge={bridge} rom={rom}/>
     <White2NativeEmoteRuntime bridge={bridge} rom={rom}/>
-    <White2NativeYesNoInteractionProbe bridge={bridge} rom={rom}/>
+    <White2NativeYesNoInteractionProbe bridge={bridge} rom={rom} romBytes={romBytes}/>
     <White2PlayerInteractionRuntime/>
     {import.meta.env.DEV && <>
       <White2NativeCommShadowRuntime bridge={bridge} rom={rom}/>
