@@ -299,7 +299,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
 
   return (
     <div className="melonds-player">
-      {multiplayerRomIdentity && <White2RemoteTrainerRuntime bridge={ready ? bridgeRef.current : null} rom={multiplayerRomIdentity}/>} 
+      {multiplayerRomIdentity && <White2RemoteTrainerRuntime bridge={ready ? bridgeRef.current : null} rom={multiplayerRomIdentity} romBytes={suppliedRom?.bytes}/>} 
       <div className="emulator-toolbar pixel-border">
         <strong>melonDS</strong>
         <div className="emulator-speed-controls" aria-label="Emulation speed">
