@@ -17,6 +17,7 @@ const GFL_BGSYS_LOAD_CHAR = 0x020450ac
 const GFL_BGSYS_GET_BG_MODE = 0x0204587c
 const GFL_BGSYS_GET_BG_COLOR_PALETTE_MODE = 0x02045890
 const GFL_BGSYS_GET_BG_BYTES_PER_TILE = 0x020458a4
+const GFL_BITMAP_CREATE = 0x02046e54
 const GFL_BITMAP_FILL = 0x02047168
 const BMP_WIN_CREATE_DYNAMIC = 0x020480ec
 const BMP_WIN_FLUSH_MAP = 0x02048298
@@ -48,7 +49,8 @@ const STRBUF_TERMINATOR = 0xffff
 const STRBUF_PROBE_CHAR = 0x0041 // 'A', the standard Unicode character code supported by the decompiled font map.
 const AREAMAN_FAIL = 0xffffffff
 const NATIVE_STACK_RESERVE = 0x800
-const PRK31_ROM_RANGE_ONLY = false // PRK32 restores the visible 12x5 window; read-only branch remains for fallback.
+const PRK31_ROM_RANGE_ONLY = false // Retained read-only diagnostic fallback.
+const PRK33_FOUR_ARG_BG2_VISUAL = true // Avoid BmpWin_CreateDynamic and other guest functions requiring stack arguments.
 const EXPECTED_STABLE_PLAYER_MODEL = 240
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 
@@ -89,7 +91,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BMPWIN RESTORED FONT RANGE PROBE EFFECT', {
+    console.info('[PokéRun interaction] BG2 FOUR ARG VISUAL PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -103,7 +105,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BMPWIN RESTORED FONT RANGE PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BG2 FOUR ARG VISUAL PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -116,10 +118,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BMPWIN RESTORED FONT RANGE PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BG2 FOUR ARG VISUAL PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
+      bitmapCreateAddress: hex(GFL_BITMAP_CREATE),
       fillAddress: hex(GFL_BITMAP_FILL),
       flushMapAddress: hex(BMP_WIN_FLUSH_MAP),
       drawFrameAddress: hex(BMP_WIN_DRAW_FRAME),
@@ -138,9 +141,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'visible-native-window-plus-font-rom-range',
+      mode: 'four-arg-native-bg2-window-visual',
       nativeStackRuntimeStamp: '0x50524B3C',
-      note: 'PRK32 restores PRK24 native framed window graphics with new isolated ARM9 stack argument bridge (0x50524B3C). The geometry guard remains mandatory. Then log PRK29-30 ROM file offset safely; no streamed glyph calls or menu input.',
+      note: 'PRK33 bypasses BmpWin_CreateDynamic after the PRK32 abort. Create bitmap using four-arg GFL_BitmapCreate, allocate BG2 char memory with three-arg helper, and upload the native 12x5 framed visual through 32-byte char and <=28-byte screen CPU transfers. No streamed glyph I/O or menu lifecycle.',
     })
 
     async function atomicCall(
@@ -184,7 +187,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || metadataCompleteRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current || metadataCompleteRef.current) {
-          console.info('[PokéRun interaction] BMPWIN RESTORED FONT RANGE PROBE HOLD', { window: stateRef.current ? hex(stateRef.current.window) : null, metadataComplete: metadataCompleteRef.current })
+          console.info('[PokéRun interaction] BG2 FOUR ARG VISUAL PROBE HOLD', { window: stateRef.current ? hex(stateRef.current.window) : null, metadataComplete: metadataCompleteRef.current })
         }
         return
       }
@@ -355,6 +358,139 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           requestedBytes,
           screenRowBytes: SCREEN_ROW_BYTES,
         })
+
+        // PRK33: prove native BG2 visual output without any >4-arg guest calls.
+        // BmpWin_CreateDynamic remains below as research/reference only.
+        if (PRK33_FOUR_ARG_BG2_VISUAL) {
+          console.info('[PokéRun interaction] PRK33 STACK-FREE BG2 DISPLAY PREFLIGHT', {
+            bg: bg2,
+            heapId,
+            expectedCharPos: 964,
+            tiles: tileCount,
+            bytes: requestedBytes,
+            bitmapCreate: hex(GFL_BITMAP_CREATE),
+            note: 'Native bitmap and BG2 char/screen CPU transfers only; no BmpWin_CreateDynamic.',
+          })
+          const charAlloc = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg2, requestedBytes, 1)
+          const directCharPos = charAlloc.result
+          if (directCharPos === AREAMAN_FAIL) {
+            throw new Error('PRK33 BG2 character allocation failed.')
+          }
+          if (directCharPos !== 964 || directCharPos + tileCount !== 1024) {
+            console.info('[PokéRun interaction] PRK33 BG2 ALLOCATION GUARD', {
+              charPos: directCharPos, expectedCharPos: 964, tileCount,
+              note: 'Abort before bitmap or VRAM writes; free the unexpected allocation.',
+            })
+            await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg2, directCharPos, requestedBytes)
+            return
+          }
+          const bitmapAlloc = await atomicCall(GFL_BITMAP_CREATE, WINDOW_WIDTH, WINDOW_HEIGHT, bytesPerTile, heapId)
+          const directBitmap = bitmapAlloc.result
+          if (!isMainRamPointer(directBitmap)) {
+            throw new Error('GFL_BitmapCreate returned invalid bitmap ' + hex(directBitmap))
+          }
+          const directPixels = await runtimeBridge.read32(directBitmap + 0x00)
+          const directWidth = await runtimeBridge.read16(directBitmap + 0x04)
+          const directHeight = await runtimeBridge.read16(directBitmap + 0x06)
+          const directTileSize = await runtimeBridge.read16(directBitmap + 0x08)
+          const directStorage = await runtimeBridge.read16(directBitmap + 0x0a)
+          const bitmapValid = (
+            isMainRamPointer(directPixels) &&
+            directWidth === WINDOW_WIDTH * 8 &&
+            directHeight === WINDOW_HEIGHT * 8 &&
+            directTileSize === bytesPerTile &&
+            directStorage === 0
+          )
+          console.info('[PokéRun interaction] PRK33 FOUR ARG BITMAP GEOMETRY', {
+            bitmap: hex(directBitmap), pixels: hex(directPixels),
+            widthPx: directWidth, heightPx: directHeight,
+            tileSize: directTileSize, storage: directStorage,
+            charPos: directCharPos, bitmapValid, createInstructions: bitmapAlloc.instructions,
+          })
+          if (!bitmapValid) {
+            throw new Error('Four-argument GFL_BitmapCreate produced unexpected geometry; refusing BG2 uploads.')
+          }
+          const fillCall = await atomicCall(GFL_BITMAP_FILL, directBitmap, MSGBG_COLOR_BG_FILL)
+          const firstTile = await runtimeBridge.readBytes(directPixels, bytesPerTile)
+          if (firstTile.length !== bytesPerTile || firstTile.some(value => value !== 0xff)) {
+            throw new Error('Bitmap fill did not set the first tile to expected 0xff; refusing BG2 uploads.')
+          }
+          let characterUploadInstructions = 0
+          for (let tile = 0; tile < tileCount; tile += 1) {
+            const result = await atomicCall(
+              GFL_BGSYS_LOAD_CHAR, bg2, directPixels + tile * bytesPerTile, bytesPerTile, directCharPos + tile,
+            )
+            characterUploadInstructions += result.instructions
+          }
+          console.info('[PokéRun interaction] PRK33 BG2 CHAR CPU UPLOAD SUCCESS', {
+            charPos: directCharPos, tiles: tileCount, bytes: requestedBytes,
+            instructions: characterUploadInstructions, fillInstructions: fillCall.instructions,
+          })
+          const screenScratch = await runtimeBridge.readBytes(directPixels, FRAME_FULL_ROW_BYTES)
+          if (screenScratch.length !== FRAME_FULL_ROW_BYTES) {
+            throw new Error('Could not save 28 bytes of bitmap scratch for BG2 screen transfers.')
+          }
+          let screenCalls = 0
+          let borderCalls = 0
+          let screenUploadInstructions = 0
+          async function uploadMapRow(x: number, y: number, tiles: number[], palette: number, border: boolean) {
+            const bytes = tiles.length * 2
+            if (bytes < 2 || bytes > SCREEN_DMA_THRESHOLD ||
+                x < 0 || y < 0 || x + tiles.length > TEXT_BG_WIDTH_TILES || y >= TEXT_BG_WIDTH_TILES) {
+              throw new Error('Unsafe PRK33 map segment x=' + x + ' y=' + y + ' tiles=' + tiles.length)
+            }
+            const entries = new Uint8Array(bytes)
+            for (let i = 0; i < tiles.length; i += 1) {
+              const value = ((palette << 12) | tiles[i]) & 0xffff
+              entries[i * 2] = value & 0xff
+              entries[i * 2 + 1] = value >>> 8
+            }
+            await runtimeBridge.writeBytes(directPixels, entries)
+            const call = await atomicCall(
+              GFL_BGSYS_LOAD_SCR_CORE, bg2, directPixels, bytes, y * TEXT_BG_WIDTH_TILES + x,
+            )
+            screenUploadInstructions += call.instructions
+            if (border) borderCalls += 1
+            else screenCalls += 1
+          }
+          try {
+            for (let row = 0; row < WINDOW_HEIGHT; row += 1) {
+              const tiles = Array.from({ length: WINDOW_WIDTH }, (_, col) => directCharPos + row * WINDOW_WIDTH + col)
+              await uploadMapRow(WINDOW_X, WINDOW_Y + row, tiles, MSGBG_PLTT_BG2, false)
+            }
+            const frameBase = MSGBG_CHAR_FRAME
+            await uploadMapRow(
+              WINDOW_X - 1, WINDOW_Y - 1,
+              [frameBase, ...Array<number>(WINDOW_WIDTH).fill(frameBase + 1), frameBase + 2],
+              MSGBG_PLTT_BG2_FRAME, true,
+            )
+            for (let row = 0; row < WINDOW_HEIGHT; row += 1) {
+              await uploadMapRow(WINDOW_X - 1, WINDOW_Y + row, [frameBase + 3], MSGBG_PLTT_BG2_FRAME, true)
+              await uploadMapRow(WINDOW_X + WINDOW_WIDTH, WINDOW_Y + row, [frameBase + 5], MSGBG_PLTT_BG2_FRAME, true)
+            }
+            await uploadMapRow(
+              WINDOW_X - 1, WINDOW_Y + WINDOW_HEIGHT,
+              [frameBase + 6, ...Array<number>(WINDOW_WIDTH).fill(frameBase + 7), frameBase + 8],
+              MSGBG_PLTT_BG2_FRAME, true,
+            )
+          } finally {
+            await runtimeBridge.writeBytes(directPixels, screenScratch)
+          }
+          if (screenCalls !== WINDOW_HEIGHT || borderCalls !== 2 + WINDOW_HEIGHT * 2) {
+            throw new Error('PRK33 upload count mismatch: interior=' + screenCalls + ' border=' + borderCalls)
+          }
+          stateRef.current = { window: directBitmap }
+          emitMenuState(false)
+          console.info('[PokéRun interaction] PRK33 NATIVE BG2 FRAMED WINDOW SUCCESS', {
+            bg: bg2, bitmap: hex(directBitmap), charPos: directCharPos,
+            x: WINDOW_X, y: WINDOW_Y,
+            widthTiles: WINDOW_WIDTH, heightTiles: WINDOW_HEIGHT,
+            blackCharTiles: tileCount, interiorScreenCalls: screenCalls, borderScreenCalls: borderCalls,
+            screenUploadInstructions,
+            note: 'Native White 2 BG2 window tiles and border are visible. No BmpWin object, text printer, or menu lifecycle was created.',
+          })
+          return
+        }
 
         const allocCall = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg2, requestedBytes, 1)
         const preflightPos = allocCall.result
@@ -1024,7 +1160,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
 
       } catch (reason) {
-        console.info('[PokéRun interaction] BMPWIN RESTORED FONT RANGE PROBE FAILED', {
+        console.info('[PokéRun interaction] BG2 FOUR ARG VISUAL PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
