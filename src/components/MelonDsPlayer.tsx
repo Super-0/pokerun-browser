@@ -58,8 +58,6 @@ function markerFromPresence(presence: MultiplayerPresenceSnapshot): DsPartnerMar
   if (!local || !remote || local.location.mapId !== remote.location.mapId) return null
   const dx = remote.x - local.x
   const dy = remote.y - local.y
-  // The DS top screen is roughly 16x12 overworld tiles. Keep the marker inside
-  // the visible center-camera region until camera-boundary offsets are modeled.
   if (Math.abs(dx) > 7 || Math.abs(dy) > 5) return null
   return { dx, dy, direction: remote.direction, label: 'P2' }
 }
@@ -101,11 +99,48 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const [runtimeSpeedStats, setRuntimeSpeedStats] = useState<RuntimeSpeedStats>({ bridgeSpeed: speed, processFramesPerSecond: 0 })
   const speedRef = useRef<DsSpeedMultiplier>(speed)
+  const isNativeWhite2 = game.id === 'white2' && suppliedRom?.sha256.toLowerCase() === TESTED_WHITE2_SHA256
 
   useEffect(() => multiplayerPresence.subscribe(snapshot => {
     presenceRef.current = snapshot
     setPresence(previous => sameMarkerPresence(previous, snapshot) ? previous : snapshot)
   }), [])
+
+  useEffect(() => {
+    const onInteractionKey = (event: KeyboardEvent) => {
+      if (event.repeat || (event.code !== 'KeyX' && event.code !== 'KeyS')) return
+
+      const latest = presenceRef.current
+      const interactable = canInteractWithRemote(latest)
+      console.info('[PokéRun interaction] CAPTURE INTERACTION KEY', {
+        code: event.code,
+        isNativeWhite2,
+        interactable,
+        target: event.target instanceof HTMLElement ? event.target.tagName : null,
+        local: latest.local ? {
+          mapId: latest.local.location.mapId,
+          x: latest.local.x,
+          y: latest.local.y,
+          direction: latest.local.direction,
+        } : null,
+        remote: latest.remote ? {
+          mapId: latest.remote.location.mapId,
+          x: latest.remote.x,
+          y: latest.remote.y,
+          direction: latest.remote.direction,
+        } : null,
+      })
+
+      if (!isNativeWhite2 || !interactable) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      console.info('[PokéRun interaction] CAPTURE INPUT DISPATCH', { code: event.code })
+      window.dispatchEvent(new CustomEvent(WHITE2_INTERACT_EVENT, { detail: { code: event.code } }))
+    }
+
+    window.addEventListener('keydown', onInteractionKey, { capture: true, passive: false })
+    return () => window.removeEventListener('keydown', onInteractionKey, true)
+  }, [isNativeWhite2])
 
   useEffect(() => {
     if (!import.meta.env.DEV) return
@@ -154,45 +189,12 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
     if (saveKey) bridge.setSaveKey(saveKey)
     bridge.setBatterySaveListener(onBatterySave ?? null)
 
-    const isNativeWhite2 = game.id === 'white2' && suppliedRom?.sha256.toLowerCase() === TESTED_WHITE2_SHA256
-
     const onKey = (event: KeyboardEvent, pressed: boolean) => {
       const target = event.target as HTMLElement | null
       if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
       const button = keys[event.code]
       if (!button) return
-
       event.preventDefault()
-
-      const isInteractionKey = event.code === 'KeyX' || event.code === 'KeyS'
-      if (pressed && !event.repeat && isInteractionKey) {
-        const latest = presenceRef.current
-        const interactable = canInteractWithRemote(latest)
-        console.info('[PokéRun interaction] EMULATOR INTERACTION KEY', {
-          code: event.code,
-          isNativeWhite2,
-          interactable,
-          local: latest.local ? {
-            mapId: latest.local.location.mapId,
-            x: latest.local.x,
-            y: latest.local.y,
-            direction: latest.local.direction,
-          } : null,
-          remote: latest.remote ? {
-            mapId: latest.remote.location.mapId,
-            x: latest.remote.x,
-            y: latest.remote.y,
-            direction: latest.remote.direction,
-          } : null,
-        })
-
-        if (isNativeWhite2 && interactable) {
-          console.info('[PokéRun interaction] EMULATOR INPUT DISPATCH', { code: event.code })
-          window.dispatchEvent(new CustomEvent(WHITE2_INTERACT_EVENT, { detail: { code: event.code } }))
-          return
-        }
-      }
-
       bridge.press(button, pressed)
     }
     const keyDown = (event: KeyboardEvent) => onKey(event, true)
