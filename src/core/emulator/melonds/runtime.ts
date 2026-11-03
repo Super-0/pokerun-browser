@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v9'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v10'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B39
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B3A
 export const POKERUN_ARM9_CALL_BUDGET = 1000000
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
@@ -29,6 +29,7 @@ type WasmEmulator = {
   writeArm9U32(address: number, value: number): void
   getArm9Sp(): number
   callArm9Thumb4(functionAddress: number, r0: number, r1: number, r2: number, r3: number, stackReserve: number): number
+  callArm9Thumb8Atomic(functionAddress: number, r0: number, r1: number, r2: number, r3: number, r4stack: number, r5stack: number, r6stack: number, r7stack: number, stackReserve: number): number
   arm9CallStatus(): number
   arm9CallPc(): number
   arm9CallLr(): number
@@ -88,10 +89,11 @@ export function loadMelonDsRuntime() {
           probe = new module.WasmEmulator()
           const stamp = probe.pokerunRuntimeVersion?.()
           const budget = probe.arm9CallBudget?.()
-          if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET) {
+          const hasAtomicStackArgs = typeof probe.callArm9Thumb8Atomic === 'function'
+          if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET || !hasAtomicStackArgs) {
             reject(new Error(
-              `Stale melonDS runtime loaded (stamp=0x${(stamp ?? 0).toString(16).toUpperCase()}, ARM9 budget=${budget ?? 0}); ` +
-              `expected stamp=0x${POKERUN_MELONDS_RUNTIME_STAMP.toString(16).toUpperCase()} and budget=${POKERUN_ARM9_CALL_BUDGET}. ` +
+              `Stale melonDS runtime loaded (stamp=0x${(stamp ?? 0).toString(16).toUpperCase()}, ARM9 budget=${budget ?? 0}, atomic8=${hasAtomicStackArgs}); ` +
+              `expected stamp=0x${POKERUN_MELONDS_RUNTIME_STAMP.toString(16).toUpperCase()}, budget=${POKERUN_ARM9_CALL_BUDGET}, atomic8=true. ` +
               'Run npm run build:melonds, restart Vite, and reopen the tab.',
             ))
             return
