@@ -14,6 +14,7 @@ const MSG_BG_PRINTER_SETUP_SYS_FRAME = 0x0218a4e4
 const FIELD_MSGBG_CREATE_BMP_WIN = 0x0218a638
 
 const FIELDMAP_CTRL_GRID = 0
+const MSGBG_BG2 = 2
 const MSGBG_PLTT_BG2 = 14
 const NATIVE_STACK_RESERVE = 0x800
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
@@ -163,15 +164,24 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         const msgBg = await atomicCall(FIELD_GET_MSGBG_SYS, field)
         if (!isMainRamPointer(msgBg)) throw new Error(`Field_GetMsgBGSys returned ${hex(msgBg)}.`)
 
-        const bg2 = await runtimeBridge.read16(msgBg + 0x06)
+        // FieldMsgBG begins with HeapID (u16), then bg/bg2/palette (u16 each).
+        const bg = await runtimeBridge.read16(msgBg + 0x02)
+        const bg2 = await runtimeBridge.read16(msgBg + 0x04)
+        const paletteBefore = await runtimeBridge.read16(msgBg + 0x06)
         console.info('[PokéRun interaction] ATOMIC WINDOW FIELD PATH READY', {
           actor: hex(playerActor),
           effects: hex(effects),
           field: hex(field),
           heapId,
           msgBg: hex(msgBg),
+          bg,
           bg2,
+          paletteBefore,
         })
+
+        if (bg2 !== MSGBG_BG2) {
+          throw new Error(`FieldMsgBG bg2 is ${bg2}; expected ${MSGBG_BG2}.`)
+        }
 
         await atomicCall(FIELDMAP_CTRL_GRID_SET_UPDATE_DISABLE, field, 1)
         frozen = true
@@ -180,7 +190,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           address: hex(MSG_BG_PRINTER_SETUP_SYS_FRAME),
         })
         await atomicCall(MSG_BG_PRINTER_SETUP_SYS_FRAME, msgBg)
-        await runtimeBridge.write16(msgBg + 0x08, MSGBG_PLTT_BG2)
+        // Match MsgBGPrinter_CreateMenuFuncCallback: select the BG2 palette.
+        // +0x06 is palette; +0x08 is the font pointer and must never be touched.
+        await runtimeBridge.write16(msgBg + 0x06, MSGBG_PLTT_BG2)
 
         console.info('[PokéRun interaction] ATOMIC WINDOW CREATE CALL', {
           address: hex(FIELD_MSGBG_CREATE_BMP_WIN),
