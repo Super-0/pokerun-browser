@@ -1,7 +1,7 @@
 diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
 --- a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
 +++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
-@@ -407,13 +407,15 @@ namespace wasmelon {
+@@ -407,12 +407,14 @@ namespace wasmelon {
      const bool returnThumb = (savedCPSR & 0x20) != 0;
      const u32 returnAddress = (savedR[15] - (returnThumb ? 2u : 4u)) & (returnThumb ? ~1u : ~3u);
  
