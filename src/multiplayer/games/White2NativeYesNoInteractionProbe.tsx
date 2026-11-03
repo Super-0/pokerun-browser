@@ -9,9 +9,7 @@ const FIELD_EFFECTS_GET_FIELD = 0x021a3760
 const FIELD_GET_MSGBG_SYS = 0x021804d0
 const FIELD_GET_HEAP_ID = 0x02180500
 const FIELD_GET_CONTROLLER_TYPE_ID = 0x0218056c
-const FIELDMAP_CTRL_GRID_SET_UPDATE_DISABLE = 0x0219a4b0
-const MSG_BG_PRINTER_SETUP_SYS_FRAME = 0x0218a4e4
-const FIELD_MSGBG_CREATE_BMP_WIN = 0x0218a638
+const BMP_WIN_CREATE_DYNAMIC = 0x020480ec
 
 const FIELDMAP_CTRL_GRID = 0
 const MSGBG_BG2 = 2
@@ -40,7 +38,6 @@ type AtomicRuntime = {
 }
 
 type NativeWindowState = {
-  field: number
   window: number
 }
 
@@ -58,7 +55,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] ATOMIC WINDOW PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN ALLOC PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -70,13 +67,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
     const runtimeBridge = bridge
     const probe = new White2ActorSystemProbe(runtimeBridge)
-    // PRK10 intentionally adds the new fixed-arity atomic stack-argument call as
-    // an isolated diagnostic surface. Existing callArm9Thumb4 users are left
-    // untouched until this path is proven in White 2.
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] ATOMIC WINDOW PROBE UNAVAILABLE', {
-        reason: 'PRK10 atomic stack-argument export is unavailable.',
+      console.info('[PokéRun interaction] BMPWIN ALLOC PROBE UNAVAILABLE', {
+        reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
     }
@@ -85,9 +79,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] ATOMIC WINDOW PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN ALLOC PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
+      address: hex(BMP_WIN_CREATE_DYNAMIC),
+      note: 'PRK12 isolates BmpWin_CreateDynamic before bitmap fill/map flush/char flush/BG load/frame draw.',
     })
 
     async function atomicCall(
@@ -125,22 +121,19 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           + `lr=${hex(lr)} cpsr=${hex(cpsr)} instructions=${instructions}.`,
         )
       }
-      return result
+      return { result, instructions }
     }
 
-    async function openWindow() {
+    async function probeBmpWinAllocation() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] ATOMIC WINDOW STABILITY HOLD', {
+          console.info('[PokéRun interaction] BMPWIN ALLOC PROBE HOLD', {
             window: hex(stateRef.current.window),
           })
         }
         return
       }
       openingRef.current = true
-
-      let field = 0
-      let frozen = false
 
       try {
         const scan = await probe.scanHeap()
@@ -149,26 +142,30 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         }
 
         const playerActor = scan.playerActor.address
-        const effects = await atomicCall(FLD_ACT_GET_FIELD_EFFECTS, playerActor)
+        const effectsCall = await atomicCall(FLD_ACT_GET_FIELD_EFFECTS, playerActor)
+        const effects = effectsCall.result
         if (!isMainRamPointer(effects)) throw new Error(`FldAct_GetFieldEffects returned ${hex(effects)}.`)
 
-        field = await atomicCall(FIELD_EFFECTS_GET_FIELD, effects)
+        const fieldCall = await atomicCall(FIELD_EFFECTS_GET_FIELD, effects)
+        const field = fieldCall.result
         if (!isMainRamPointer(field)) throw new Error(`FieldEffects_GetField returned ${hex(field)}.`)
 
-        const controllerType = await atomicCall(FIELD_GET_CONTROLLER_TYPE_ID, field)
+        const controllerCall = await atomicCall(FIELD_GET_CONTROLLER_TYPE_ID, field)
+        const controllerType = controllerCall.result
         if (controllerType !== FIELDMAP_CTRL_GRID) {
           throw new Error(`Field controller ${controllerType} is not the normal grid controller.`)
         }
 
-        const heapId = await atomicCall(FIELD_GET_HEAP_ID, field)
-        const msgBg = await atomicCall(FIELD_GET_MSGBG_SYS, field)
+        const heapCall = await atomicCall(FIELD_GET_HEAP_ID, field)
+        const heapId = heapCall.result
+        const msgBgCall = await atomicCall(FIELD_GET_MSGBG_SYS, field)
+        const msgBg = msgBgCall.result
         if (!isMainRamPointer(msgBg)) throw new Error(`Field_GetMsgBGSys returned ${hex(msgBg)}.`)
 
-        // FieldMsgBG begins with HeapID (u16), then bg/bg2/palette (u16 each).
         const bg = await runtimeBridge.read16(msgBg + 0x02)
         const bg2 = await runtimeBridge.read16(msgBg + 0x04)
         const paletteBefore = await runtimeBridge.read16(msgBg + 0x06)
-        console.info('[PokéRun interaction] ATOMIC WINDOW FIELD PATH READY', {
+        console.info('[PokéRun interaction] BMPWIN ALLOC FIELD PATH READY', {
           actor: hex(playerActor),
           effects: hex(effects),
           field: hex(field),
@@ -183,43 +180,34 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           throw new Error(`FieldMsgBG bg2 is ${bg2}; expected ${MSGBG_BG2}.`)
         }
 
-        await atomicCall(FIELDMAP_CTRL_GRID_SET_UPDATE_DISABLE, field, 1)
-        frozen = true
-
-        console.info('[PokéRun interaction] ATOMIC WINDOW SETUP SYS FRAME CALL', {
-          address: hex(MSG_BG_PRINTER_SETUP_SYS_FRAME),
-        })
-        await atomicCall(MSG_BG_PRINTER_SETUP_SYS_FRAME, msgBg)
-        // Match MsgBGPrinter_CreateMenuFuncCallback: select the BG2 palette.
-        // +0x06 is palette; +0x08 is the font pointer and must never be touched.
-        await runtimeBridge.write16(msgBg + 0x06, MSGBG_PLTT_BG2)
-
-        console.info('[PokéRun interaction] ATOMIC WINDOW CREATE CALL', {
-          address: hex(FIELD_MSGBG_CREATE_BMP_WIN),
+        console.info('[PokéRun interaction] BMPWIN CREATE DYNAMIC CALL', {
+          address: hex(BMP_WIN_CREATE_DYNAMIC),
           args: {
             bg: bg2,
-            heapId,
             x: 18,
             y: 2,
             width: 12,
             height: 5,
             palette: MSGBG_PLTT_BG2,
+            fromEnd: 1,
           },
+          note: 'No frame setup, bitmap fill, map flush, char flush, BG load, or frame draw is performed in this probe.',
         })
 
-        const nativeWindow = await atomicCall(
-          FIELD_MSGBG_CREATE_BMP_WIN,
+        const createCall = await atomicCall(
+          BMP_WIN_CREATE_DYNAMIC,
           bg2,
-          heapId,
           18,
           2,
           12,
           5,
           MSGBG_PLTT_BG2,
+          1,
           0,
         )
+        const nativeWindow = createCall.result
         if (!isMainRamPointer(nativeWindow)) {
-          throw new Error(`FieldMsgBG_CreateBmpWin returned ${hex(nativeWindow)}.`)
+          throw new Error(`BmpWin_CreateDynamic returned ${hex(nativeWindow)}.`)
         }
 
         const magicAndMode = await runtimeBridge.read16(nativeWindow + 0x00)
@@ -228,21 +216,24 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         const y = await runtimeBridge.read8(nativeWindow + 0x04)
         const sizeX = await runtimeBridge.read8(nativeWindow + 0x05)
         const sizeY = await runtimeBridge.read8(nativeWindow + 0x06)
+        const width = await runtimeBridge.read8(nativeWindow + 0x07)
+        const height = await runtimeBridge.read8(nativeWindow + 0x08)
         const palette = await runtimeBridge.read8(nativeWindow + 0x09)
+        const charPos = await runtimeBridge.read16(nativeWindow + 0x0a)
         const bitmap = await runtimeBridge.read32(nativeWindow + 0x0c)
         const magic = magicAndMode & 0x7fff
+        const colorMode = magicAndMode >>> 15
 
         if (magic !== 0x7fb2 || !isMainRamPointer(bitmap)) {
           throw new Error(
-            `FieldMsgBG_CreateBmpWin returned invalid BmpWin ${hex(nativeWindow)} `
+            `BmpWin_CreateDynamic returned invalid BmpWin ${hex(nativeWindow)} `
             + `(magic=${hex(magic)} bitmap=${hex(bitmap)}).`,
           )
         }
 
-        stateRef.current = { field, window: nativeWindow }
-        emitMenuState(true)
-        console.info('[PokéRun interaction] ATOMIC NATIVE WINDOW OPEN', {
-          field: hex(field),
+        stateRef.current = { window: nativeWindow }
+        emitMenuState(false)
+        console.info('[PokéRun interaction] BMPWIN CREATE DYNAMIC SUCCESS', {
           window: hex(nativeWindow),
           bitmap: hex(bitmap),
           bg: nativeBg,
@@ -250,16 +241,18 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           y,
           sizeX,
           sizeY,
+          width,
+          height,
           palette,
-          note: 'One-call stability probe: no printer, list, cursor, update, or delete is invoked.',
+          charPos,
+          colorMode,
+          instructions: createCall.instructions,
+          note: 'Allocation-only breakpoint passed. Nothing is expected to be visible on-screen yet.',
         })
       } catch (reason) {
-        console.info('[PokéRun interaction] ATOMIC NATIVE WINDOW FAILED', {
+        console.info('[PokéRun interaction] BMPWIN CREATE DYNAMIC FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
-        if (frozen && isMainRamPointer(field)) {
-          try { await atomicCall(FIELDMAP_CTRL_GRID_SET_UPDATE_DISABLE, field, 0) } catch { /* best effort */ }
-        }
         emitMenuState(false)
       } finally {
         openingRef.current = false
@@ -271,10 +264,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       console.info('[PokéRun interaction] INTERACT EVENT RECEIVED', {
         code: detail?.code ?? null,
         bridgeStatus: runtimeBridge.status,
-        windowOpen: Boolean(stateRef.current),
+        allocationComplete: Boolean(stateRef.current),
         opening: openingRef.current,
       })
-      void openWindow()
+      void probeBmpWinAllocation()
     }
 
     window.addEventListener(WHITE2_INTERACT_EVENT, onInteract)
@@ -282,11 +275,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     return () => {
       window.removeEventListener(WHITE2_INTERACT_EVENT, onInteract)
       emitMenuState(false)
-      const state = stateRef.current
+      // Deliberately do not invoke BmpWin_Free in PRK12. This is a one-shot
+      // allocation diagnostic and a fresh emulator session owns its lifetime.
       stateRef.current = null
-      if (state && isMainRamPointer(state.field)) {
-        void atomicCall(FIELDMAP_CTRL_GRID_SET_UPDATE_DISABLE, state.field, 0).catch(() => undefined)
-      }
     }
   }, [bridge, rom.gameId, rom.sha256])
 
