@@ -41,6 +41,7 @@ const keys: Record<string, DsButton> = {
 const SPEED_STORAGE_KEY = 'pokerun-melonds-speed'
 const SPEED_OPTIONS: DsSpeedMultiplier[] = [1, 2, 4]
 const directionGlyph = { north: '↑', south: '↓', east: '→', west: '←' } as const
+const WHITE2_INTERACT_EVENT = 'pokerun:white2-interact'
 
 function storedSpeed(): DsSpeedMultiplier {
   const value = Number(localStorage.getItem(SPEED_STORAGE_KEY))
@@ -61,6 +62,18 @@ function markerFromPresence(presence: MultiplayerPresenceSnapshot): DsPartnerMar
   // the visible center-camera region until camera-boundary offsets are modeled.
   if (Math.abs(dx) > 7 || Math.abs(dy) > 5) return null
   return { dx, dy, direction: remote.direction, label: 'P2' }
+}
+
+function canInteractWithRemote(presence: MultiplayerPresenceSnapshot) {
+  const local = presence.local
+  const remote = presence.remote
+  if (!local || !remote || local.location.mapId !== remote.location.mapId) return false
+  const dx = remote.x - local.x
+  const dy = remote.y - local.y
+  if (local.direction === 'north') return dx === 0 && dy === -1
+  if (local.direction === 'south') return dx === 0 && dy === 1
+  if (local.direction === 'west') return dx === -1 && dy === 0
+  return dx === 1 && dy === 0
 }
 
 function sameMarkerPresence(a: MultiplayerPresenceSnapshot, b: MultiplayerPresenceSnapshot) {
@@ -85,10 +98,12 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   const [memoryText, setMemoryText] = useState('NOT READ')
   const [speed, setSpeed] = useState<DsSpeedMultiplier>(storedSpeed)
   const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
+  const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const [runtimeSpeedStats, setRuntimeSpeedStats] = useState<RuntimeSpeedStats>({ bridgeSpeed: speed, processFramesPerSecond: 0 })
   const speedRef = useRef<DsSpeedMultiplier>(speed)
 
   useEffect(() => multiplayerPresence.subscribe(snapshot => {
+    presenceRef.current = snapshot
     setPresence(previous => sameMarkerPresence(previous, snapshot) ? previous : snapshot)
   }), [])
 
@@ -139,12 +154,37 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
     if (saveKey) bridge.setSaveKey(saveKey)
     bridge.setBatterySaveListener(onBatterySave ?? null)
 
+    const isNativeWhite2 = game.id === 'white2' && suppliedRom?.sha256.toLowerCase() === TESTED_WHITE2_SHA256
+
     const onKey = (event: KeyboardEvent, pressed: boolean) => {
       const target = event.target as HTMLElement | null
       if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
       const button = keys[event.code]
       if (!button) return
+
       event.preventDefault()
+
+      if (pressed && !event.repeat && event.code === 'KeyX' && isNativeWhite2 && canInteractWithRemote(presenceRef.current)) {
+        const latest = presenceRef.current
+        console.info('[PokéRun interaction] EMULATOR INPUT DISPATCH', {
+          code: event.code,
+          local: latest.local ? {
+            mapId: latest.local.location.mapId,
+            x: latest.local.x,
+            y: latest.local.y,
+            direction: latest.local.direction,
+          } : null,
+          remote: latest.remote ? {
+            mapId: latest.remote.location.mapId,
+            x: latest.remote.x,
+            y: latest.remote.y,
+            direction: latest.remote.direction,
+          } : null,
+        })
+        window.dispatchEvent(new CustomEvent(WHITE2_INTERACT_EVENT, { detail: { code: event.code } }))
+        return
+      }
+
       bridge.press(button, pressed)
     }
     const keyDown = (event: KeyboardEvent) => onKey(event, true)
@@ -192,7 +232,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
       onBridgeReady?.(null)
       void bridge.dispose()
     }
-  }, [game.title, run?.id, suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave])
+  }, [game.id, game.title, run?.id, suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave])
 
   const ready = status === 'running'
   async function togglePause() {
