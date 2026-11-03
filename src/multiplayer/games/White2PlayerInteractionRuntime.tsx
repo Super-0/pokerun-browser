@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerDirection, MultiplayerPlayerState } from '../core/protocol'
 
+export const WHITE2_INTERACT_EVENT = 'pokerun:white2-interact'
+
 function facingDelta(direction: MultiplayerDirection) {
   if (direction === 'north') return { x: 0, y: -1 }
   if (direction === 'south') return { x: 0, y: 1 }
@@ -38,6 +40,40 @@ export function White2PlayerInteractionRuntime() {
     () => canInteract(presence.local, presence.remote),
     [presence.local, presence.remote],
   )
+
+  useEffect(() => {
+    if (!interactable) return
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.code !== 'KeyX' && event.code !== 'KeyS') || event.repeat) return
+      const target = event.target as HTMLElement | null
+      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
+
+      console.info('[PokéRun interaction] PROMPT DISPATCH', {
+        code: event.code,
+        local: presence.local ? {
+          mapId: presence.local.location.mapId,
+          x: presence.local.x,
+          y: presence.local.y,
+          direction: presence.local.direction,
+        } : null,
+        remote: presence.remote ? {
+          mapId: presence.remote.location.mapId,
+          x: presence.remote.x,
+          y: presence.remote.y,
+          direction: presence.remote.direction,
+        } : null,
+      })
+
+      event.preventDefault()
+      window.dispatchEvent(new CustomEvent(WHITE2_INTERACT_EVENT, {
+        detail: { code: event.code },
+      }))
+    }
+
+    window.addEventListener('keydown', onKeyDown, { capture: true, passive: false })
+    return () => window.removeEventListener('keydown', onKeyDown, true)
+  }, [interactable, presence.local, presence.remote])
 
   if (!portalTarget || !interactable) return null
 
