@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
-import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
-import type { MultiplayerDirection, MultiplayerPlayerState, MultiplayerRomIdentity } from '../core/protocol'
+import type { MultiplayerRomIdentity } from '../core/protocol'
 import { White2ActorSystemProbe } from './White2ActorSystem'
+import { WHITE2_INTERACT_EVENT } from './White2PlayerInteractionRuntime'
 
 const FLD_ACT_GET_FIELD_EFFECTS = 0x02194f18
 const FIELD_EFFECTS_GET_FIELD = 0x021a3760
@@ -18,19 +18,6 @@ const YES_NO_WAITING = 2
 const NATIVE_STACK_RESERVE = 0x800
 const POLL_MS = 34
 
-function facingDelta(direction: MultiplayerDirection) {
-  if (direction === 'north') return { x: 0, y: -1 }
-  if (direction === 'south') return { x: 0, y: 1 }
-  if (direction === 'west') return { x: -1, y: 0 }
-  return { x: 1, y: 0 }
-}
-
-function canInteract(local: MultiplayerPlayerState | null, remote: MultiplayerPlayerState | null) {
-  if (!local || !remote || local.location.mapId !== remote.location.mapId) return false
-  const expected = facingDelta(local.direction)
-  return remote.x - local.x === expected.x && remote.y - local.y === expected.y
-}
-
 function isMainRamPointer(value: number) {
   return Number.isInteger(value) && value >= 0x02000000 && value < 0x02400000 && (value & 3) === 0
 }
@@ -40,21 +27,10 @@ function hex(value: number) {
 }
 
 export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
-  const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
-  const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const menuRef = useRef(0)
   const fieldRef = useRef(0)
   const openingRef = useRef(false)
   const pollingRef = useRef(false)
-
-  useEffect(() => multiplayerPresence.subscribe(snapshot => {
-    presenceRef.current = snapshot
-    setPresence(snapshot)
-  }), [])
-
-  const interactable = canInteract(presence.local, presence.remote)
-  const interactableRef = useRef(false)
-  interactableRef.current = interactable
 
   useEffect(() => {
     if (!bridge || !White2ActorSystemProbe.supportsRom(rom)) return
@@ -62,7 +38,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const runtimeBridge = bridge
     const probe = new White2ActorSystemProbe(runtimeBridge)
 
-    console.info('[PokéRun interaction] YES/NO PROBE LISTENER MOUNTED', {
+    console.info('[PokéRun interaction] YES/NO PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
     })
@@ -101,9 +77,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       let frozen = false
       try {
         const scan = await probe.scanHeap()
-        if (!isMainRamPointer(scan.playerActor)) throw new Error(`Player actor is invalid (${hex(scan.playerActor)}).`)
+        if (!scan.playerActor || !isMainRamPointer(scan.playerActor.address)) {
+          throw new Error(`Player actor is invalid (${hex(scan.playerActor?.address ?? 0)}).`)
+        }
 
-        const effects = await nativeCall(FLD_ACT_GET_FIELD_EFFECTS, scan.playerActor)
+        const playerActor = scan.playerActor.address
+        const effects = await nativeCall(FLD_ACT_GET_FIELD_EFFECTS, playerActor)
         if (!isMainRamPointer(effects)) throw new Error(`FldAct_GetFieldEffects returned ${hex(effects)}.`)
 
         field = await nativeCall(FIELD_EFFECTS_GET_FIELD, effects)
@@ -118,7 +97,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         if (!isMainRamPointer(msgBg)) throw new Error(`Field_GetMsgBGSys returned ${hex(msgBg)}.`)
 
         console.info('[PokéRun interaction] YES/NO FIELD PATH READY', {
-          actor: hex(scan.playerActor),
+          actor: hex(playerActor),
           effects: hex(effects),
           field: hex(field),
           msgBg: hex(msgBg),
@@ -148,40 +127,18 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       }
     }
 
-    const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.code !== 'KeyX' && event.code !== 'KeyS') || event.repeat) return
-
-      const latest = presenceRef.current
-      const latestInteractable = interactableRef.current
-      console.info('[PokéRun interaction] INTERACT KEY SEEN', {
-        code: event.code,
-        interactable: latestInteractable,
+    const onInteract = (event: Event) => {
+      const detail = event instanceof CustomEvent ? event.detail : undefined
+      console.info('[PokéRun interaction] INTERACT EVENT RECEIVED', {
+        code: detail?.code ?? null,
         bridgeStatus: runtimeBridge.status,
         menuOpen: Boolean(menuRef.current),
         opening: openingRef.current,
-        local: latest.local ? {
-          mapId: latest.local.location.mapId,
-          x: latest.local.x,
-          y: latest.local.y,
-          direction: latest.local.direction,
-        } : null,
-        remote: latest.remote ? {
-          mapId: latest.remote.location.mapId,
-          x: latest.remote.x,
-          y: latest.remote.y,
-          direction: latest.remote.direction,
-        } : null,
       })
-
-      if (!latestInteractable || menuRef.current || openingRef.current) return
-      const target = event.target as HTMLElement | null
-      if (target?.matches('input, textarea, select, [contenteditable="true"]')) return
-      event.preventDefault()
-      event.stopImmediatePropagation()
       void openMenu()
     }
 
-    window.addEventListener('keydown', onKeyDown, { capture: true, passive: false })
+    window.addEventListener(WHITE2_INTERACT_EVENT, onInteract)
 
     const timer = window.setInterval(() => {
       const menu = menuRef.current
@@ -206,7 +163,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     }, POLL_MS)
 
     return () => {
-      window.removeEventListener('keydown', onKeyDown, true)
+      window.removeEventListener(WHITE2_INTERACT_EVENT, onInteract)
       window.clearInterval(timer)
       if (menuRef.current || fieldRef.current) void closeMenu()
     }
