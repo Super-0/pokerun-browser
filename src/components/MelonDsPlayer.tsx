@@ -164,10 +164,14 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
 
       event.preventDefault()
 
-      if (pressed && !event.repeat && event.code === 'KeyX' && isNativeWhite2 && canInteractWithRemote(presenceRef.current)) {
+      const isInteractionKey = event.code === 'KeyX' || event.code === 'KeyS'
+      if (pressed && !event.repeat && isInteractionKey) {
         const latest = presenceRef.current
-        console.info('[PokéRun interaction] EMULATOR INPUT DISPATCH', {
+        const interactable = canInteractWithRemote(latest)
+        console.info('[PokéRun interaction] EMULATOR INTERACTION KEY', {
           code: event.code,
+          isNativeWhite2,
+          interactable,
           local: latest.local ? {
             mapId: latest.local.location.mapId,
             x: latest.local.x,
@@ -181,8 +185,12 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
             direction: latest.remote.direction,
           } : null,
         })
-        window.dispatchEvent(new CustomEvent(WHITE2_INTERACT_EVENT, { detail: { code: event.code } }))
-        return
+
+        if (isNativeWhite2 && interactable) {
+          console.info('[PokéRun interaction] EMULATOR INPUT DISPATCH', { code: event.code })
+          window.dispatchEvent(new CustomEvent(WHITE2_INTERACT_EVENT, { detail: { code: event.code } }))
+          return
+        }
       }
 
       bridge.press(button, pressed)
