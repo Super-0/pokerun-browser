@@ -16,7 +16,7 @@ const requiredRuntimeSymbols = [
   'writeArm9U8', 'writeArm9U16', 'writeArm9U32',
   'getArm9Sp', 'callArm9Thumb4', 'arm9CallStatus',
   'arm9CallPc', 'arm9CallLr', 'arm9CallCpsr', 'arm9CallInstructions',
-  'pokerunRuntimeVersion',
+  'arm9CallBudget', 'pokerunRuntimeVersion',
 ]
 
 function run(command, args, cwd = root) { execFileSync(command, args, { cwd, stdio: 'inherit' }) }
@@ -55,6 +55,12 @@ try {
   const patchedCpp = readFileSync(resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.cpp'), 'utf8')
   for (const symbol of requiredRuntimeSymbols) {
     if (!patchedCpp.includes(`.function("${symbol}"`)) throw new Error(`PokéRun melonDS patch did not expose ${symbol} through Embind.`)
+  }
+  if (!patchedCpp.includes('constexpr u32 maxInstructions = 1000000;')) {
+    throw new Error('PokéRun melonDS patch did not install the 1,000,000-instruction ARM9 native-call budget.')
+  }
+  if (!patchedCpp.includes('return 0x50524B36;')) {
+    throw new Error('PokéRun melonDS patch did not install the PRK6 runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new
