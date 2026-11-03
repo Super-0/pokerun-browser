@@ -33,7 +33,16 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
   const pollingRef = useRef(false)
 
   useEffect(() => {
-    if (!bridge || !White2ActorSystemProbe.supportsRom(rom)) return
+    const supported = White2ActorSystemProbe.supportsRom(rom)
+    console.info('[PokéRun interaction] YES/NO PROBE EFFECT', {
+      hasBridge: Boolean(bridge),
+      supported,
+      bridgeStatus: bridge?.status ?? null,
+      gameId: rom.gameId,
+      sha256: rom.sha256,
+    })
+
+    if (!bridge || !supported) return
 
     const runtimeBridge = bridge
     const probe = new White2ActorSystemProbe(runtimeBridge)
