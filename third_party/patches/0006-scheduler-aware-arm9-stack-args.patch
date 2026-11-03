@@ -1,7 +1,7 @@
 diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
 --- a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
 +++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
-@@ -306,10 +306,12 @@ namespace wasmelon {
+@@ -341,8 +341,9 @@ namespace wasmelon {
    u32 WasmEmulator::callArm9Thumb8Atomic(u32 function, u32 r0, u32 r1, u32 r2, u32 r3,
                                           u32 r4stack, u32 r5stack, u32 r6stack, u32 r7stack,
                                           u32 stackReserve) {
@@ -16,7 +16,7 @@ diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/fron
 +    // required for synchronous NitroSDK helpers which start DMA and then poll
 +    // the DMA enable bit before returning. The first four arguments use r0-r3;
 +    // arguments 5-8 are written at the callee entry SP as required by AAPCS.
-@@ -365,8 +367,6 @@ namespace wasmelon {
+@@ -396,8 +397,6 @@ namespace wasmelon {
      const MemRegion savedCodeMem = arm.CodeMem;
      const s32 savedRegionCodeCycles = arm.RegionCodeCycles;
      u8* const savedPUMap = arm.PU_Map;
@@ -25,7 +25,7 @@ diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/fron
      const int savedCurCPU = nds->CurCPU;
      const u32 savedPokerunStopAddress = arm.PokerunStopAddress;
      const u32 savedPokerunExecutedInstructions = arm.PokerunExecutedInstructions;
-@@ -387,10 +387,10 @@ namespace wasmelon {
+@@ -418,9 +417,9 @@ namespace wasmelon {
      nds->CurCPU = 0;
      arm.StopExecution = 0;
      arm.Cycles = 0;
@@ -37,7 +37,7 @@ diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/fron
      arm.PokerunStopHit = false;
      arm.PokerunBudgetExceeded = false;
      arm.R[0] = r0;
-@@ -403,26 +403,14 @@ namespace wasmelon {
+@@ -432,23 +431,13 @@ namespace wasmelon {
      arm.JumpTo(functionBase | 1u, false);
  
      bool returned = false;
@@ -67,7 +67,7 @@ diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/fron
  
      const bool finalThumb = (arm.CPSR & 0x20) != 0;
      pokerunArm9CallPc = (arm.R[15] - (finalThumb ? 2u : 4u)) & (finalThumb ? ~1u : ~3u);
-@@ -456,8 +444,9 @@ namespace wasmelon {
+@@ -484,8 +473,9 @@ namespace wasmelon {
      arm.PokerunInstructionLimit = savedPokerunInstructionLimit;
      arm.PokerunStopHit = savedPokerunStopHit;
      arm.PokerunBudgetExceeded = savedPokerunBudgetExceeded;
@@ -79,7 +79,7 @@ diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/fron
      nds->CurCPU = savedCurCPU;
  
      return returned ? result : 0;
-@@ -465,7 +454,7 @@ namespace wasmelon {
+@@ -492,5 +482,5 @@ namespace wasmelon {
    }
  
    u32 WasmEmulator::pokerunRuntimeVersion() {
