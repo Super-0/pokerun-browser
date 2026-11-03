@@ -1,0 +1,88 @@
+diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
+--- a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
++++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
+@@ -306,10 +306,12 @@ namespace wasmelon {
+   u32 WasmEmulator::callArm9Thumb8Atomic(u32 function, u32 r0, u32 r1, u32 r2, u32 r3,
+                                          u32 r4stack, u32 r5stack, u32 r6stack, u32 r7stack,
+                                          u32 stackReserve) {
+-    // Deterministic native-call bridge for ABI calls that need stack arguments.
+-    // The first four arguments use r0-r3. Arguments 5-8 are written at the
+-    // callee entry SP as required by AAPCS. Unlike callArm9Thumb4's PRK9
+-    // scheduler-aware path, this bridge advances ARM9 only; it is intended for
+-    // short synchronous game helpers such as window/list construction pieces.
++    // PRK11 scheduler-aware stack-argument bridge. The export keeps the PRK10
++    // callArm9Thumb8Atomic name for branch compatibility, but execution now uses
++    // the full NDS scheduler exactly like callArm9Thumb4's PRK9 path. That is
++    // required for synchronous NitroSDK helpers which start DMA and then poll
++    // the DMA enable bit before returning. The first four arguments use r0-r3;
++    // arguments 5-8 are written at the callee entry SP as required by AAPCS.
+@@ -365,8 +367,6 @@ namespace wasmelon {
+     const MemRegion savedCodeMem = arm.CodeMem;
+     const s32 savedRegionCodeCycles = arm.RegionCodeCycles;
+     u8* const savedPUMap = arm.PU_Map;
+-    const u64 savedTimestamp = nds->ARM9Timestamp;
+-    const u64 savedTarget = nds->ARM9Target;
+     const int savedCurCPU = nds->CurCPU;
+     const u32 savedPokerunStopAddress = arm.PokerunStopAddress;
+     const u32 savedPokerunExecutedInstructions = arm.PokerunExecutedInstructions;
+@@ -387,10 +387,10 @@ namespace wasmelon {
+     nds->CurCPU = 0;
+     arm.StopExecution = 0;
+     arm.Cycles = 0;
+-    arm.PokerunStopAddress = 0;
++    arm.PokerunStopAddress = returnAddress;
+     arm.PokerunExecutedInstructions = 0;
+-    arm.PokerunInstructionLimit = 0;
++    arm.PokerunInstructionLimit = 1000000;
+     arm.PokerunStopHit = false;
+     arm.PokerunBudgetExceeded = false;
+     arm.R[0] = r0;
+@@ -403,26 +403,14 @@ namespace wasmelon {
+     arm.JumpTo(functionBase | 1u, false);
+ 
+     bool returned = false;
+-    u32 executedInstructions = 0;
+-    constexpr u32 maxInstructions = 1000000;
+-    for (u32 instruction = 0; instruction < maxInstructions; instruction++) {
+-      const bool thumb = (arm.CPSR & 0x20) != 0;
+-      const u32 currentAddress = (arm.R[15] - (thumb ? 2u : 4u)) & (thumb ? ~1u : ~3u);
+-      if (currentAddress == returnAddress) {
+-        returned = true;
+-        break;
+-      }
+-      if (arm.Halted) {
+-        pokerunArm9CallStatus = 4;
+-        break;
+-      }
+-      nds->ARM9Target = nds->ARM9Timestamp + 1;
+-      arm.PokerunExecuteInterpreterStep();
+-      executedInstructions++;
++    constexpr u32 maxSchedulerFrames = 4;
++    for (u32 frame = 0; frame < maxSchedulerFrames; frame++) {
++      nds->RunFrame();
++      if (arm.PokerunStopHit) { returned = true; break; }
++      if (arm.PokerunBudgetExceeded) break;
+     }
++    const u32 executedInstructions = arm.PokerunExecutedInstructions;
+ 
+     const bool finalThumb = (arm.CPSR & 0x20) != 0;
+     pokerunArm9CallPc = (arm.R[15] - (finalThumb ? 2u : 4u)) & (finalThumb ? ~1u : ~3u);
+@@ -456,8 +444,9 @@ namespace wasmelon {
+     arm.PokerunInstructionLimit = savedPokerunInstructionLimit;
+     arm.PokerunStopHit = savedPokerunStopHit;
+     arm.PokerunBudgetExceeded = savedPokerunBudgetExceeded;
+-    nds->ARM9Timestamp = savedTimestamp;
+-    nds->ARM9Target = savedTarget;
++    // The scheduler intentionally advanced emulated time while the injected
++    // call ran. Keep that progress and resume the interrupted context there.
++    nds->ARM9Target = nds->ARM9Timestamp;
+     nds->CurCPU = savedCurCPU;
+ 
+     return returned ? result : 0;
+@@ -465,7 +454,7 @@ namespace wasmelon {
+   }
+ 
+   u32 WasmEmulator::pokerunRuntimeVersion() {
+-    return 0x50524B3A;
++    return 0x50524B3B;
+   }
