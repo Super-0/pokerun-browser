@@ -22,7 +22,7 @@ const BMP_WIN_CREATE_DYNAMIC = 0x020480ec
 const BMP_WIN_FLUSH_MAP = 0x02048298
 const BMP_WIN_DRAW_FRAME = 0x02024eac
 const GFL_STRBUF_CREATE = 0x0204855c
-const GFL_TEXT_RENDERER_DRAW_TO_BITMAP = 0x02021d28
+const GFL_FONT_GET_CHAR_WIDTH = 0x02023208
 const GFL_STRBUF_APPEND = 0x02048760
 const GFL_STRBUF_FREE = 0x02048590
 
@@ -45,8 +45,6 @@ const FRAME_FULL_ROW_BYTES = (WINDOW_WIDTH + 2) * 2
 const STRBUF_MAGIC = 0xb6f8d2ec
 const STRBUF_TERMINATOR = 0xffff
 const STRBUF_PROBE_CHAR = 0x0041 // 'A', the standard Unicode character code supported by the decompiled font map.
-const GLYPH_PROBE_X = 8
-const GLYPH_PROBE_Y = 8
 const AREAMAN_FAIL = 0xffffffff
 const NATIVE_STACK_RESERVE = 0x800
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
@@ -87,7 +85,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BMPWIN GLYPH RAM PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN FONT WIDTH PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -101,7 +99,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BMPWIN GLYPH RAM PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN FONT WIDTH PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -111,7 +109,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BMPWIN GLYPH RAM PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN FONT WIDTH PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -131,10 +129,8 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       strBufCreateAddress: hex(GFL_STRBUF_CREATE),
       strBufAppendAddress: hex(GFL_STRBUF_APPEND),
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
-      drawToBitmapAddress: hex(GFL_TEXT_RENDERER_DRAW_TO_BITMAP),
-      glyphX: GLYPH_PROBE_X,
-      glyphY: GLYPH_PROBE_Y,
-      note: 'PRK26 keeps the validated PRK24 framed window and PRK25 native StrBuf setup. Renders exactly one U+0041 glyph through GFL_TextRendererDrawToBitmap, then compares the 1920-byte bitmap before/after. Does not refresh VRAM, create a PrintStream, or handle menu input.',
+      getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
+      note: 'PRK27 keeps the native window and StrBuf pipeline, but calls only GFL_FontGetCharWidth(font, U+0041). This uses cached font maps/widths and avoids streamed glyph FS_ReadFile/CARD tasks after PRK26 reached ARM9 abort mode in OS_SetThreadPriority. No glyph drawing or VRAM writes follow.',
     })
 
     async function atomicCall(
@@ -178,7 +174,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BMPWIN GLYPH RAM PROBE HOLD', { window: hex(stateRef.current.window) })
+          console.info('[PokéRun interaction] BMPWIN FONT WIDTH PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -654,75 +650,34 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             appendInstructions: strAppendInstructions,
           })
 
-          // Isolate one native glyph rasterization into bitmap RAM, no VRAM upload.
-          const pixelsBefore = await runtimeBridge.readBytes(pixelData, requestedBytes)
-          if (pixelsBefore.length !== requestedBytes) {
-            throw new Error(`Bitmap snapshot length ${pixelsBefore.length} does not match ${requestedBytes}.`)
-          }
-          console.info('[PokéRun interaction] NATIVE GLYPH RAM CALL', {
-            address: hex(GFL_TEXT_RENDERER_DRAW_TO_BITMAP),
-            bitmap: hex(bitmap),
-            pixelData: hex(pixelData),
-            pixelBytes: requestedBytes,
-            strBuf: hex(probeStrBuf),
+          // PRK27: isolate the font's cached map/width lookup from streamed glyph I/O.
+          // GFL_FontGetCharWidth only reads Font.maps and Font.widths in RAM.
+          // Do not call the glyph renderer or GFL_FontGetGlyphStreamed here.
+          console.info('[PokéRun interaction] NATIVE FONT WIDTH CALL', {
+            address: hex(GFL_FONT_GET_CHAR_WIDTH),
             font: hex(fieldFont),
-            glyphCallback: hex(fontGetGlyph),
-            character: STRBUF_PROBE_CHAR,
-            x: GLYPH_PROBE_X,
-            y: GLYPH_PROBE_Y,
-            note: 'Five-argument native call with font pointer on ARM9 stack. One A glyph in bitmap RAM only; no VRAM refresh.',
+            fontLoadType,
+            getGlyphAddress: hex(fontGetGlyph),
+            char: STRBUF_PROBE_CHAR,
+            note: 'Read-only font character-width query. No streamed glyph ROM read, bitmap rasterization, or VRAM upload.',
           })
-          const glyphCall = await atomicCall(
-            GFL_TEXT_RENDERER_DRAW_TO_BITMAP,
-            bitmap,
-            GLYPH_PROBE_X,
-            GLYPH_PROBE_Y,
-            probeStrBuf,
-            fieldFont,
-          )
-          const pixelsAfter = await runtimeBridge.readBytes(pixelData, requestedBytes)
-          if (pixelsAfter.length !== requestedBytes) {
-            throw new Error(`After-render bitmap snapshot length ${pixelsAfter.length} does not match ${requestedBytes}.`)
-          }
-          let changedBytes = 0
-          let firstChangedByte = -1
-          let lastChangedByte = -1
-          const changedTileIndices = new Set<number>()
-          for (let byteIndex = 0; byteIndex < requestedBytes; byteIndex += 1) {
-            if (pixelsBefore[byteIndex] !== pixelsAfter[byteIndex]) {
-              changedBytes += 1
-              if (firstChangedByte === -1) firstChangedByte = byteIndex
-              lastChangedByte = byteIndex
-              changedTileIndices.add(Math.floor(byteIndex / bytesPerTile))
-            }
-          }
-          console.info('[PokéRun interaction] NATIVE GLYPH RAM RESULT', {
-            window: hex(nativeWindow),
-            bitmap: hex(bitmap),
-            character: STRBUF_PROBE_CHAR,
-            x: GLYPH_PROBE_X,
-            y: GLYPH_PROBE_Y,
-            instructions: glyphCall.instructions,
-            pixelBytesCompared: requestedBytes,
-            changedBytes,
-            firstChangedByte,
-            lastChangedByte,
-            changedTileIndices: Array.from(changedTileIndices).sort((a, b) => a - b),
-            firstByteBefore: firstChangedByte >= 0 ? pixelsBefore[firstChangedByte] : null,
-            firstByteAfter: firstChangedByte >= 0 ? pixelsAfter[firstChangedByte] : null,
-            note: 'Observed native glyph effects in bitmap RAM only. No character or screen VRAM upload has run since glyph drawing.',
-          })
-          if (changedBytes === 0) {
-            throw new Error('Native glyph renderer returned without changing bitmap bytes; glyph rasterization is not validated.')
-          }
-          console.info('[PokéRun interaction] NATIVE GLYPH RAM SUCCESS', {
-            window: hex(nativeWindow),
-            strBuf: hex(probeStrBuf),
+          const widthCall = await atomicCall(GFL_FONT_GET_CHAR_WIDTH, fieldFont, STRBUF_PROBE_CHAR)
+          const charWidth = widthCall.result
+          console.info('[PokéRun interaction] NATIVE FONT WIDTH RESULT', {
             font: hex(fieldFont),
-            changedBytes,
-            changedTiles: changedTileIndices.size,
-            instructions: glyphCall.instructions,
-            note: 'Single A glyph altered the native bitmap RAM. VRAM still contains the pre-text image. No PrintStream or menu input is running.',
+            char: STRBUF_PROBE_CHAR,
+            width: charWidth,
+            instructions: widthCall.instructions,
+            note: 'Font map and width-table lookup returned. This does not test streamed glyph retrieval or bitmap drawing.',
+          })
+          if (charWidth === 0 || charWidth > 32) {
+            throw new Error(`Unexpected character width ${charWidth} for U+0041 on the live font.`)
+          }
+          console.info('[PokéRun interaction] NATIVE FONT WIDTH SUCCESS', {
+            font: hex(fieldFont),
+            width: charWidth,
+            instructions: widthCall.instructions,
+            note: 'Cached font data path works without a streamed FS/CARD read. Next investigation must isolate glyph retrieval before attempting full text rendering.',
           })
         } finally {
           const freeCall = await atomicCall(GFL_STRBUF_FREE, probeStrBuf)
@@ -736,12 +691,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           createInstructions: strCreateCall.instructions,
           appendInstructions: strAppendInstructions,
           freeInstructions: strFreeInstructions,
-          note: 'Native StrBuf allocate/append/free validated; exactly one glyph was rasterized into bitmap RAM before the buffer was freed. No VRAM upload followed the glyph renderer.',
+          note: 'Native StrBuf allocate/append/free and read-only font-width query completed. No glyph rasterization or post-frame VRAM transfer occurred.',
         })
 
 
       } catch (reason) {
-        console.info('[PokéRun interaction] BMPWIN GLYPH RAM PROBE FAILED', {
+        console.info('[PokéRun interaction] BMPWIN FONT WIDTH PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
