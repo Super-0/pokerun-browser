@@ -1,7 +1,18 @@
 diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
 --- a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
 +++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
-@@ -250,7 +250,7 @@ namespace wasmelon {
+@@ -188,6 +188,10 @@ namespace wasmelon {
+     return pokerunArm9CallInstructions;
+   }
+ 
++  u32 WasmEmulator::arm9CallBudget() {
++    return 1000000;
++  }
++
+   u32 WasmEmulator::callArm9Thumb4(u32 function, u32 r0, u32 r1, u32 r2, u32 r3, u32 stackReserve) {
+     // This is deliberately a bounded development bridge, not a general code-execution API.
+     // PokéRun exact-ROM gates every caller. Status: 1=returned, 2=invalid args,
+@@ -250,7 +254,7 @@ namespace wasmelon {
  
      bool returned = false;
      u32 executedInstructions = 0;
@@ -10,12 +21,31 @@ diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/fron
      for (u32 instruction = 0; instruction < maxInstructions; instruction++) {
        const bool thumb = (arm.CPSR & 0x20) != 0;
        const u32 currentAddress = (arm.R[15] - (thumb ? 2u : 4u)) & (thumb ? ~1u : ~3u);
-@@ -299,7 +299,7 @@ namespace wasmelon {
+@@ -299,7 +303,7 @@ namespace wasmelon {
    }
  
    u32 WasmEmulator::pokerunRuntimeVersion() {
--    return 0x50524B34;
-+    return 0x50524B35;
+-    return 0x50524B35;
++    return 0x50524B36;
    }
  
    void WasmEmulator::touchScreen(int x, int y) {
+@@ -420,6 +424,7 @@ EMSCRIPTEN_BINDINGS(WasmEmulator) {
+     .function("arm9CallLr", &wasmelon::WasmEmulator::arm9CallLr)
+     .function("arm9CallCpsr", &wasmelon::WasmEmulator::arm9CallCpsr)
+     .function("arm9CallInstructions", &wasmelon::WasmEmulator::arm9CallInstructions)
++    .function("arm9CallBudget", &wasmelon::WasmEmulator::arm9CallBudget)
+     .function("pokerunRuntimeVersion", &wasmelon::WasmEmulator::pokerunRuntimeVersion)
+     .function("touchScreen", &wasmelon::WasmEmulator::touchScreen)
+     .function("releaseScreen", &wasmelon::WasmEmulator::releaseScreen)
+diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.h b/wasmelonDS/src/frontend/wasm/WasmEmulator.h
+--- a/wasmelonDS/src/frontend/wasm/WasmEmulator.h
++++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.h
+@@ -63,6 +63,7 @@ namespace wasmelon {
+     melonDS::u32 arm9CallLr();
+     melonDS::u32 arm9CallCpsr();
+     melonDS::u32 arm9CallInstructions();
++    melonDS::u32 arm9CallBudget();
+     melonDS::u32 pokerunRuntimeVersion();
+ 
+     void touchScreen(int x, int y);
