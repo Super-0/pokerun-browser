@@ -1,0 +1,120 @@
+diff --git a/wasmelonDS/src/ARM.h b/wasmelonDS/src/ARM.h
+--- a/wasmelonDS/src/ARM.h
++++ b/wasmelonDS/src/ARM.h
+@@ -251,6 +251,11 @@ public:
+     template <CPUExecuteMode mode>
+     void Execute();
+     void PokerunExecuteInterpreterStep();
++    u32 PokerunStopAddress = 0;
++    u32 PokerunExecutedInstructions = 0;
++    u32 PokerunInstructionLimit = 0;
++    bool PokerunStopHit = false;
++    bool PokerunBudgetExceeded = false;
+ 
+     // all code accesses are forced nonseq 32bit
+     u32 CodeRead32(u32 addr, bool branch);
+diff --git a/wasmelonDS/src/ARM.cpp b/wasmelonDS/src/ARM.cpp
+--- a/wasmelonDS/src/ARM.cpp
++++ b/wasmelonDS/src/ARM.cpp
+@@ -609,6 +609,24 @@ void ARMv5::Execute()
+ 
+     while (NDS.ARM9Timestamp < NDS.ARM9Target)
+     {
++        if (PokerunStopAddress != 0)
++        {
++            const bool thumb = (CPSR & 0x20) != 0;
++            const u32 currentAddress = (R[15] - (thumb ? 2u : 4u)) & (thumb ? ~1u : ~3u);
++            if (currentAddress == PokerunStopAddress)
++            {
++                PokerunStopHit = true;
++                NDS.ARM9Timestamp = NDS.ARM9Target;
++                break;
++            }
++            if (PokerunInstructionLimit != 0 && PokerunExecutedInstructions >= PokerunInstructionLimit)
++            {
++                PokerunBudgetExceeded = true;
++                NDS.ARM9Timestamp = NDS.ARM9Target;
++                break;
++            }
++            PokerunExecutedInstructions++;
++        }
+ #ifdef JIT_ENABLED
+         if constexpr (mode == CPUExecuteMode::JIT)
+         {
+diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
+--- a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
++++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
+@@ -232,8 +232,6 @@ namespace wasmelon {
+     const MemRegion savedCodeMem = arm.CodeMem;
+     const s32 savedRegionCodeCycles = arm.RegionCodeCycles;
+     u8* const savedPUMap = arm.PU_Map;
+-    const u64 savedTimestamp = nds->ARM9Timestamp;
+-    const u64 savedTarget = nds->ARM9Target;
+     const int savedCurCPU = nds->CurCPU;
+ 
+     const bool returnThumb = (savedCPSR & 0x20) != 0;
+@@ -249,25 +247,25 @@ namespace wasmelon {
+     arm.R[14] = returnAddress | (returnThumb ? 1u : 0u);
+     arm.JumpTo(functionBase | 1u, false);
+ 
++    const u32 savedPokerunStopAddress = arm.PokerunStopAddress;
++    const u32 savedPokerunExecutedInstructions = arm.PokerunExecutedInstructions;
++    const u32 savedPokerunInstructionLimit = arm.PokerunInstructionLimit;
++    const bool savedPokerunStopHit = arm.PokerunStopHit;
++    const bool savedPokerunBudgetExceeded = arm.PokerunBudgetExceeded;
++    arm.PokerunStopAddress = returnAddress;
++    arm.PokerunExecutedInstructions = 0;
++    arm.PokerunInstructionLimit = 1000000;
++    arm.PokerunStopHit = false;
++    arm.PokerunBudgetExceeded = false;
++
+     bool returned = false;
+-    u32 executedInstructions = 0;
+-    constexpr u32 maxInstructions = 1000000;
+-    for (u32 instruction = 0; instruction < maxInstructions; instruction++) {
+-      const bool thumb = (arm.CPSR & 0x20) != 0;
+-      const u32 currentAddress = (arm.R[15] - (thumb ? 2u : 4u)) & (thumb ? ~1u : ~3u);
+-      if (currentAddress == returnAddress) {
+-        returned = true;
+-        break;
+-      }
+-      if (arm.Halted) {
+-        pokerunArm9CallStatus = 4;
+-        break;
+-      }
+-      nds->ARM9Target = nds->ARM9Timestamp + 1;
+-      arm.PokerunExecuteInterpreterStep();
+-      executedInstructions++;
++    constexpr u32 maxSchedulerFrames = 4;
++    for (u32 frame = 0; frame < maxSchedulerFrames; frame++) {
++      nds->RunFrame();
++      if (arm.PokerunStopHit) { returned = true; break; }
++      if (arm.PokerunBudgetExceeded) break;
+     }
++    const u32 executedInstructions = arm.PokerunExecutedInstructions;
+ 
+     const bool finalThumb = (arm.CPSR & 0x20) != 0;
+     pokerunArm9CallPc = (arm.R[15] - (finalThumb ? 2u : 4u)) & (finalThumb ? ~1u : ~3u);
+@@ -296,13 +294,18 @@ namespace wasmelon {
+     arm.CodeMem = savedCodeMem;
+     arm.RegionCodeCycles = savedRegionCodeCycles;
+     arm.PU_Map = savedPUMap;
+-    nds->ARM9Timestamp = savedTimestamp;
+-    nds->ARM9Target = savedTarget;
++    arm.PokerunStopAddress = savedPokerunStopAddress;
++    arm.PokerunExecutedInstructions = savedPokerunExecutedInstructions;
++    arm.PokerunInstructionLimit = savedPokerunInstructionLimit;
++    arm.PokerunStopHit = savedPokerunStopHit;
++    arm.PokerunBudgetExceeded = savedPokerunBudgetExceeded;
++    // The scheduler intentionally advanced emulated time while the injected call ran.
++    // Keep that progress and resume the interrupted ARM9 context at the new timestamp.
++    nds->ARM9Target = nds->ARM9Timestamp;
+     nds->CurCPU = savedCurCPU;
+ 
+     return returned ? result : 0;
+   }
+ 
+   u32 WasmEmulator::pokerunRuntimeVersion() {
+-    return 0x50524B36;
++    return 0x50524B37;
+   }
