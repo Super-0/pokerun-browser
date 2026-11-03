@@ -510,9 +510,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         // BmpWin_CreateDynamic remains below as research/reference only.
         if (PRK33_FOUR_ARG_BG2_VISUAL) {
           const originalArm9Sp = await runtimeBridge.getArm9Sp()
-          console.info('[PokéRun interaction] PRK34 FOUR ARG BG2 DISPLAY PREFLIGHT', {
+          console.info('[PokéRun interaction] PRK36 GUARDED BG2 DISPLAY PREFLIGHT', {
             observedArm9Sp: hex(originalArm9Sp),
-            injectedSpEstimate: hex((originalArm9Sp - NATIVE_STACK_RESERVE / 4) >>> 0),
+            dtcmGuardPassed: validNativeStack(originalArm9Sp),
+            bridge: 'callArm9Thumb4',
+            note: 'Thumb8 relocated stack is NEVER used.',
             bg: bg2,
             heapId,
             expectedCharPos: 964,
