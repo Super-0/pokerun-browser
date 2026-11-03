@@ -8,7 +8,6 @@ const patches = [
   resolve(root, 'third_party/patches/0001-expose-arm9-bus-reads.patch'),
   resolve(root, 'third_party/patches/0002-real-hidden-fast-forward-frames.patch'),
   resolve(root, 'third_party/patches/0003-raise-arm9-native-call-budget.patch'),
-  resolve(root, 'third_party/patches/0004-scheduler-aware-arm9-native-calls.patch'),
 ]
 const build = resolve(source, 'build-pokerun-wasm')
 const output = resolve(root, 'public/emulators/melonds')
@@ -57,14 +56,17 @@ try {
   for (const symbol of requiredRuntimeSymbols) {
     if (!patchedCpp.includes(`.function("${symbol}"`)) throw new Error(`PokéRun melonDS patch did not expose ${symbol} through Embind.`)
   }
-  if (!patchedCpp.includes('arm.PokerunInstructionLimit = 1000000;')) {
+  if (!patchedCpp.includes('constexpr u32 maxInstructions = 1000000;')) {
     throw new Error('PokéRun melonDS patch did not install the 1,000,000-instruction ARM9 native-call budget.')
   }
-  if (!patchedCpp.includes('nds->RunFrame();')) {
-    throw new Error('PokéRun melonDS patch did not install scheduler-aware ARM9 native calls.')
+  if (!patchedCpp.includes('arm.PokerunExecuteInterpreterStep();')) {
+    throw new Error('PokéRun melonDS patch did not install the atomic ARM9 native-call bridge.')
   }
-  if (!patchedCpp.includes('return 0x50524B37;')) {
-    throw new Error('PokéRun melonDS patch did not install the PRK7 runtime stamp.')
+  if (patchedCpp.includes('nds->RunFrame();')) {
+    throw new Error('PokéRun melonDS patch unexpectedly includes scheduler-aware native-call execution.')
+  }
+  if (!patchedCpp.includes('return 0x50524B38;')) {
+    throw new Error('PokéRun melonDS patch did not install the PRK8 runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new
