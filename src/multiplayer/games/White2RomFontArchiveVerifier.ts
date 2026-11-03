@@ -1,0 +1,161 @@
+/**
+ * PRK35: read-only NDS FAT -> NARC BTAF/BTNF/GMIF -> font glyph verification.
+ *
+ * Input is the user's existing browser-held cartridge Uint8Array. Never sends
+ * or modifies the cartridge, calls guest Nitro FS, or writes emulator memory.
+ * Offsets are checked before every read; no hardcoded ROM asset bytes.
+ */
+export type White2LiveFontLocation = {
+  rootRomFileId: number
+  fsFileStart: number
+  fsFileEnd: number
+  narcMemberFileId: number
+  fontFileOffset: number
+  glyphsOffset: number
+  glyphIndex: number
+  glyphCellSize: number
+}
+
+export type White2VerifiedFontGlyph = {
+  rootRomFileId: number
+  romBytes: number
+  fatOffset: number
+  fatEntryStart: number
+  fatEntryEnd: number
+  narcSize: number
+  narcHeaderSize: number
+  narcChunkCount: number
+  narcMemberCount: number
+  narcMemberFileId: number
+  narcMemberOffset: number
+  narcMemberLength: number
+  fontMemberMagic: string
+  glyphIndex: number
+  glyphCellSize: number
+  glyphArchiveOffset: number
+  glyphAbsoluteRomOffset: number
+  glyphAbsoluteRomEnd: number
+  glyphPreview8: string
+  glyphFnv1a32: string
+}
+
+export function verifyWhite2FontGlyphFromRom(
+  rom: Uint8Array,
+  live: White2LiveFontLocation,
+): White2VerifiedFontGlyph {
+  if (rom.byteLength < 0x200) throw new Error('NDS ROM is too small for a valid header.')
+  const view = new DataView(rom.buffer, rom.byteOffset, rom.byteLength)
+  const ensureRange = (start: number, size: number, label: string) => {
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(size) ||
+        start < 0 || size < 0 || start + size > rom.byteLength) {
+      throw new Error(`Invalid ${label} ROM span at ${start} for ${size} bytes (ROM length ${rom.byteLength}).`)
+    }
+  }
+  const u16 = (offset: number) => { ensureRange(offset, 2, 'u16'); return view.getUint16(offset, true) }
+  const u32 = (offset: number) => { ensureRange(offset, 4, 'u32'); return view.getUint32(offset, true) }
+  const tag = (offset: number) => {
+    ensureRange(offset, 4, 'tag')
+    return String.fromCharCode(rom[offset], rom[offset + 1], rom[offset + 2], rom[offset + 3])
+  }
+  const assert = (ok: boolean, why: string) => { if (!ok) throw new Error(why) }
+
+  // NDS filesystem FAT pointer/length are in the cartridge header.
+  const fatOffset = u32(0x48)
+  const fatSize = u32(0x4c)
+  assert(fatSize > 0 && fatSize % 8 === 0, 'NDS FAT size is not an array of 8-byte entries.')
+  ensureRange(fatOffset, fatSize, 'NDS FAT')
+  const rootRomFileId = live.rootRomFileId
+  assert(Number.isInteger(rootRomFileId) && rootRomFileId >= 0 &&
+    rootRomFileId < fatSize / 8, 'Live Nitro FSFile file ID is outside the NDS FAT.')
+  const fatEntry = fatOffset + rootRomFileId * 8
+  const fatEntryStart = u32(fatEntry)
+  const fatEntryEnd = u32(fatEntry + 4)
+  ensureRange(fatEntryStart, fatEntryEnd - fatEntryStart, 'NDS FAT archive file')
+  assert(fatEntryEnd > fatEntryStart, 'NDS FAT archive entry is empty.')
+  assert(fatEntryStart === live.fsFileStart && fatEntryEnd === live.fsFileEnd,
+    'Live Nitro FSFile range disagrees with NDS cartridge FAT entry.')
+
+  // NARC outer header and its section order are defined by Nitro.
+  assert(tag(fatEntryStart) === 'NARC', 'FAT archive entry does not start with NARC.')
+  const narcSize = u32(fatEntryStart + 8)
+  const narcHeaderSize = u16(fatEntryStart + 0x0c)
+  const narcChunkCount = u16(fatEntryStart + 0x0e)
+  assert(narcHeaderSize >= 0x10 && narcHeaderSize <= 0x40, 'NARC header size invalid.')
+  assert(narcChunkCount === 3, 'Expected a three-section Nitro NARC.')
+  assert(narcSize <= fatEntryEnd - fatEntryStart && narcSize >= narcHeaderSize + 32,
+    'NARC declared size exceeds FAT archive entry.')
+
+  const fatb = fatEntryStart + narcHeaderSize
+  assert(tag(fatb) === 'BTAF', 'NARC BTAF section tag missing.')
+  const fatbSize = u32(fatb + 4)
+  const narcMemberCount = u16(fatb + 8)
+  assert(fatbSize >= 12 && fatbSize >= 12 + narcMemberCount * 8,
+    'NARC BTAF size is inconsistent with member count.')
+  ensureRange(fatb, fatbSize, 'BTAF section')
+  assert(narcMemberCount > live.narcMemberFileId && live.narcMemberFileId >= 0,
+    'Font NARC member ID is outside its BTAF.')
+
+  const fntb = fatb + fatbSize
+  assert(tag(fntb) === 'BTNF', 'NARC BTNF section tag missing.')
+  const fntbSize = u32(fntb + 4)
+  assert(fntbSize >= 8, 'NARC BTNF section too short.')
+  ensureRange(fntb, fntbSize, 'BTNF section')
+
+  const fimg = fntb + fntbSize
+  assert(tag(fimg) === 'GMIF', 'NARC GMIF section tag missing.')
+  const fimgSize = u32(fimg + 4)
+  assert(fimgSize >= 8, 'NARC GMIF section too short.')
+  ensureRange(fimg, fimgSize, 'GMIF section')
+  assert(fimg + fimgSize <= fatEntryStart + narcSize,
+    'NARC sections extend past its declared archive size.')
+
+  const entry = fatb + 12 + live.narcMemberFileId * 8
+  ensureRange(entry, 8, 'BTAF member entry')
+  const memberStart = u32(entry)
+  const memberEnd = u32(entry + 4)
+  assert(memberEnd > memberStart && memberEnd <= fimgSize - 8,
+    'Font member extends outside the GMIF data section.')
+
+  const memberOffset = (fimg - fatEntryStart) + 8 + memberStart
+  assert(memberOffset === live.fontFileOffset,
+    'Live Font.fileOffset does not match NARC BTAF member placement.')
+  const memberAbsoluteStart = fatEntryStart + memberOffset
+  const memberAbsoluteEnd = fatEntryStart + (fimg - fatEntryStart) + 8 + memberEnd
+  ensureRange(memberAbsoluteStart, memberAbsoluteEnd - memberAbsoluteStart, 'font member')
+  assert(Number.isInteger(live.glyphCellSize) && live.glyphCellSize > 0 &&
+    live.glyphCellSize <= 512 && Number.isInteger(live.glyphIndex) &&
+    live.glyphIndex >= 0 && live.glyphIndex <= 0xffff,
+  'Glyph index or cell size is invalid.')
+
+  const glyphArchiveOffset = live.fontFileOffset + live.glyphsOffset +
+    live.glyphIndex * live.glyphCellSize
+  const glyphAbsoluteRomOffset = fatEntryStart + glyphArchiveOffset
+  ensureRange(glyphAbsoluteRomOffset, live.glyphCellSize, 'glyph cell')
+  assert(glyphAbsoluteRomOffset >= memberAbsoluteStart &&
+    glyphAbsoluteRomOffset + live.glyphCellSize <= memberAbsoluteEnd,
+  'Glyph cell extends beyond its NARC font member.')
+
+  let hash = 0x811c9dc5
+  for (let i = 0; i < live.glyphCellSize; i += 1) {
+    hash ^= rom[glyphAbsoluteRomOffset + i]
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  const preview = Array.from(rom.subarray(glyphAbsoluteRomOffset, glyphAbsoluteRomOffset + 8),
+    value => value.toString(16).padStart(2, '0')).join(' ')
+
+  return {
+    rootRomFileId, romBytes: rom.byteLength, fatOffset,
+    fatEntryStart, fatEntryEnd,
+    narcSize, narcHeaderSize, narcChunkCount, narcMemberCount,
+    narcMemberFileId: live.narcMemberFileId,
+    narcMemberOffset: memberOffset,
+    narcMemberLength: memberEnd - memberStart,
+    fontMemberMagic: tag(memberAbsoluteStart),
+    glyphIndex: live.glyphIndex,
+    glyphCellSize: live.glyphCellSize,
+    glyphArchiveOffset, glyphAbsoluteRomOffset,
+    glyphAbsoluteRomEnd: glyphAbsoluteRomOffset + live.glyphCellSize,
+    glyphPreview8: preview,
+    glyphFnv1a32: `0x${hash.toString(16).padStart(8, '0')}`,
+  }
+}
