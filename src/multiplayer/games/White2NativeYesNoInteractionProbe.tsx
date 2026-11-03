@@ -28,6 +28,8 @@ const STRBUF_TERMINATOR = 0xffff
 const LIST_WAITING = -1
 const LIST_MENU_REQUEST_SIZE = 0x20
 const MENU_RECOVERY_RADIUS = 0x4000
+const MENU_DECISION_INPUT_WINDOW_MS = 300
+const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 const NATIVE_STACK_RESERVE = 0x800
 const POLL_MS = 34
 
@@ -54,31 +56,25 @@ function signed32(value: number) {
 }
 
 function makeRequest(count: number) {
-  // White 2 US overlay 36 places sYesNoMenuRequest at 0x021CAAC8 and the
-  // following symbol at 0x021CAAE8, proving the compiled request is 0x20 bytes.
-  // Mirror the game's own yes/no defaults for every packed field, then provide
-  // our two-item geometry. Mixed-base-type bitfields occupy separate storage
-  // units here: u8 nibbles at 0x07/0x08, u16 spacing bits at 0x0A, and the
-  // signed 32-bit pageSkip bitfield at 0x0C.
   const bytes = new Uint8Array(LIST_MENU_REQUEST_SIZE)
   const view = new DataView(bytes.buffer)
-  view.setUint16(0x00, count, true) // count
-  view.setUint16(0x02, count, true) // maxShown
-  bytes[0x04] = 0 // labelX
-  bytes[0x05] = 13 // itemX (sYesNoMenuRequest)
-  bytes[0x06] = 0 // cursorX
-  bytes[0x07] = 0x13 // listY=3, fgColor=1
-  bytes[0x08] = 0x2f // bgColor=15, shadowColor=2
-  bytes[0x09] = 0 // alignment padding
-  view.setUint16(0x0a, 0x0008, true) // letterSpacing=0, lineSpacing=1, unk=0
-  view.setUint32(0x0c, 0, true) // pageSkip=0
-  view.setUint16(0x10, 12, true) // fontSizeX
-  view.setUint16(0x12, 13, true) // rowHeight
-  view.setUint16(0x14, 18, true) // x (tiles)
-  view.setUint16(0x16, 2, true) // y (tiles)
-  view.setUint16(0x18, 12, true) // width (tiles)
-  view.setUint16(0x1a, 5, true) // height (tiles)
-  view.setUint32(0x1c, 0, true) // printCallback
+  view.setUint16(0x00, count, true)
+  view.setUint16(0x02, count, true)
+  bytes[0x04] = 0
+  bytes[0x05] = 13
+  bytes[0x06] = 0
+  bytes[0x07] = 0x13
+  bytes[0x08] = 0x2f
+  bytes[0x09] = 0
+  view.setUint16(0x0a, 0x0008, true)
+  view.setUint32(0x0c, 0, true)
+  view.setUint16(0x10, 12, true)
+  view.setUint16(0x12, 13, true)
+  view.setUint16(0x14, 18, true)
+  view.setUint16(0x16, 2, true)
+  view.setUint16(0x18, 12, true)
+  view.setUint16(0x1a, 5, true)
+  view.setUint32(0x1c, 0, true)
   return bytes
 }
 
@@ -115,6 +111,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
     const runtimeBridge = bridge
     const probe = new White2ActorSystemProbe(runtimeBridge)
+    let lastDecisionInputAt = 0
+    let lastUnarmedResult: number | null = null
+
+    const emitMenuState = (open: boolean) => {
+      window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
+    }
 
     console.info('[PokéRun interaction] DIRECT MENU PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
@@ -190,6 +192,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function closeMenu() {
       const state = stateRef.current
       stateRef.current = null
+      emitMenuState(false)
+      lastDecisionInputAt = 0
+      lastUnarmedResult = null
       if (!state) return
 
       try {
@@ -298,6 +303,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         await nativeCall(MSG_BG_DRAW_MENU_FUNC_FRAME, menu)
 
         stateRef.current = { field, menu }
+        lastDecisionInputAt = 0
+        lastUnarmedResult = null
+        emitMenuState(true)
         console.info('[PokéRun interaction] NATIVE DIRECT MENU OPEN', {
           field: hex(field),
           menu: hex(menu),
@@ -317,6 +325,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         if (frozen && isMainRamPointer(field)) {
           try { await nativeCall(FIELDMAP_CTRL_GRID_SET_UPDATE_DISABLE, field, 0) } catch { /* best effort */ }
         }
+        emitMenuState(false)
       } finally {
         await freeScratch(requestPtr)
         openingRef.current = false
@@ -334,7 +343,15 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       void openMenu()
     }
 
+    const onMenuDecisionKey = (event: KeyboardEvent) => {
+      if (!stateRef.current || event.repeat || (event.code !== 'KeyX' && event.code !== 'KeyZ')) return
+      lastDecisionInputAt = performance.now()
+      lastUnarmedResult = null
+      console.info('[PokéRun interaction] NATIVE MENU DECISION INPUT', { code: event.code })
+    }
+
     window.addEventListener(WHITE2_INTERACT_EVENT, onInteract)
+    window.addEventListener('keydown', onMenuDecisionKey)
 
     const timer = window.setInterval(() => {
       const state = stateRef.current
@@ -342,10 +359,43 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       pollingRef.current = true
       void (async () => {
         try {
-          const result = signed32(await nativeCall(LIST_MENU_UI_UPDATE, state.menu))
-          if (result !== LIST_WAITING) {
-            console.info('[PokéRun interaction] NATIVE DIRECT MENU RESULT', { result })
+          const updateCall = await runtimeBridge.callArm9Thumb4(
+            LIST_MENU_UI_UPDATE,
+            state.menu,
+            0,
+            0,
+            0,
+            NATIVE_STACK_RESERVE,
+          )
+          if (updateCall.status !== 1) {
+            throw new Error(
+              `Native call ${hex(LIST_MENU_UI_UPDATE)} failed with status ${updateCall.status} at ${hex(updateCall.pc)}; `
+              + `lr=${hex(updateCall.lr)} instructions=${updateCall.instructions}.`,
+            )
+          }
+
+          const result = signed32(updateCall.result)
+          if (result === LIST_WAITING) {
+            lastUnarmedResult = null
+            return
+          }
+
+          const decisionAgeMs = lastDecisionInputAt > 0 ? performance.now() - lastDecisionInputAt : Number.POSITIVE_INFINITY
+          if (decisionAgeMs <= MENU_DECISION_INPUT_WINDOW_MS) {
+            console.info('[PokéRun interaction] NATIVE DIRECT MENU RESULT', {
+              result,
+              decisionAgeMs: Math.round(decisionAgeMs),
+            })
             await closeMenu()
+            return
+          }
+
+          if (lastUnarmedResult !== result) {
+            lastUnarmedResult = result
+            console.info('[PokéRun interaction] NATIVE MENU IGNORED UNARMED RESULT', {
+              result,
+              raw: hex(updateCall.result),
+            })
           }
         } catch (reason) {
           console.info('[PokéRun interaction] NATIVE DIRECT MENU UPDATE FAILED', {
@@ -360,7 +410,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
     return () => {
       window.removeEventListener(WHITE2_INTERACT_EVENT, onInteract)
+      window.removeEventListener('keydown', onMenuDecisionKey)
       window.clearInterval(timer)
+      emitMenuState(false)
       if (stateRef.current) void closeMenu()
     }
   }, [bridge, rom.gameId, rom.sha256])
