@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import { White2ActorSystemProbe } from './White2ActorSystem'
+import { verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
 import { WHITE2_INTERACT_EVENT } from './White2PlayerInteractionRuntime'
 
 const FLD_ACT_GET_FIELD_EFFECTS = 0x02194f18
@@ -84,14 +85,14 @@ function hex(value: number) {
   return `0x${(value >>> 0).toString(16).toUpperCase().padStart(8, '0')}`
 }
 
-export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
+export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity; romBytes?: Uint8Array }) {
   const stateRef = useRef<ProbeState | null>(null)
   const openingRef = useRef(false)
   const metadataCompleteRef = useRef(false)
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BG2 THUMB4 VISUAL PROBE EFFECT', {
+    console.info('[PokéRun interaction] BG2 THUMB4 FONT ROM PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -105,7 +106,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BG2 THUMB4 VISUAL PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BG2 THUMB4 FONT ROM PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -118,7 +119,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BG2 THUMB4 VISUAL PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BG2 THUMB4 FONT ROM PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -141,8 +142,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'four-arg-thumb4-native-bg2-window-visual',
+      mode: 'prk34-native-bg2-window-with-prk35-browser-rom-verification',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
+      browserRomAvailable: Boolean(romBytes),
+      researchNote: 'PRK35 verifies live Font->ArcTool FSFile against NDS FAT/NARC member and local glyph bytes after the PRK34 visual passes.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -182,10 +185,89 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       return { result: call.result >>> 0, instructions: call.instructions >>> 0 }
     }
 
+    // PRK35 runs only AFTER PRK34 has rendered its working native BG2 frame.
+    // Read existing Font/FSFile RAM metadata and compare to ROM bytes already
+    // held in this browser. This does not call any guest function or touch VRAM.
+    async function verifyBrowserHeldFontRom(msgBg: number) {
+      if (!romBytes) {
+        console.info('[PokéRun interaction] PRK35 BROWSER ROM UNAVAILABLE', {
+          reason: 'No browser-held NDS cartridge was supplied to this probe.',
+          note: 'The visible PRK34 window remains the independent baseline.',
+        })
+        return
+      }
+      const font = await runtimeBridge.read32(msgBg + 0x08)
+      if (!isMainRamPointer(font)) throw new Error('Invalid live FieldMsgBG font pointer.')
+      const loadType = await runtimeBridge.read32(font + 0x00)
+      const arcTool = await runtimeBridge.read32(font + 0x50)
+      const narcMemberFileId = await runtimeBridge.read32(font + 0x54)
+      const fontFileOffset = await runtimeBridge.read32(font + 0x80)
+      const maps = await runtimeBridge.read32(font + 0x88)
+      const glyphsOffset = await runtimeBridge.read32(font + 0x8c)
+      const glyphCellSize = await runtimeBridge.read16(font + 0x76)
+      if (loadType !== 0 || !isMainRamPointer(arcTool) || !isMainRamPointer(maps)) {
+        throw new Error('Live font is not a valid streamed White 2 Font/ArcTool with in-RAM CMAP.')
+      }
+      const firstChar = await runtimeBridge.read16(maps + 0x00)
+      const lastChar = await runtimeBridge.read16(maps + 0x02)
+      const method = await runtimeBridge.read16(maps + 0x04)
+      const firstIndex = await runtimeBridge.read16(maps + 0x0c)
+      if (method !== 0 || firstChar > STRBUF_PROBE_CHAR || lastChar < STRBUF_PROBE_CHAR) {
+        throw new Error('Live font CMAP does not directly cover U+0041.')
+      }
+      const glyphIndex = firstIndex + STRBUF_PROBE_CHAR - firstChar
+      const fsPropertyPtr = await runtimeBridge.read32(arcTool + 0x04)
+      const fsArchivePtr = await runtimeBridge.read32(arcTool + 0x08)
+      const fsStatus = await runtimeBridge.read32(arcTool + 0x0c)
+      const rootRomFileId = await runtimeBridge.read32(arcTool + 0x20)
+      const fsFileStart = await runtimeBridge.read32(arcTool + 0x24)
+      const fsFileEnd = await runtimeBridge.read32(arcTool + 0x28)
+      if (
+        fsPropertyPtr !== arcTool + 0x20 ||
+        !isMainRamPointer(fsArchivePtr) ||
+        (fsStatus & 0x10) === 0 ||
+        glyphIndex < 0 || glyphIndex > 65535
+      ) throw new Error('Live Nitro FSFile or glyph index metadata failed validation.')
+
+      const result = verifyWhite2FontGlyphFromRom(romBytes, {
+        rootRomFileId,
+        fsFileStart,
+        fsFileEnd,
+        narcMemberFileId,
+        fontFileOffset,
+        glyphsOffset,
+        glyphIndex,
+        glyphCellSize,
+      })
+      console.info('[PokéRun interaction] PRK35 ROM FAT NARC GLYPH VERIFIED', {
+        rootRomFileId: result.rootRomFileId,
+        romBytes: result.romBytes,
+        fatOffset: hex(result.fatOffset),
+        fatEntryStart: hex(result.fatEntryStart),
+        fatEntryEnd: hex(result.fatEntryEnd),
+        narcSize: result.narcSize,
+        narcHeaderSize: result.narcHeaderSize,
+        narcChunkCount: result.narcChunkCount,
+        narcMemberCount: result.narcMemberCount,
+        narcMemberFileId: result.narcMemberFileId,
+        narcMemberOffset: result.narcMemberOffset,
+        narcMemberLength: result.narcMemberLength,
+        fontMemberMagic: result.fontMemberMagic,
+        glyphIndex: result.glyphIndex,
+        glyphCellSize: result.glyphCellSize,
+        glyphArchiveOffset: result.glyphArchiveOffset,
+        glyphAbsoluteRomOffset: hex(result.glyphAbsoluteRomOffset),
+        glyphAbsoluteRomEnd: hex(result.glyphAbsoluteRomEnd),
+        glyphPreview8: result.glyphPreview8,
+        glyphFnv1a32: result.glyphFnv1a32,
+        note: 'Independent browser-held NDS FAT/NARC validation of the live game font. No guest FS, CPU call, or memory write; only eight glyph preview bytes logged.',
+      })
+    }
+
     async function runProbe() {
       if (openingRef.current || metadataCompleteRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current || metadataCompleteRef.current) {
-          console.info('[PokéRun interaction] BG2 THUMB4 VISUAL PROBE HOLD', { window: stateRef.current ? hex(stateRef.current.window) : null, metadataComplete: metadataCompleteRef.current })
+          console.info('[PokéRun interaction] BG2 THUMB4 FONT ROM PROBE HOLD', { window: stateRef.current ? hex(stateRef.current.window) : null, metadataComplete: metadataCompleteRef.current })
         }
         return
       }
@@ -496,6 +578,14 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             screenUploadInstructions,
             note: 'Native White 2 BG2 window tiles and border upload calls returned; visual confirmation requires screenshot. No BmpWin object, text printer, or menu lifecycle was created.',
           })
+          try {
+            await verifyBrowserHeldFontRom(msgBg)
+          } catch (reason) {
+            console.info('[PokéRun interaction] PRK35 ROM FAT NARC VERIFICATION REJECTED', {
+              reason: reason instanceof Error ? reason.message : String(reason),
+              note: 'Read-only ROM inspector failed. PRK34 native window and P2 state were not modified by this verifier.',
+            })
+          }
           return
         }
 
@@ -1167,7 +1257,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
 
       } catch (reason) {
-        console.info('[PokéRun interaction] BG2 THUMB4 VISUAL PROBE FAILED', {
+        console.info('[PokéRun interaction] BG2 THUMB4 FONT ROM PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
@@ -1195,7 +1285,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       stateRef.current = null
       metadataCompleteRef.current = false
     }
-  }, [bridge, rom.gameId, rom.sha256])
+  }, [bridge, rom.gameId, rom.sha256, romBytes])
 
   return null
 }
