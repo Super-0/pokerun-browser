@@ -86,7 +86,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BMPWIN FONT ARCHIVE METADATA PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN FONT ROM RANGE PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -100,7 +100,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BMPWIN FONT ARCHIVE METADATA PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN FONT ROM RANGE PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -110,7 +110,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BMPWIN FONT ARCHIVE METADATA PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN FONT ROM RANGE PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -132,7 +132,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      note: 'PRK29 replaces unsafe streamed glyph retrieval with read-only native Font struct and CMAP inspection plus the pure-RAM GFL_FontGetCharIndex lookup. Captures glyph byte offset in the already-open font archive without calling FS_ReadFile, OS_LoadContext, or VRAM uploads.',
+      note: 'PRK30 extends validated PRK29 with read-only FSFile range inspection from the live ArcTool. Derives the font archive root file ID and candidate absolute ROM offset for A without FS_ReadFile, thread scheduling, ROM mutation, or further VRAM transfer.',
     })
 
     async function atomicCall(
@@ -176,7 +176,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BMPWIN FONT ARCHIVE METADATA PROBE HOLD', { window: hex(stateRef.current.window) })
+          console.info('[PokéRun interaction] BMPWIN FONT ROM RANGE PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -806,6 +806,69 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             instructions: glyphIndexCall.instructions,
             note: 'Native CMAP index + glyph cell position computed without reading any glyph bytes. This is an offset in the open NARC archive file, not an absolute ROM offset.',
           })
+
+          // PRK30: ArcTool starts with FSFile. See Nitro fs.h:
+          // +0x00 next; +0x04 prop; +0x08 arc; +0x0c stat; +0x10 argument;
+          // +0x14 error; +0x18/+0x1c OSThreadQueue; +0x20 FSFileProperty.
+          // FSFileRange begins at +0x20: fileId, top, bottom, position (4 x u32).
+          // Access is read-only, and no guest filesystem function is invoked.
+          const fsPropPointer = await runtimeBridge.read32(archiveHandle + 0x04)
+          const fsArchivePointer = await runtimeBridge.read32(archiveHandle + 0x08)
+          const fsFileStat = await runtimeBridge.read32(archiveHandle + 0x0c)
+          const fsFileError = await runtimeBridge.read32(archiveHandle + 0x14)
+          const fsRomFileId = await runtimeBridge.read32(archiveHandle + 0x20)
+          const fsFileTop = await runtimeBridge.read32(archiveHandle + 0x24)
+          const fsFileBottom = await runtimeBridge.read32(archiveHandle + 0x28)
+          const fsFilePosition = await runtimeBridge.read32(archiveHandle + 0x2c)
+          const archiveFileBytes = fsFileBottom - fsFileTop
+          const glyphAbsoluteRomOffset = fsFileTop + glyphArchiveOffset
+          const fileRangeValid = (
+            fsPropPointer === (archiveHandle + 0x20) &&
+            isMainRamPointer(fsArchivePointer) &&
+            (fsFileStat & 0x10) !== 0 &&
+            fsFileTop > 0 &&
+            fsFileBottom > fsFileTop &&
+            fsFileBottom <= 0x20000000 &&
+            archiveFileBytes >= fontFileOffset + fontInfoMapOffset &&
+            glyphArchiveOffset >= 0 &&
+            glyphArchiveOffset + glyphCellSize <= archiveFileBytes &&
+            fsFilePosition >= fsFileTop &&
+            fsFilePosition <= fsFileBottom &&
+            glyphAbsoluteRomOffset + glyphCellSize <= fsFileBottom
+          )
+          console.info('[PokéRun interaction] NATIVE FONT FSFILE RANGE', {
+            arcTool: hex(archiveHandle),
+            fsFileProperty: hex(fsPropPointer),
+            expectedProperty: hex(archiveHandle + 0x20),
+            fsArchive: hex(fsArchivePointer),
+            fsStat: hex(fsFileStat),
+            fsError: fsFileError,
+            rootRomFileId: fsRomFileId,
+            romFileStart: hex(fsFileTop),
+            romFileEnd: hex(fsFileBottom),
+            romFileBytes: archiveFileBytes,
+            currentPosition: hex(fsFilePosition),
+            fileRangeValid,
+            note: 'Nitro FSFile metadata is read from emulator RAM. Top/bottom are candidate absolute offsets in ROM cartridge storage; no ROM bytes are fetched.',
+          })
+          if (!fileRangeValid) {
+            throw new Error('Live font FSFile metadata did not validate; do not treat the calculated glyph address as an absolute ROM address.')
+          }
+          console.info('[PokéRun interaction] NATIVE FONT ROM OFFSET SUCCESS', {
+            font: hex(fieldFont),
+            archiveHandle: hex(archiveHandle),
+            rootRomFileId: fsRomFileId,
+            archiveFileStart: hex(fsFileTop),
+            archiveFileBytes,
+            narcMemberFileId: fontFileId,
+            glyphIndex,
+            glyphCellBytes: glyphCellSize,
+            glyphWithinFontOffset,
+            glyphWithinNarcOffset: glyphArchiveOffset,
+            candidateAbsoluteRomOffset: hex(glyphAbsoluteRomOffset),
+            candidateAbsoluteRomEnd: hex(glyphAbsoluteRomOffset + glyphCellSize),
+            note: 'Computed location from live Nitro FSFile range + validated NARC/font offset. Must still cross-check the DS ROM FAT and glyph bytes before accepting as a proven absolute ROM offset.',
+          })
         } finally {
           const freeCall = await atomicCall(GFL_STRBUF_FREE, probeStrBuf)
           strFreeInstructions = freeCall.instructions
@@ -818,12 +881,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           createInstructions: strCreateCall.instructions,
           appendInstructions: strAppendInstructions,
           freeInstructions: strFreeInstructions,
-          note: 'Native StrBuf, font-width lookup and read-only glyph index/archive-offset inspection completed. No glyph pixels fetched and no post-frame VRAM upload occurred.',
+          note: 'Native StrBuf and font lookup completed; read-only ArcTool FSFile bounds inspected. No ROM bytes fetched, native FS reads, or new VRAM uploads.',
         })
 
 
       } catch (reason) {
-        console.info('[PokéRun interaction] BMPWIN FONT ARCHIVE METADATA PROBE FAILED', {
+        console.info('[PokéRun interaction] BMPWIN FONT ROM RANGE PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
