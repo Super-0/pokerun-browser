@@ -1027,6 +1027,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       emitMenuState(false)
       // Deliberately leave the one-shot diagnostic BmpWin allocated; a fresh emulator session owns it.
       stateRef.current = null
+      metadataCompleteRef.current = false
     }
   }, [bridge, rom.gameId, rom.sha256])
 
