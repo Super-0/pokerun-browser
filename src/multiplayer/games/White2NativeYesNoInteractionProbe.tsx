@@ -23,6 +23,7 @@ const BMP_WIN_FLUSH_MAP = 0x02048298
 const BMP_WIN_DRAW_FRAME = 0x02024eac
 const GFL_STRBUF_CREATE = 0x0204855c
 const GFL_FONT_GET_CHAR_WIDTH = 0x02023208
+const GFL_FONT_GET_GLYPH = 0x020230a0
 const GFL_STRBUF_APPEND = 0x02048760
 const GFL_STRBUF_FREE = 0x02048590
 
@@ -45,6 +46,9 @@ const FRAME_FULL_ROW_BYTES = (WINDOW_WIDTH + 2) * 2
 const STRBUF_MAGIC = 0xb6f8d2ec
 const STRBUF_TERMINATOR = 0xffff
 const STRBUF_PROBE_CHAR = 0x0041 // 'A', the standard Unicode character code supported by the decompiled font map.
+const GLYPH_SCRATCH_TILE_BYTES = 2 * 2 * 32
+const GLYPH_INFO_BYTES = 4
+const GLYPH_SCRATCH_BYTES = GLYPH_SCRATCH_TILE_BYTES + GLYPH_INFO_BYTES
 const AREAMAN_FAIL = 0xffffffff
 const NATIVE_STACK_RESERVE = 0x800
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
@@ -85,7 +89,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BMPWIN FONT WIDTH PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN DIRECT GLYPH PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -99,7 +103,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BMPWIN FONT WIDTH PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN DIRECT GLYPH PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -109,7 +113,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BMPWIN FONT WIDTH PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN DIRECT GLYPH PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -130,7 +134,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       strBufAppendAddress: hex(GFL_STRBUF_APPEND),
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
-      note: 'PRK27 keeps the native window and StrBuf pipeline, but calls only GFL_FontGetCharWidth(font, U+0041). This uses cached font maps/widths and avoids streamed glyph FS_ReadFile/CARD tasks after PRK26 reached ARM9 abort mode in OS_SetThreadPriority. No glyph drawing or VRAM writes follow.',
+      getGlyphAddress: hex(GFL_FONT_GET_GLYPH),
+      glyphScratchBytes: GLYPH_SCRATCH_BYTES,
+      note: 'PRK28 repeats the proven native font-width lookup, then calls only GFL_FontGetGlyph(font, U+0041, scratchDest, scratchInfo) with 132 bytes of temporary bitmap-RAM scratch. Compares and restores scratch even after a timeout. No full text renderer, PrintStream, or VRAM upload.',
     })
 
     async function atomicCall(
@@ -174,7 +180,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BMPWIN FONT WIDTH PROBE HOLD', { window: hex(stateRef.current.window) })
+          console.info('[PokéRun interaction] BMPWIN DIRECT GLYPH PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -679,6 +685,92 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             instructions: widthCall.instructions,
             note: 'Cached font data path works without a streamed FS/CARD read. Next investigation must isolate glyph retrieval before attempting full text rendering.',
           })
+
+          // PRK28: call the standalone native glyph getter with a scratch 2x2-tile
+          // destination and a separate four-byte GlyphInfo, both within bitmap RAM.
+          // Save and restore the 132-byte region even if atomic execution times out.
+          const glyphScratchBefore = await runtimeBridge.readBytes(pixelData, GLYPH_SCRATCH_BYTES)
+          if (glyphScratchBefore.length !== GLYPH_SCRATCH_BYTES) {
+            throw new Error(`Glyph scratch read length ${glyphScratchBefore.length} != ${GLYPH_SCRATCH_BYTES}.`)
+          }
+          const glyphDestination = pixelData
+          const glyphInfo = pixelData + GLYPH_SCRATCH_TILE_BYTES
+          let glyphCallInstructions: number | null = null
+          let glyphError: unknown = null
+          let glyphChangedBytes = 0
+          let glyphDestChangedBytes = 0
+          let glyphInfoChangedBytes = 0
+          let glyphInfoAfter: number[] = []
+          console.info('[PokéRun interaction] NATIVE DIRECT GLYPH CALL', {
+            address: hex(GFL_FONT_GET_GLYPH),
+            font: hex(fieldFont),
+            fontLoadType,
+            streamedCallback: hex(fontGetGlyph),
+            character: STRBUF_PROBE_CHAR,
+            dest: hex(glyphDestination),
+            destBytes: GLYPH_SCRATCH_TILE_BYTES,
+            info: hex(glyphInfo),
+            infoBytes: GLYPH_INFO_BYTES,
+            scratchBytes: GLYPH_SCRATCH_BYTES,
+            note: 'Calls native GFL_FontGetGlyph directly, bypassing TextRenderer. The font is streamed; glyph retrieval may enter Nitro FS/CARD task handling.',
+          })
+          try {
+            try {
+              const glyphCall = await atomicCall(
+                GFL_FONT_GET_GLYPH,
+                fieldFont,
+                STRBUF_PROBE_CHAR,
+                glyphDestination,
+                glyphInfo,
+              )
+              glyphCallInstructions = glyphCall.instructions
+            } catch (reason) {
+              glyphError = reason
+            }
+            const glyphScratchAfter = await runtimeBridge.readBytes(pixelData, GLYPH_SCRATCH_BYTES)
+            if (glyphScratchAfter.length !== GLYPH_SCRATCH_BYTES) {
+              throw new Error(`Glyph scratch after-read length ${glyphScratchAfter.length} != ${GLYPH_SCRATCH_BYTES}.`)
+            }
+            for (let i = 0; i < GLYPH_SCRATCH_BYTES; i += 1) {
+              if (glyphScratchBefore[i] !== glyphScratchAfter[i]) {
+                glyphChangedBytes += 1
+                if (i < GLYPH_SCRATCH_TILE_BYTES) glyphDestChangedBytes += 1
+                else glyphInfoChangedBytes += 1
+              }
+            }
+            glyphInfoAfter = Array.from(glyphScratchAfter.slice(GLYPH_SCRATCH_TILE_BYTES))
+            console.info('[PokéRun interaction] NATIVE DIRECT GLYPH RESULT', {
+              font: hex(fieldFont),
+              character: STRBUF_PROBE_CHAR,
+              completed: glyphError === null,
+              failure: glyphError instanceof Error ? glyphError.message : (glyphError === null ? null : String(glyphError)),
+              instructions: glyphCallInstructions,
+              changedBytes: glyphChangedBytes,
+              changedDestBytes: glyphDestChangedBytes,
+              changedInfoBytes: glyphInfoChangedBytes,
+              glyphInfoBytes: glyphInfoAfter,
+              note: 'Temporary scratch difference recorded before mandatory restore. A failed native call does not prove no glyph data was written.',
+            })
+          } finally {
+            await runtimeBridge.writeBytes(pixelData, glyphScratchBefore)
+            console.info('[PokéRun interaction] NATIVE DIRECT GLYPH SCRATCH RESTORED', {
+              address: hex(pixelData),
+              bytes: GLYPH_SCRATCH_BYTES,
+              note: 'No bitmap/VRAM state from the direct glyph experiment is retained.',
+            })
+          }
+          if (glyphError !== null) throw glyphError
+          if (glyphChangedBytes === 0) {
+            throw new Error('GFL_FontGetGlyph returned but did not alter the expected glyph destination or GlyphInfo.')
+          }
+          console.info('[PokéRun interaction] NATIVE DIRECT GLYPH SUCCESS', {
+            font: hex(fieldFont),
+            character: STRBUF_PROBE_CHAR,
+            instructions: glyphCallInstructions,
+            glyphChangedBytes,
+            glyphInfoBytes: glyphInfoAfter,
+            note: 'Standalone streamed glyph retrieval returned and wrote scratch; full text rendering remains untested.',
+          })
         } finally {
           const freeCall = await atomicCall(GFL_STRBUF_FREE, probeStrBuf)
           strFreeInstructions = freeCall.instructions
@@ -691,12 +783,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           createInstructions: strCreateCall.instructions,
           appendInstructions: strAppendInstructions,
           freeInstructions: strFreeInstructions,
-          note: 'Native StrBuf allocate/append/free and read-only font-width query completed. No glyph rasterization or post-frame VRAM transfer occurred.',
+          note: 'Native StrBuf and font-width lookup completed; standalone glyph retrieval ran with restored scratch. No TextRenderer or VRAM upload occurred.',
         })
 
 
       } catch (reason) {
-        console.info('[PokéRun interaction] BMPWIN FONT WIDTH PROBE FAILED', {
+        console.info('[PokéRun interaction] BMPWIN DIRECT GLYPH PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
