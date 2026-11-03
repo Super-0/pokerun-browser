@@ -542,6 +542,16 @@ White 2 US frame routine `BmpWin_DrawFrame` is at **`0x02024EAC`**. Decomp sourc
 
 **Validated research pipeline:** exact allocator preflight -> geometry guard -> native BmpWin create -> bitmap fill -> native RAM map flush -> 60 CPU-sized character uploads -> 5 CPU-sized interior map uploads -> native RAM frame draw (transfer NONE) -> 12 CPU-sized border uploads. The one-shot diagnostic intentionally leaves its native window allocated until a fresh emulator session. It is not a production ownership/cleanup pattern.
 
+### Native text staging and streamed glyph I/O (PRK25–27)
+
+**PRK25 succeeded:** the live `FieldMsgBG.font` pointer at `+0x08` was `0x02271E58`; its `loadType=0` and `getGlyph=0x02023191` indicate **streamed** glyph access (`GFL_FontGetGlyphStreamed` at `0x02023190`, Thumb). Native `GFL_StrBufCreate(8,21)` -> `GFL_StrBufAppend(U+0041)` -> `GFL_StrBufFree` succeeded with correct magic `0xB6F8D2EC`, length 1, terminator `0xffff`, and instruction counts `320/15/172`. No text drawing occurred.
+
+**PRK26 failed at the next stage:** `GFL_TextRendererDrawToBitmap(bitmap,8,8,strbuf,font)` (`0x02021D28`, five ARM9 arguments) did **not** return: `status=3`, `PC=0xFFFF0104`, `LR=0x0207A9E2`, `CPSR=0x00000097`, 1,000,000 instructions. The CPSR mode bits indicate ARM9 **abort mode**; this is not the previously observed DMA busy-wait. The log never reached the after-render bitmap comparison, so it does not establish whether any pixels changed. P2 remained healthy afterward. The experimental StrBuf cleanup was inside `finally`; a separate free success line was not logged because the preceding native glyph call raised.
+
+**Source-grounded explanation, not yet conclusively proven:** `GFL_FontGetGlyphStreamed` seeks the font's NARC and calls `GFL_ArcToolReadRaw -> FS_ReadFile`, potentially involving CARD tasks and thread scheduling. The failure's LR points inside `OS_SetThreadPriority` (White 2 US `0x0207A9C4`, LR + `0x1e`), which is used by Nitro CARD async tasks. This strongly suggests that the injected atomic call context is unsafe for the streamed glyph I/O / scheduler path, not necessarily for glyph rasterization itself. Do not generalize this to native gameplay's normally scheduled filesystem operations.
+
+**PRK27 queued:** test only `GFL_FontGetCharWidth(font,'A')` at `0x02023208`; this uses the same font map/width data already resident in RAM without retrieving streamed glyph bytes. Keep existing geometry guard and frame pipeline. If it succeeds, distinguish cached font lookups from streamed I/O before trying any further text-rendering injection.
+
 ### Next isolated research topics
 
 1. Investigate native font/glyph/StrBuf to render a *single fixed string* in an existing bitmap, with **no native scheduled PrintStream** and no immediate DMA. Inspect changes to bitmap RAM before uploading anything, then test the smallest CPU-sized character refresh. Fonts should use the live `FieldMsgBG.font` pointer at `+0x08` (do not overwrite).
