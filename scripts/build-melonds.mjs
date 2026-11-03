@@ -26,6 +26,59 @@ const requiredRuntimeSymbols = [
 function run(command, args, cwd = root) { execFileSync(command, args, { cwd, stdio: 'inherit' }) }
 function containsAscii(buffer, text) { return buffer.indexOf(Buffer.from(text, 'utf8')) !== -1 }
 
+// The historical 0006/0007 unified diffs were written with inaccurate hunk
+// headers; git apply rejects them even after --recount. Apply ONLY these known
+// C++ hunks by exact, unique old-context matches instead. Never do a fuzzy
+// replacement: changing source upstream must stop the build.
+function applyExactWasmCppPatch(patchPath) {
+  const cppPath = resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.cpp')
+  const targetHeader = 'diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp'
+  const lines = readFileSync(patchPath, 'utf8').split(/\r?\n/)
+  const hunks = []
+  let target = false
+  let current = null
+
+  for (const line of lines) {
+    if (line.startsWith('diff --git ')) {
+      if (line !== targetHeader) throw new Error(`Unexpected file in \${patchPath}: \${line}`)
+      target = true
+      current = null
+    } else if (target && line.startsWith('@@ ')) {
+      current = { header: line, operations: [] }
+      hunks.push(current)
+    } else if (target && current && /^[ +\-]/.test(line)) {
+      current.operations.push(line)
+    } else if (target && current && line.startsWith('\\ No newline')) {
+      throw new Error(`Unsupported non-terminated patch hunk in \${patchPath}`)
+    }
+  }
+
+  const expectedHunks = patchPath.includes('0006-') ? 6 : 3
+  if (hunks.length !== expectedHunks) {
+    throw new Error(`Expected \${expectedHunks} validated C++ hunks in \${patchPath}, got \${hunks.length}`)
+  }
+
+  const sourceLines = readFileSync(cppPath, 'utf8').split('\n')
+  for (const hunk of hunks) {
+    const before = hunk.operations.filter(op => op[0] !== '+').map(op => op.slice(1))
+    const after = hunk.operations.filter(op => op[0] !== '-').map(op => op.slice(1))
+    if (!before.length) throw new Error(`Refusing insertion-only hunk in \${patchPath}: \${hunk.header}`)
+    const hits = []
+    for (let offset = 0; offset <= sourceLines.length - before.length; offset += 1) {
+      if (sourceLines[offset] === before[0] && before.every((line, idx) => sourceLines[offset + idx] === line)) {
+        hits.push(offset)
+      }
+    }
+    if (hits.length !== 1) {
+      throw new Error(`Patch \${patchPath} \${hunk.header} matched \${hits.length} locations (expected exactly one)`)
+    }
+    sourceLines.splice(hits[0], before.length, ...after)
+  }
+
+  writeFileSync(cppPath, sourceLines.join('\n'))
+  console.log(`[PokéRun] Strictly applied \${hunks.length} C++ hunks from \${patchPath}`)
+}
+
 function restorePinnedSource() {
   try {
     execFileSync('git', ['reset', '--hard', expectedRevision], { cwd: source, stdio: 'inherit' })
@@ -44,12 +97,13 @@ try {
   // PokéRun-owned patches can change while the pinned upstream revision stays fixed.
   // Always restore tracked upstream files first so an older applied patch cannot block a newer one.
   run('git', ['reset', '--hard', expectedRevision], source)
-  // --recount makes the build resilient to stale unified-diff hunk counts when a
-  // PokéRun-owned patch is edited by hand; git still validates the actual context.
-  for (const patch of patches) {
+  // Git applies 0001-0005 as usual. Historical 0006/0007 headers are rejected
+  // by git apply even with --recount; match their C++ contents exactly instead.
+  for (const patch of patches.slice(0, 5)) {
     run('git', ['apply', '--recount', '--check', patch], source)
     run('git', ['apply', '--recount', patch], source)
   }
+  for (const patch of patches.slice(5)) applyExactWasmCppPatch(patch)
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')
