@@ -1,0 +1,44 @@
+diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
+--- a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
++++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
+@@ -407,13 +407,15 @@ namespace wasmelon {
+     const bool returnThumb = (savedCPSR & 0x20) != 0;
+     const u32 returnAddress = (savedR[15] - (returnThumb ? 2u : 4u)) & (returnThumb ? ~1u : ~3u);
+ 
+-    // Stack arguments are at SP+0, +4, +8, +12 on function entry. Backing up
+-    // those 16 bytes above the interrupted SP lets us restore the game exactly.
+-    nds->ARM9Write32(originalSp + 0, r4stack);
+-    nds->ARM9Write32(originalSp + 4, r5stack);
+-    nds->ARM9Write32(originalSp + 8, r6stack);
+-    nds->ARM9Write32(originalSp + 12, r7stack);
++    // PRK32: isolate stack ABI arguments from the interrupted game's live SP.
++    // RunFrame can schedule threads that reuse memory around originalSp.
++    // Leave 3/4 of the backed-up reserve below the injected SP for nested calls.
++    const u32 injectedSp = originalSp - (stackReserve >> 2);
++    nds->ARM9Write32(injectedSp + 0, r4stack);
++    nds->ARM9Write32(injectedSp + 4, r5stack);
++    nds->ARM9Write32(injectedSp + 8, r6stack);
++    nds->ARM9Write32(injectedSp + 12, r7stack);
+ 
+     nds->CurCPU = 0;
+     arm.StopExecution = 0;
+@@ -425,9 +427,9 @@ namespace wasmelon {
+     arm.R[0] = r0;
+     arm.R[1] = r1;
+     arm.R[2] = r2;
+     arm.R[3] = r3;
+-    arm.R[13] = originalSp;
++    arm.R[13] = injectedSp;
+     arm.R[14] = returnAddress | (returnThumb ? 1u : 0u);
+     arm.JumpTo(functionBase | 1u, false);
+ 
+     bool returned = false;
+@@ -482,7 +484,7 @@ namespace wasmelon {
+   }
+ 
+   u32 WasmEmulator::pokerunRuntimeVersion() {
+-    return 0x50524B3B;
++    return 0x50524B3C;
+   }
+ 
+   void WasmEmulator::touchScreen(int x, int y) {
