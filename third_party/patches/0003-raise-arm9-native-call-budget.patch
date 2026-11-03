@@ -1,0 +1,21 @@
+diff --git a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
+--- a/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
++++ b/wasmelonDS/src/frontend/wasm/WasmEmulator.cpp
+@@ -250,7 +250,7 @@ namespace wasmelon {
+ 
+     bool returned = false;
+     u32 executedInstructions = 0;
+-    constexpr u32 maxInstructions = 200000;
++    constexpr u32 maxInstructions = 1000000;
+     for (u32 instruction = 0; instruction < maxInstructions; instruction++) {
+       const bool thumb = (arm.CPSR & 0x20) != 0;
+       const u32 currentAddress = (arm.R[15] - (thumb ? 2u : 4u)) & (thumb ? ~1u : ~3u);
+@@ -299,7 +299,7 @@ namespace wasmelon {
+   }
+ 
+   u32 WasmEmulator::pokerunRuntimeVersion() {
+-    return 0x50524B34;
++    return 0x50524B35;
+   }
+ 
+   void WasmEmulator::touchScreen(int x, int y) {
