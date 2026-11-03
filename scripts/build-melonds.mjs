@@ -7,6 +7,7 @@ const source = resolve(root, 'third_party/ds-anywhere')
 const patches = [
   resolve(root, 'third_party/patches/0001-expose-arm9-bus-reads.patch'),
   resolve(root, 'third_party/patches/0002-real-hidden-fast-forward-frames.patch'),
+  resolve(root, 'third_party/patches/0003-raise-arm9-native-call-budget.patch'),
 ]
 const build = resolve(source, 'build-pokerun-wasm')
 const output = resolve(root, 'public/emulators/melonds')
