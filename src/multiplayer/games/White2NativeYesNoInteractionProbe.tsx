@@ -20,10 +20,14 @@ const GFL_BGSYS_GET_BG_BYTES_PER_TILE = 0x020458a4
 const GFL_BITMAP_FILL = 0x02047168
 const BMP_WIN_CREATE_DYNAMIC = 0x020480ec
 const BMP_WIN_FLUSH_MAP = 0x02048298
+const BMP_WIN_DRAW_FRAME = 0x02024eac
 
 const FIELDMAP_CTRL_GRID = 0
 const MSGBG_BG2 = 2
 const MSGBG_PLTT_BG2 = 14
+const MSGBG_PLTT_BG2_FRAME = 13
+const MSGBG_CHAR_FRAME = 1
+const WINFRAME_TRANSFER_NONE = 2
 const MSGBG_COLOR_BG_FILL = 0xff
 const WINDOW_WIDTH = 12
 const WINDOW_HEIGHT = 5
@@ -73,7 +77,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN FRAME RAM PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -87,7 +91,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN FRAME RAM PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -97,18 +101,22 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN FRAME RAM PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
       fillAddress: hex(GFL_BITMAP_FILL),
       flushMapAddress: hex(BMP_WIN_FLUSH_MAP),
+      drawFrameAddress: hex(BMP_WIN_DRAW_FRAME),
+      frameTransfer: WINFRAME_TRANSFER_NONE,
+      frameChar: MSGBG_CHAR_FRAME,
+      framePalette: MSGBG_PLTT_BG2_FRAME,
       loadCharAddress: hex(GFL_BGSYS_LOAD_CHAR),
       loadScrCoreAddress: hex(GFL_BGSYS_LOAD_SCR_CORE),
       charDmaThreshold: CHAR_DMA_THRESHOLD,
       screenDmaThreshold: SCREEN_DMA_THRESHOLD,
       screenBytesPerCall: SCREEN_ROW_BYTES,
-      note: 'PRK22 reads BmpWin width/height/bitmap dimensions immediately after CreateDynamic and aborts before writes if geometry or charPos differs from preflight. Only clean geometry proceeds through the previously validated PRK21 uploads. No frame draw follows.',
+      note: 'PRK23 retains PRK22 window geometry guard and validated CPU character/screen uploads, then calls only BmpWin_DrawFrame with WINFRAME_TRANSFER_NONE. Frame segments change BG2 RAM tilemap, but no frame screen-VRAM upload follows.',
     })
 
     async function atomicCall(
@@ -152,7 +160,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD PROBE HOLD', { window: hex(stateRef.current.window) })
+          console.info('[PokéRun interaction] BMPWIN FRAME RAM PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -452,8 +460,42 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           totalCharUploadInstructions,
           note: 'Complete BG2 character bitmap and the 12x5 window tilemap region are now in VRAM without invoking either DMA threshold. BmpWin_DrawFrame has not run.',
         })
+
+        console.info('[PokéRun interaction] BMPWIN FRAME RAM CALL', {
+          address: hex(BMP_WIN_DRAW_FRAME),
+          window: hex(nativeWindow),
+          transfer: WINFRAME_TRANSFER_NONE,
+          frameChar: MSGBG_CHAR_FRAME,
+          framePalette: MSGBG_PLTT_BG2_FRAME,
+          windowX: WINDOW_X,
+          windowY: WINDOW_Y,
+          windowWidth: WINDOW_WIDTH,
+          windowHeight: WINDOW_HEIGHT,
+          frameRectX: WINDOW_X - 1,
+          frameRectY: WINDOW_Y - 1,
+          frameRectWidth: WINDOW_WIDTH + 2,
+          frameRectHeight: WINDOW_HEIGHT + 2,
+          expectedFrameEntries: 2 * (WINDOW_WIDTH + 2) + 2 * WINDOW_HEIGHT,
+          note: 'Tests only RAM-side frame drawing with transfer NONE (2); no GFL_BGSysLoadScr or queued screen transfer follows.',
+        })
+        const frameCall = await atomicCall(
+          BMP_WIN_DRAW_FRAME,
+          nativeWindow,
+          WINFRAME_TRANSFER_NONE,
+          MSGBG_CHAR_FRAME,
+          MSGBG_PLTT_BG2_FRAME,
+        )
+        console.info('[PokéRun interaction] BMPWIN FRAME RAM SUCCESS', {
+          window: hex(nativeWindow),
+          charPos,
+          frameChar: MSGBG_CHAR_FRAME,
+          framePalette: MSGBG_PLTT_BG2_FRAME,
+          transfer: WINFRAME_TRANSFER_NONE,
+          instructions: frameCall.instructions,
+          note: 'BmpWin_DrawFrame returned after writing only BG2 RAM frame entries. No frame VRAM transfer has been requested; the border may not yet be visible.',
+        })
       } catch (reason) {
-        console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD PROBE FAILED', {
+        console.info('[PokéRun interaction] BMPWIN FRAME RAM PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
