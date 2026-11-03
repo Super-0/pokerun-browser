@@ -12,10 +12,12 @@ const FIELD_GET_CONTROLLER_TYPE_ID = 0x0218056c
 
 const GFL_BGSYS_ALLOC_CHAR = 0x02044590
 const GFL_BGSYS_FREE_CHAR_MEMORY = 0x02044694
+const GFL_BGSYS_GET_BG_MODE = 0x0204587c
 const GFL_BGSYS_GET_BG_COLOR_PALETTE_MODE = 0x02045890
 const GFL_BGSYS_GET_BG_BYTES_PER_TILE = 0x020458a4
 const GFL_BITMAP_FILL = 0x02047168
 const BMP_WIN_CREATE_DYNAMIC = 0x020480ec
+const BMP_WIN_FLUSH_MAP = 0x02048298
 
 const FIELDMAP_CTRL_GRID = 0
 const MSGBG_BG2 = 2
@@ -49,9 +51,7 @@ type AtomicRuntime = {
   arm9CallInstructions(): number
 }
 
-type NativeWindowState = {
-  window: number
-}
+type ProbeState = { window: number }
 
 function isMainRamPointer(value: number) {
   return Number.isInteger(value) && value >= 0x02000000 && value < 0x02400000 && (value & 3) === 0
@@ -62,12 +62,12 @@ function hex(value: number) {
 }
 
 export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: MelonDsBridge | null; rom: MultiplayerRomIdentity }) {
-  const stateRef = useRef<NativeWindowState | null>(null)
+  const stateRef = useRef<ProbeState | null>(null)
   const openingRef = useRef(false)
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BG CHAR PREFLIGHT PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN FLUSH MAP PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -81,7 +81,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BG CHAR PREFLIGHT PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN FLUSH MAP PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -91,14 +91,13 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BG CHAR PREFLIGHT PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN FLUSH MAP PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
-      allocAddress: hex(GFL_BGSYS_ALLOC_CHAR),
-      freeAddress: hex(GFL_BGSYS_FREE_CHAR_MEMORY),
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
       fillAddress: hex(GFL_BITMAP_FILL),
-      note: 'PRK14 preflights the exact BG2 character allocation, frees it immediately, then retries BmpWin_CreateDynamic and GFL_BitmapFill.',
+      flushMapAddress: hex(BMP_WIN_FLUSH_MAP),
+      note: 'PRK15 validates allocation + bitmap fill, then isolates BmpWin_FlushMap. No FlushChar, GFL_BGSysLoadScr, or frame draw is invoked.',
     })
 
     async function atomicCall(
@@ -142,9 +141,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BG CHAR PREFLIGHT PROBE HOLD', {
-            window: hex(stateRef.current.window),
-          })
+          console.info('[PokéRun interaction] BMPWIN FLUSH MAP PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -175,17 +172,14 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         const bg = await runtimeBridge.read16(msgBg + 0x02)
         const bg2 = await runtimeBridge.read16(msgBg + 0x04)
         const paletteBefore = await runtimeBridge.read16(msgBg + 0x06)
-        if (bg2 !== MSGBG_BG2) {
-          throw new Error(`FieldMsgBG bg2 is ${bg2}; expected ${MSGBG_BG2}.`)
-        }
+        if (bg2 !== MSGBG_BG2) throw new Error(`FieldMsgBG bg2 is ${bg2}; expected ${MSGBG_BG2}.`)
 
-        const colorModeCall = await atomicCall(GFL_BGSYS_GET_BG_COLOR_PALETTE_MODE, bg2)
-        const bytesPerTileCall = await atomicCall(GFL_BGSYS_GET_BG_BYTES_PER_TILE, bg2)
-        const colorMode = colorModeCall.result
-        const bytesPerTile = bytesPerTileCall.result
+        const colorMode = (await atomicCall(GFL_BGSYS_GET_BG_COLOR_PALETTE_MODE, bg2)).result
+        const bytesPerTile = (await atomicCall(GFL_BGSYS_GET_BG_BYTES_PER_TILE, bg2)).result
+        const bgMode = (await atomicCall(GFL_BGSYS_GET_BG_MODE, bg2)).result
         const requestedBytes = WINDOW_WIDTH * WINDOW_HEIGHT * bytesPerTile
 
-        console.info('[PokéRun interaction] BG CHAR PREFLIGHT FIELD PATH READY', {
+        console.info('[PokéRun interaction] BMPWIN FLUSH MAP FIELD PATH READY', {
           actor: hex(playerActor),
           effects: hex(effects),
           field: hex(field),
@@ -194,18 +188,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           bg,
           bg2,
           paletteBefore,
+          bgMode,
           colorMode,
           bytesPerTile,
-          requestedTiles: WINDOW_WIDTH * WINDOW_HEIGHT,
           requestedBytes,
-        })
-
-        console.info('[PokéRun interaction] BG CHAR ALLOC PREFLIGHT CALL', {
-          address: hex(GFL_BGSYS_ALLOC_CHAR),
-          bg: bg2,
-          size: requestedBytes,
-          fromEnd: 1,
-          note: 'This is the exact character-memory request BmpWin_CreateDynamic should make for this 12x5 BG2 window.',
         })
 
         const allocCall = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg2, requestedBytes, 1)
@@ -214,44 +200,18 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           console.info('[PokéRun interaction] BG CHAR ALLOC PREFLIGHT FAILED', {
             bg: bg2,
             requestedBytes,
-            bytesPerTile,
             result: hex(preflightPos),
             instructions: allocCall.instructions,
-            conclusion: 'BG2 character AreaMan could not find a contiguous run for the native 12x5 window request at this moment.',
           })
           emitMenuState(false)
           return
         }
-
-        console.info('[PokéRun interaction] BG CHAR ALLOC PREFLIGHT SUCCESS', {
-          bg: bg2,
-          requestedBytes,
-          bytesPerTile,
-          charPos: preflightPos,
-          instructions: allocCall.instructions,
-        })
-
-        const freeCall = await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg2, preflightPos, requestedBytes)
-        console.info('[PokéRun interaction] BG CHAR ALLOC PREFLIGHT FREED', {
-          bg: bg2,
-          charPos: preflightPos,
-          requestedBytes,
-          instructions: freeCall.instructions,
-        })
+        await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg2, preflightPos, requestedBytes)
 
         console.info('[PokéRun interaction] BMPWIN CREATE DYNAMIC CALL', {
           address: hex(BMP_WIN_CREATE_DYNAMIC),
-          args: {
-            bg: bg2,
-            x: WINDOW_X,
-            y: WINDOW_Y,
-            width: WINDOW_WIDTH,
-            height: WINDOW_HEIGHT,
-            palette: MSGBG_PLTT_BG2,
-            fromEnd: 1,
-          },
+          preflightCharPos: preflightPos,
         })
-
         const createCall = await atomicCall(
           BMP_WIN_CREATE_DYNAMIC,
           bg2,
@@ -265,90 +225,67 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         )
         const nativeWindow = createCall.result
         if (!isMainRamPointer(nativeWindow)) {
-          throw new Error(
-            `BmpWin_CreateDynamic returned ${hex(nativeWindow)} after allocator preflight `
-            + `successfully reserved and freed charPos ${preflightPos}.`,
-          )
+          throw new Error(`BmpWin_CreateDynamic returned ${hex(nativeWindow)} after successful allocator preflight.`)
         }
 
         const magicAndMode = await runtimeBridge.read16(nativeWindow + 0x00)
         const nativeBg = await runtimeBridge.read8(nativeWindow + 0x02)
-        const x = await runtimeBridge.read8(nativeWindow + 0x03)
-        const y = await runtimeBridge.read8(nativeWindow + 0x04)
-        const sizeX = await runtimeBridge.read8(nativeWindow + 0x05)
-        const sizeY = await runtimeBridge.read8(nativeWindow + 0x06)
-        const width = await runtimeBridge.read8(nativeWindow + 0x07)
-        const height = await runtimeBridge.read8(nativeWindow + 0x08)
-        const palette = await runtimeBridge.read8(nativeWindow + 0x09)
         const charPos = await runtimeBridge.read16(nativeWindow + 0x0a)
         const bitmap = await runtimeBridge.read32(nativeWindow + 0x0c)
         const magic = magicAndMode & 0x7fff
-        const windowColorMode = magicAndMode >>> 15
-
         if (magic !== 0x7fb2 || !isMainRamPointer(bitmap)) {
-          throw new Error(
-            `BmpWin_CreateDynamic returned invalid BmpWin ${hex(nativeWindow)} `
-            + `(magic=${hex(magic)} bitmap=${hex(bitmap)}).`,
-          )
+          throw new Error(`Invalid BmpWin ${hex(nativeWindow)} (magic=${hex(magic)} bitmap=${hex(bitmap)}).`)
         }
 
         const pixelData = await runtimeBridge.read32(bitmap + 0x00)
-        const bitmapWidth = await runtimeBridge.read16(bitmap + 0x04)
-        const bitmapHeight = await runtimeBridge.read16(bitmap + 0x06)
-        const tileSize = await runtimeBridge.read16(bitmap + 0x08)
-        const storage = await runtimeBridge.read16(bitmap + 0x0a)
-        if (!isMainRamPointer(pixelData)) {
-          throw new Error(`GFLBitmap pixel data is invalid (${hex(pixelData)}).`)
-        }
+        if (!isMainRamPointer(pixelData)) throw new Error(`GFLBitmap pixel data is invalid (${hex(pixelData)}).`)
         const firstWordBefore = await runtimeBridge.read32(pixelData)
-
-        console.info('[PokéRun interaction] BITMAP FILL CALL', {
-          address: hex(GFL_BITMAP_FILL),
-          bitmap: hex(bitmap),
-          pixelData: hex(pixelData),
-          color: MSGBG_COLOR_BG_FILL,
-          bitmapWidth,
-          bitmapHeight,
-          tileSize,
-          storage,
-          firstWordBefore: hex(firstWordBefore),
-          note: 'No map flush, char flush, BG load, or frame draw is invoked.',
-        })
 
         const fillCall = await atomicCall(GFL_BITMAP_FILL, bitmap, MSGBG_COLOR_BG_FILL)
         const firstWordAfter = await runtimeBridge.read32(pixelData)
         if (firstWordAfter !== 0xffffffff) {
-          throw new Error(
-            `GFL_BitmapFill returned but the first pixel word is ${hex(firstWordAfter)}; expected 0xFFFFFFFF.`,
-          )
+          throw new Error(`GFL_BitmapFill left first pixel word ${hex(firstWordAfter)}; expected 0xFFFFFFFF.`)
         }
 
-        stateRef.current = { window: nativeWindow }
-        emitMenuState(false)
-        console.info('[PokéRun interaction] BG CHAR PREFLIGHT + BITMAP FILL SUCCESS', {
+        console.info('[PokéRun interaction] BITMAP FILL SUCCESS', {
           window: hex(nativeWindow),
           bitmap: hex(bitmap),
           pixelData: hex(pixelData),
-          bg: nativeBg,
-          x,
-          y,
-          sizeX,
-          sizeY,
-          width,
-          height,
-          palette,
-          charPos,
-          preflightCharPos: preflightPos,
-          colorMode: windowColorMode,
-          bytesPerTile,
-          createInstructions: createCall.instructions,
-          fillInstructions: fillCall.instructions,
           firstWordBefore: hex(firstWordBefore),
           firstWordAfter: hex(firstWordAfter),
-          note: 'Allocator preflight, native BmpWin allocation, and CPU-side bitmap fill all passed. Nothing is expected to be visible yet.',
+          instructions: fillCall.instructions,
+        })
+
+        console.info('[PokéRun interaction] BMPWIN FLUSH MAP CALL', {
+          address: hex(BMP_WIN_FLUSH_MAP),
+          window: hex(nativeWindow),
+          bg: nativeBg,
+          x: WINDOW_X,
+          y: WINDOW_Y,
+          width: WINDOW_WIDTH,
+          height: WINDOW_HEIGHT,
+          palette: MSGBG_PLTT_BG2,
+          charPos,
+          bgMode,
+          note: 'This writes tile indices into the BG2 RAM screen buffer only. No FlushChar, GFL_BGSysLoadScr, or frame draw follows.',
+        })
+
+        const flushMapCall = await atomicCall(BMP_WIN_FLUSH_MAP, nativeWindow)
+
+        stateRef.current = { window: nativeWindow }
+        emitMenuState(false)
+        console.info('[PokéRun interaction] BMPWIN FLUSH MAP SUCCESS', {
+          window: hex(nativeWindow),
+          bitmap: hex(bitmap),
+          charPos,
+          preflightCharPos: preflightPos,
+          createInstructions: createCall.instructions,
+          fillInstructions: fillCall.instructions,
+          flushMapInstructions: flushMapCall.instructions,
+          note: 'Allocation, bitmap fill, and RAM tilemap flush all passed. No character upload or BG screen upload has been requested yet.',
         })
       } catch (reason) {
-        console.info('[PokéRun interaction] BG CHAR PREFLIGHT PROBE FAILED', {
+        console.info('[PokéRun interaction] BMPWIN FLUSH MAP FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
@@ -369,12 +306,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     }
 
     window.addEventListener(WHITE2_INTERACT_EVENT, onInteract)
-
     return () => {
       window.removeEventListener(WHITE2_INTERACT_EVENT, onInteract)
       emitMenuState(false)
-      // Deliberately do not free a successful BmpWin in this one-shot diagnostic.
-      // A fresh emulator session owns its lifetime.
+      // Deliberately leave the one-shot diagnostic BmpWin allocated; a fresh emulator session owns it.
       stateRef.current = null
     }
   }, [bridge, rom.gameId, rom.sha256])
