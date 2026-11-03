@@ -37,6 +37,7 @@ const TEXT_BG_WIDTH_TILES = 32
 const CHAR_DMA_THRESHOLD = 48
 const SCREEN_DMA_THRESHOLD = 28
 const SCREEN_ROW_BYTES = WINDOW_WIDTH * 2
+const FRAME_FULL_ROW_BYTES = (WINDOW_WIDTH + 2) * 2
 const AREAMAN_FAIL = 0xffffffff
 const NATIVE_STACK_RESERVE = 0x800
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
@@ -77,7 +78,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BMPWIN FRAME RAM PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN FRAME CPU VRAM PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -91,7 +92,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BMPWIN FRAME RAM PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN FRAME CPU VRAM PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -101,7 +102,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BMPWIN FRAME RAM PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN FRAME CPU VRAM PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -116,7 +117,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       charDmaThreshold: CHAR_DMA_THRESHOLD,
       screenDmaThreshold: SCREEN_DMA_THRESHOLD,
       screenBytesPerCall: SCREEN_ROW_BYTES,
-      note: 'PRK23 retains PRK22 window geometry guard and validated CPU character/screen uploads, then calls only BmpWin_DrawFrame with WINFRAME_TRANSFER_NONE. Frame segments change BG2 RAM tilemap, but no frame screen-VRAM upload follows.',
+      frameMaxBytesPerCall: FRAME_FULL_ROW_BYTES,
+      expectedFrameUploadCalls: 2 + WINDOW_HEIGHT * 2,
+      note: 'PRK24 tests the exact native window border in BG2 VRAM via two 28-byte CPU top/bottom rows and ten 2-byte CPU side transfers, after proven geometry, fill, map and frame-RAM calls. No text or full-screen DMA.',
     })
 
     async function atomicCall(
@@ -160,7 +163,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BMPWIN FRAME RAM PROBE HOLD', { window: hex(stateRef.current.window) })
+          console.info('[PokéRun interaction] BMPWIN FRAME CPU VRAM PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -494,8 +497,88 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           instructions: frameCall.instructions,
           note: 'BmpWin_DrawFrame returned after writing only BG2 RAM frame entries. No frame VRAM transfer has been requested; the border may not yet be visible.',
         })
+
+        // Upload only the border: 2 horizontal 14-tile rows and 10 single-tile side entries.
+        // GXi_DmaCopy16 remains on its CPU path for all 28-byte and 2-byte calls.
+        const borderSegments: Array<{ name: string; x: number; y: number; tiles: number[] }> = [
+          {
+            name: 'top',
+            x: WINDOW_X - 1,
+            y: WINDOW_Y - 1,
+            tiles: [MSGBG_CHAR_FRAME, ...Array<number>(WINDOW_WIDTH).fill(MSGBG_CHAR_FRAME + 1), MSGBG_CHAR_FRAME + 2],
+          },
+          ...Array.from({ length: WINDOW_HEIGHT }, (_, row) => ([
+            { name: `left-${row}`, x: WINDOW_X - 1, y: WINDOW_Y + row, tiles: [MSGBG_CHAR_FRAME + 3] },
+            { name: `right-${row}`, x: WINDOW_X + WINDOW_WIDTH, y: WINDOW_Y + row, tiles: [MSGBG_CHAR_FRAME + 5] },
+          ])).flat(),
+          {
+            name: 'bottom',
+            x: WINDOW_X - 1,
+            y: WINDOW_Y + WINDOW_HEIGHT,
+            tiles: [MSGBG_CHAR_FRAME + 6, ...Array<number>(WINDOW_WIDTH).fill(MSGBG_CHAR_FRAME + 7), MSGBG_CHAR_FRAME + 8],
+          },
+        ]
+        const frameEntryCount = borderSegments.reduce((sum, segment) => sum + segment.tiles.length, 0)
+        const maxFrameBytesPerCall = Math.max(...borderSegments.map(segment => segment.tiles.length * 2))
+        if (
+          borderSegments.length !== 2 + WINDOW_HEIGHT * 2 ||
+          frameEntryCount !== 2 * (WINDOW_WIDTH + 2) + 2 * WINDOW_HEIGHT ||
+          maxFrameBytesPerCall !== FRAME_FULL_ROW_BYTES ||
+          maxFrameBytesPerCall > SCREEN_DMA_THRESHOLD ||
+          borderSegments.some(segment => segment.x < 0 || segment.y < 0 ||
+            segment.x + segment.tiles.length > TEXT_BG_WIDTH_TILES || segment.y >= TEXT_BG_WIDTH_TILES)
+        ) throw new Error('Frame segment geometry or screen CPU threshold is invalid.')
+
+        console.info('[PokéRun interaction] BMPWIN FRAME CHUNKED CPU CALL', {
+          address: hex(GFL_BGSYS_LOAD_SCR_CORE),
+          bg: nativeBg,
+          calls: borderSegments.length,
+          entries: frameEntryCount,
+          totalBytes: frameEntryCount * 2,
+          maxBytesPerCall: maxFrameBytesPerCall,
+          frameChar: MSGBG_CHAR_FRAME,
+          framePalette: MSGBG_PLTT_BG2_FRAME,
+          dmaThreshold: SCREEN_DMA_THRESHOLD,
+          note: 'CPU-only upload of exact native frame entries: two 28-byte top/bottom rows and ten 2-byte side tiles, with no full-screen transfer.',
+        })
+        const frameScratchBefore = await runtimeBridge.readBytes(pixelData, FRAME_FULL_ROW_BYTES)
+        let totalFrameUploadInstructions = 0
+        let firstFrameUploadInstructions = 0
+        let lastFrameUploadInstructions = 0
+        try {
+          for (let i = 0; i < borderSegments.length; i += 1) {
+            const segment = borderSegments[i]
+            const bytes = new Uint8Array(segment.tiles.length * 2)
+            for (let j = 0; j < segment.tiles.length; j += 1) {
+              const entry = ((MSGBG_PLTT_BG2_FRAME << 12) | segment.tiles[j]) & 0xffff
+              bytes[j * 2] = entry & 0xff
+              bytes[j * 2 + 1] = entry >>> 8
+            }
+            await runtimeBridge.writeBytes(pixelData, bytes)
+            const offset = segment.y * TEXT_BG_WIDTH_TILES + segment.x
+            const call = await atomicCall(GFL_BGSYS_LOAD_SCR_CORE, nativeBg, pixelData, bytes.length, offset)
+            totalFrameUploadInstructions += call.instructions
+            if (i === 0) firstFrameUploadInstructions = call.instructions
+            if (i === borderSegments.length - 1) lastFrameUploadInstructions = call.instructions
+          }
+        } finally {
+          await runtimeBridge.writeBytes(pixelData, frameScratchBefore)
+        }
+        console.info('[PokéRun interaction] BMPWIN FRAME CHUNKED CPU SUCCESS', {
+          window: hex(nativeWindow),
+          charPos,
+          calls: borderSegments.length,
+          entries: frameEntryCount,
+          uploadedBytes: frameEntryCount * 2,
+          maxBytesPerCall: maxFrameBytesPerCall,
+          firstFrameUploadInstructions,
+          lastFrameUploadInstructions,
+          totalFrameUploadInstructions,
+          note: 'The 14x7 border region, including eight frame segment types, has been uploaded to BG2 VRAM without DMA. No text/menu functionality follows.',
+        })
+
       } catch (reason) {
-        console.info('[PokéRun interaction] BMPWIN FRAME RAM PROBE FAILED', {
+        console.info('[PokéRun interaction] BMPWIN FRAME CPU VRAM PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
