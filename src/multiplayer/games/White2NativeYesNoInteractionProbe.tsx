@@ -73,7 +73,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -87,7 +87,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -97,7 +97,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
@@ -108,7 +108,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       charDmaThreshold: CHAR_DMA_THRESHOLD,
       screenDmaThreshold: SCREEN_DMA_THRESHOLD,
       screenBytesPerCall: SCREEN_ROW_BYTES,
-      note: 'PRK21 repeats the proven 60x32-byte CPU character upload, then uploads the 12x5 BG2 tilemap as five 24-byte rows through GFL_BGSysLoadScrCore. Each row remains below the GXi_DmaCopy16 >28-byte DMA threshold. No frame draw follows.',
+      note: 'PRK22 reads BmpWin width/height/bitmap dimensions immediately after CreateDynamic and aborts before writes if geometry or charPos differs from preflight. Only clean geometry proceeds through the previously validated PRK21 uploads. No frame draw follows.',
     })
 
     async function atomicCall(
@@ -152,7 +152,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU PROBE HOLD', { window: hex(stateRef.current.window) })
+          console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -255,6 +255,68 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         const magic = magicAndMode & 0x7fff
         if (magic !== 0x7fb2 || !isMainRamPointer(bitmap)) {
           throw new Error(`Invalid BmpWin ${hex(nativeWindow)} (magic=${hex(magic)} bitmap=${hex(bitmap)}).`)
+        }
+
+        // PRK22: inspect the BmpWin geometry before allowing any bitmap or VRAM writes.
+        // CreateDynamic takes height, palette, and fromEnd on the injected ARM9 stack.
+        const actualX = await runtimeBridge.read8(nativeWindow + 0x03)
+        const actualY = await runtimeBridge.read8(nativeWindow + 0x04)
+        const actualSizeX = await runtimeBridge.read8(nativeWindow + 0x05)
+        const actualSizeY = await runtimeBridge.read8(nativeWindow + 0x06)
+        const actualWidth = await runtimeBridge.read8(nativeWindow + 0x07)
+        const actualHeight = await runtimeBridge.read8(nativeWindow + 0x08)
+        const actualPalette = await runtimeBridge.read8(nativeWindow + 0x09)
+        const bitmapWidthPx = await runtimeBridge.read16(bitmap + 0x04)
+        const bitmapHeightPx = await runtimeBridge.read16(bitmap + 0x06)
+        const bitmapTileSize = await runtimeBridge.read16(bitmap + 0x08)
+        const bitmapStorage = await runtimeBridge.read16(bitmap + 0x0a)
+        const actualTiles = actualSizeX * actualSizeY
+        const geometryMatches = (
+          nativeBg === bg2 &&
+          actualX === WINDOW_X && actualY === WINDOW_Y &&
+          actualSizeX === WINDOW_WIDTH && actualSizeY === WINDOW_HEIGHT &&
+          actualWidth === WINDOW_WIDTH && actualHeight === WINDOW_HEIGHT &&
+          actualPalette === MSGBG_PLTT_BG2 &&
+          bitmapWidthPx === WINDOW_WIDTH * 8 &&
+          bitmapHeightPx === WINDOW_HEIGHT * 8 &&
+          bitmapTileSize === bytesPerTile &&
+          bitmapStorage === 0
+        )
+        const charPosMatchesPreflight = charPos === preflightPos
+        console.info('[PokéRun interaction] BMPWIN GEOMETRY READOUT', {
+          expected: {
+            bg: bg2, x: WINDOW_X, y: WINDOW_Y,
+            sizeX: WINDOW_WIDTH, sizeY: WINDOW_HEIGHT,
+            width: WINDOW_WIDTH, height: WINDOW_HEIGHT,
+            palette: MSGBG_PLTT_BG2,
+            bitmapWidthPx: WINDOW_WIDTH * 8,
+            bitmapHeightPx: WINDOW_HEIGHT * 8,
+            bitmapTileSize: bytesPerTile,
+            charPos: preflightPos,
+            tiles: WINDOW_WIDTH * WINDOW_HEIGHT,
+          },
+          actual: {
+            bg: nativeBg, x: actualX, y: actualY,
+            sizeX: actualSizeX, sizeY: actualSizeY,
+            width: actualWidth, height: actualHeight,
+            palette: actualPalette,
+            bitmapWidthPx, bitmapHeightPx, bitmapTileSize, bitmapStorage,
+            charPos, tiles: actualTiles, allocatedBytesIf4bpp: actualTiles * 32,
+          },
+          geometryMatches,
+          charPosMatchesPreflight,
+          createInstructions: createCall.instructions,
+          note: 'If dimensions or allocation position are unexpected, this probe stops before fill/map/VRAM writes.',
+        })
+        if (!geometryMatches || !charPosMatchesPreflight) {
+          stateRef.current = { window: nativeWindow }
+          emitMenuState(false)
+          console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD ABORTED', {
+            geometryMatches, charPosMatchesPreflight,
+            window: hex(nativeWindow), charPos, preflightCharPos: preflightPos,
+            note: 'No bitmap fill, map flush, character upload, screen upload, or frame draw performed.',
+          })
+          return
         }
 
         const pixelData = await runtimeBridge.read32(bitmap + 0x00)
@@ -391,7 +453,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           note: 'Complete BG2 character bitmap and the 12x5 window tilemap region are now in VRAM without invoking either DMA threshold. BmpWin_DrawFrame has not run.',
         })
       } catch (reason) {
-        console.info('[PokéRun interaction] BG SCREEN CHUNKED CPU PROBE FAILED', {
+        console.info('[PokéRun interaction] BMPWIN GEOMETRY GUARD PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
