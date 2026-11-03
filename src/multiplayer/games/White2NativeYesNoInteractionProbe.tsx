@@ -17,6 +17,7 @@ const GFL_BGSYS_GET_BG_COLOR_PALETTE_MODE = 0x02045890
 const GFL_BGSYS_GET_BG_BYTES_PER_TILE = 0x020458a4
 const GFL_BITMAP_FILL = 0x02047168
 const BMP_WIN_CREATE_DYNAMIC = 0x020480ec
+const BMP_WIN_FLUSH_CHAR = 0x02048270
 const BMP_WIN_FLUSH_MAP = 0x02048298
 
 const FIELDMAP_CTRL_GRID = 0
@@ -67,7 +68,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BMPWIN FLUSH MAP PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN FLUSH CHAR PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -81,7 +82,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BMPWIN FLUSH MAP PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN FLUSH CHAR PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -91,13 +92,14 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BMPWIN FLUSH MAP PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN FLUSH CHAR PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
       createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
       fillAddress: hex(GFL_BITMAP_FILL),
       flushMapAddress: hex(BMP_WIN_FLUSH_MAP),
-      note: 'PRK15 validates allocation + bitmap fill, then isolates BmpWin_FlushMap. No FlushChar, GFL_BGSysLoadScr, or frame draw is invoked.',
+      flushCharAddress: hex(BMP_WIN_FLUSH_CHAR),
+      note: 'PRK16 validates allocation + bitmap fill + RAM map flush, then isolates BmpWin_FlushChar. No GFL_BGSysLoadScr or frame draw follows.',
     })
 
     async function atomicCall(
@@ -141,7 +143,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     async function runProbe() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BMPWIN FLUSH MAP PROBE HOLD', { window: hex(stateRef.current.window) })
+          console.info('[PokéRun interaction] BMPWIN FLUSH CHAR PROBE HOLD', { window: hex(stateRef.current.window) })
         }
         return
       }
@@ -179,7 +181,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         const bgMode = (await atomicCall(GFL_BGSYS_GET_BG_MODE, bg2)).result
         const requestedBytes = WINDOW_WIDTH * WINDOW_HEIGHT * bytesPerTile
 
-        console.info('[PokéRun interaction] BMPWIN FLUSH MAP FIELD PATH READY', {
+        console.info('[PokéRun interaction] BMPWIN FLUSH CHAR FIELD PATH READY', {
           actor: hex(playerActor),
           effects: hex(effects),
           field: hex(field),
@@ -260,32 +262,45 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           address: hex(BMP_WIN_FLUSH_MAP),
           window: hex(nativeWindow),
           bg: nativeBg,
-          x: WINDOW_X,
-          y: WINDOW_Y,
-          width: WINDOW_WIDTH,
-          height: WINDOW_HEIGHT,
-          palette: MSGBG_PLTT_BG2,
           charPos,
-          bgMode,
-          note: 'This writes tile indices into the BG2 RAM screen buffer only. No FlushChar, GFL_BGSysLoadScr, or frame draw follows.',
+          note: 'This writes tile indices into the BG2 RAM screen buffer only.',
+        })
+        const flushMapCall = await atomicCall(BMP_WIN_FLUSH_MAP, nativeWindow)
+        console.info('[PokéRun interaction] BMPWIN FLUSH MAP SUCCESS', {
+          window: hex(nativeWindow),
+          charPos,
+          instructions: flushMapCall.instructions,
         })
 
-        const flushMapCall = await atomicCall(BMP_WIN_FLUSH_MAP, nativeWindow)
+        console.info('[PokéRun interaction] BMPWIN FLUSH CHAR CALL', {
+          address: hex(BMP_WIN_FLUSH_CHAR),
+          window: hex(nativeWindow),
+          bg: nativeBg,
+          charPos,
+          bytes: requestedBytes,
+          pixelData: hex(pixelData),
+          note: 'First VRAM character upload. BG2 routes through GFL_BGSysLoadChar -> GX_LoadBG2Char -> GXi_DmaCopy32 for this 1920-byte payload. No BG screen upload or frame draw follows.',
+        })
+
+        const flushCharCall = await atomicCall(BMP_WIN_FLUSH_CHAR, nativeWindow)
 
         stateRef.current = { window: nativeWindow }
         emitMenuState(false)
-        console.info('[PokéRun interaction] BMPWIN FLUSH MAP SUCCESS', {
+        console.info('[PokéRun interaction] BMPWIN FLUSH CHAR SUCCESS', {
           window: hex(nativeWindow),
           bitmap: hex(bitmap),
+          pixelData: hex(pixelData),
           charPos,
           preflightCharPos: preflightPos,
+          requestedBytes,
           createInstructions: createCall.instructions,
           fillInstructions: fillCall.instructions,
           flushMapInstructions: flushMapCall.instructions,
-          note: 'Allocation, bitmap fill, and RAM tilemap flush all passed. No character upload or BG screen upload has been requested yet.',
+          flushCharInstructions: flushCharCall.instructions,
+          note: 'Allocation, bitmap fill, RAM tilemap flush, and BG2 character VRAM upload all passed. GFL_BGSysLoadScr and frame drawing have not run.',
         })
       } catch (reason) {
-        console.info('[PokéRun interaction] BMPWIN FLUSH MAP FAILED', {
+        console.info('[PokéRun interaction] BMPWIN FLUSH CHAR PROBE FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
