@@ -10,10 +10,12 @@ const FIELD_GET_MSGBG_SYS = 0x021804d0
 const FIELD_GET_HEAP_ID = 0x02180500
 const FIELD_GET_CONTROLLER_TYPE_ID = 0x0218056c
 const BMP_WIN_CREATE_DYNAMIC = 0x020480ec
+const GFL_BITMAP_FILL = 0x02047168
 
 const FIELDMAP_CTRL_GRID = 0
 const MSGBG_BG2 = 2
 const MSGBG_PLTT_BG2 = 14
+const MSGBG_COLOR_BG_FILL = 0xff
 const NATIVE_STACK_RESERVE = 0x800
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 
@@ -55,7 +57,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
-    console.info('[PokéRun interaction] BMPWIN ALLOC PROBE EFFECT', {
+    console.info('[PokéRun interaction] BMPWIN FILL PROBE EFFECT', {
       hasBridge: Boolean(bridge),
       supported,
       bridgeStatus: bridge?.status ?? null,
@@ -69,7 +71,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     const probe = new White2ActorSystemProbe(runtimeBridge)
     const atomicRuntime = (runtimeBridge as unknown as { emulator: AtomicRuntime | null }).emulator
     if (!atomicRuntime || typeof atomicRuntime.callArm9Thumb8Atomic !== 'function') {
-      console.info('[PokéRun interaction] BMPWIN ALLOC PROBE UNAVAILABLE', {
+      console.info('[PokéRun interaction] BMPWIN FILL PROBE UNAVAILABLE', {
         reason: 'Scheduler-aware stack-argument native-call export is unavailable.',
       })
       return
@@ -79,11 +81,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       window.dispatchEvent(new CustomEvent(WHITE2_NATIVE_MENU_STATE_EVENT, { detail: { open } }))
     }
 
-    console.info('[PokéRun interaction] BMPWIN ALLOC PROBE MOUNTED', {
+    console.info('[PokéRun interaction] BMPWIN FILL PROBE MOUNTED', {
       bridgeStatus: runtimeBridge.status,
       rom: rom.gameId,
-      address: hex(BMP_WIN_CREATE_DYNAMIC),
-      note: 'PRK12 isolates BmpWin_CreateDynamic before bitmap fill/map flush/char flush/BG load/frame draw.',
+      createAddress: hex(BMP_WIN_CREATE_DYNAMIC),
+      fillAddress: hex(GFL_BITMAP_FILL),
+      note: 'PRK13 isolates GFL_BitmapFill immediately after the already-validated BmpWin_CreateDynamic step. No map/char flush, BG load, or frame draw is performed.',
     })
 
     async function atomicCall(
@@ -124,10 +127,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       return { result, instructions }
     }
 
-    async function probeBmpWinAllocation() {
+    async function probeBmpWinFill() {
       if (openingRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current) {
-          console.info('[PokéRun interaction] BMPWIN ALLOC PROBE HOLD', {
+          console.info('[PokéRun interaction] BMPWIN FILL PROBE HOLD', {
             window: hex(stateRef.current.window),
           })
         }
@@ -165,7 +168,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
         const bg = await runtimeBridge.read16(msgBg + 0x02)
         const bg2 = await runtimeBridge.read16(msgBg + 0x04)
         const paletteBefore = await runtimeBridge.read16(msgBg + 0x06)
-        console.info('[PokéRun interaction] BMPWIN ALLOC FIELD PATH READY', {
+        console.info('[PokéRun interaction] BMPWIN FILL FIELD PATH READY', {
           actor: hex(playerActor),
           effects: hex(effects),
           field: hex(field),
@@ -191,7 +194,6 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
             palette: MSGBG_PLTT_BG2,
             fromEnd: 1,
           },
-          note: 'No frame setup, bitmap fill, map flush, char flush, BG load, or frame draw is performed in this probe.',
         })
 
         const createCall = await atomicCall(
@@ -231,11 +233,43 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           )
         }
 
+        const pixelData = await runtimeBridge.read32(bitmap + 0x00)
+        const bitmapWidth = await runtimeBridge.read16(bitmap + 0x04)
+        const bitmapHeight = await runtimeBridge.read16(bitmap + 0x06)
+        const tileSize = await runtimeBridge.read16(bitmap + 0x08)
+        const storage = await runtimeBridge.read16(bitmap + 0x0a)
+        if (!isMainRamPointer(pixelData)) {
+          throw new Error(`GFLBitmap pixel data is invalid (${hex(pixelData)}).`)
+        }
+        const firstWordBefore = await runtimeBridge.read32(pixelData)
+
+        console.info('[PokéRun interaction] BITMAP FILL CALL', {
+          address: hex(GFL_BITMAP_FILL),
+          bitmap: hex(bitmap),
+          pixelData: hex(pixelData),
+          color: MSGBG_COLOR_BG_FILL,
+          bitmapWidth,
+          bitmapHeight,
+          tileSize,
+          storage,
+          firstWordBefore: hex(firstWordBefore),
+          note: 'This is the second operation inside FieldMsgBG_CreateBmpWin. No BmpWin_FlushMap/FlushChar or BG transfer is invoked.',
+        })
+
+        const fillCall = await atomicCall(GFL_BITMAP_FILL, bitmap, MSGBG_COLOR_BG_FILL)
+        const firstWordAfter = await runtimeBridge.read32(pixelData)
+        if (firstWordAfter !== 0xffffffff) {
+          throw new Error(
+            `GFL_BitmapFill returned but the first pixel word is ${hex(firstWordAfter)}; expected 0xFFFFFFFF.`,
+          )
+        }
+
         stateRef.current = { window: nativeWindow }
         emitMenuState(false)
-        console.info('[PokéRun interaction] BMPWIN CREATE DYNAMIC SUCCESS', {
+        console.info('[PokéRun interaction] BITMAP FILL SUCCESS', {
           window: hex(nativeWindow),
           bitmap: hex(bitmap),
+          pixelData: hex(pixelData),
           bg: nativeBg,
           x,
           y,
@@ -246,11 +280,14 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
           palette,
           charPos,
           colorMode,
-          instructions: createCall.instructions,
-          note: 'Allocation-only breakpoint passed. Nothing is expected to be visible on-screen yet.',
+          createInstructions: createCall.instructions,
+          fillInstructions: fillCall.instructions,
+          firstWordBefore: hex(firstWordBefore),
+          firstWordAfter: hex(firstWordAfter),
+          note: 'Allocation + bitmap fill passed. Nothing is expected to be visible on-screen yet.',
         })
       } catch (reason) {
-        console.info('[PokéRun interaction] BMPWIN CREATE DYNAMIC FAILED', {
+        console.info('[PokéRun interaction] BMPWIN FILL FAILED', {
           reason: reason instanceof Error ? reason.message : String(reason),
         })
         emitMenuState(false)
@@ -264,10 +301,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
       console.info('[PokéRun interaction] INTERACT EVENT RECEIVED', {
         code: detail?.code ?? null,
         bridgeStatus: runtimeBridge.status,
-        allocationComplete: Boolean(stateRef.current),
+        probeComplete: Boolean(stateRef.current),
         opening: openingRef.current,
       })
-      void probeBmpWinAllocation()
+      void probeBmpWinFill()
     }
 
     window.addEventListener(WHITE2_INTERACT_EVENT, onInteract)
@@ -275,8 +312,8 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom }: { bridge: Mel
     return () => {
       window.removeEventListener(WHITE2_INTERACT_EVENT, onInteract)
       emitMenuState(false)
-      // Deliberately do not invoke BmpWin_Free in PRK12. This is a one-shot
-      // allocation diagnostic and a fresh emulator session owns its lifetime.
+      // Deliberately do not invoke BmpWin_Free in PRK13. This is a one-shot
+      // diagnostic and a fresh emulator session owns its lifetime.
       stateRef.current = null
     }
   }, [bridge, rom.gameId, rom.sha256])
