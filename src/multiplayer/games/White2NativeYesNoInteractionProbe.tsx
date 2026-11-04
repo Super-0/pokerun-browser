@@ -188,11 +188,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk36-visual-plus-prk38-reversible-ram-glyph',
+      mode: 'prk39-two-tile-glyph-a-visual',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK38 composes one verified ROM glyph into four existing GFLBitmap RAM tiles, checks changes, then restores the original 128 bytes without any extra VRAM upload; PRK36 stack-gated native frame remains unchanged.',
+      researchNote: 'PRK39 runs the verified PRK38 RAM round-trip, then uploads only two changed 32-byte tiles of native glyph A using Thumb4. It leaves bitmap RAM and VRAM consistent for screenshot verification; no native streamed font call.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -499,6 +499,138 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           bytesRestored: restored ? 4 * bytesPerTile : 0,
           note: 'All touched backing-store tiles were restored before returning. The on-screen frame is unchanged.',
         })
+      }
+    }
+
+    // PRK39: the first visible native-font pixel experiment. PRK38 already
+    // proved that four 32-byte bitmap tiles can be composed and fully restored.
+    // The A glyph only changes the LEFT tile of each row; transfer exactly
+    // those two tiles (13 and 25) with the proven 32-byte CPU path.
+    // Success leaves both the bitmap backing store AND BG2 VRAM matching,
+    // so the letter remains visible for a screenshot. A fresh emulator run
+    // owns the temporary window allocation; cleanup is a separate experiment.
+    async function uploadGlyphAToBg2(
+      directPixels: number, directCharPos: number, bg: number,
+      verifiedRom: Uint8Array, glyphRomOffset: number, bytesPerTile: number,
+    ) {
+      if (bytesPerTile !== 32 || !isMainRamPointer(directPixels) ||
+          directCharPos !== 964 || directCharPos + WINDOW_WIDTH * WINDOW_HEIGHT !== 1024 ||
+          bg !== MSGBG_BG2) {
+        throw new Error('PRK39 required BG2 bitmap and tile allocation invariants failed.')
+      }
+      const fourTiles = [WINDOW_WIDTH + 1, WINDOW_WIDTH + 2,
+                         WINDOW_WIDTH * 2 + 1, WINDOW_WIDTH * 2 + 2]
+      const originalBlock = new Uint8Array(4 * bytesPerTile)
+      originalBlock.fill(0xff)
+      // PRK38 succeeded before we enter this function, leaving all four
+      // original bitmap tiles restored to 0xff and VRAM still clean.
+      for (const tileIndex of fourTiles) {
+        const observed = await runtimeBridge.readBytes(
+          directPixels + tileIndex * bytesPerTile, bytesPerTile,
+        )
+        if (observed.length !== bytesPerTile || observed.some(value => value !== 0xff)) {
+          throw new Error('PRK39 refused to draw on a bitmap tile not restored by PRK38.')
+        }
+      }
+      const composed = composeWhite2GlyphInTileRam(
+        verifiedRom, glyphRomOffset, 48, 12, 15, originalBlock,
+      )
+      const changedPerTile = fourTiles.map((_, i) => {
+        let changed = 0
+        for (let j = 0; j < bytesPerTile; j += 1) {
+          if (composed.nextTiles[i * bytesPerTile + j] !== 0xff) changed += 1
+        }
+        return changed
+      })
+      if (changedPerTile.join(',') !== '15,0,11,0' ||
+          composed.changedBytes !== 26 ||
+          composed.inkPixels !== 24 || composed.shadowPixels !== 26) {
+        throw new Error('PRK39 refused an unexpected glyph tile layout.')
+      }
+      const changedEntries = [
+        { tileIndex: fourTiles[0], blockIndex: 0 },
+        { tileIndex: fourTiles[2], blockIndex: 2 },
+      ]
+      if (runtimeBridge.status !== 'running' ||
+          !validNativeStack(await runtimeBridge.getArm9Sp())) {
+        throw new Error('PRK39 native transfer refused an unsafe ARM9 CPU context.')
+      }
+      console.info('[PokéRun interaction] PRK39 GLYPH A BG2 TILE UPLOAD CALL', {
+        character: 'A',
+        romOffset: hex(glyphRomOffset),
+        bg,
+        bitmapPixelBase: hex(directPixels),
+        charPos: directCharPos,
+        tileIndices: changedEntries.map(entry => entry.tileIndex),
+        vramCharPositions: changedEntries.map(entry => directCharPos + entry.tileIndex),
+        transferSizeEach: bytesPerTile,
+        totalTransferBytes: bytesPerTile * changedEntries.length,
+        changedBytes: composed.changedBytes,
+        inkPixels: composed.inkPixels,
+        shadowPixels: composed.shadowPixels,
+        note: 'Write two already verified 32-byte bitmap tiles into RAM, then upload only those tiles into BG2 VRAM using the safe Thumb4 bridge.',
+      })
+      // Preparation writes only the two changed bitmap tiles, with no BG2
+      // tilemap updates. If a CPU call fails, do not attempt unsafe injected
+      // rollback; log the partial state and require a fresh guest session.
+      let ramPrepared = 0
+      let uploaded = 0
+      let totalInstructions = 0
+      try {
+        for (const { tileIndex, blockIndex } of changedEntries) {
+          const address = directPixels + tileIndex * bytesPerTile
+          const desired = composed.nextTiles.slice(
+            blockIndex * bytesPerTile, (blockIndex + 1) * bytesPerTile,
+          )
+          await runtimeBridge.writeBytes(address, desired)
+          const readback = await runtimeBridge.readBytes(address, bytesPerTile)
+          if (readback.length !== bytesPerTile ||
+              readback.some((value, index) => value !== desired[index])) {
+            throw new Error('PRK39 prepared bitmap RAM tile did not pass readback at index ' + tileIndex)
+          }
+          ramPrepared += 1
+        }
+        for (const { tileIndex } of changedEntries) {
+          const call = await atomicCall(
+            GFL_BGSYS_LOAD_CHAR, bg,
+            directPixels + tileIndex * bytesPerTile,
+            bytesPerTile,
+            directCharPos + tileIndex,
+          )
+          uploaded += 1
+          totalInstructions += call.instructions
+          console.info('[PokéRun interaction] PRK39 BG2 SINGLE TILE UPLOADED', {
+            tileIndex,
+            charPosition: directCharPos + tileIndex,
+            bytes: bytesPerTile,
+            instructions: call.instructions,
+          })
+        }
+        console.info('[PokéRun interaction] PRK39 GLYPH A BG2 TILE UPLOAD SUCCESS', {
+          glyph: 'A',
+          tileIndices: changedEntries.map(entry => entry.tileIndex),
+          charPositions: changedEntries.map(entry => directCharPos + entry.tileIndex),
+          tilesUploaded: uploaded,
+          bytesTransferred: uploaded * bytesPerTile,
+          changedBytes: composed.changedBytes,
+          inkPixels: composed.inkPixels,
+          shadowPixels: composed.shadowPixels,
+          totalInstructions,
+          textPixelPositionInWindow: { x: 8, y: 8 },
+          textPixelPositionOnScreen: {
+            x: WINDOW_X * 8 + 8,
+            y: WINDOW_Y * 8 + 8,
+          },
+          note: 'The native glyph should now be visible inside the framed window. The GFLBitmap RAM and BG2 tile graphics are left consistent; screenshot verification is required.',
+        })
+      } catch (reason) {
+        console.info('[PokéRun interaction] PRK39 GLYPH A BG2 TILE UPLOAD FAILED', {
+          ramPrepared,
+          tilesUploaded: uploaded,
+          reason: reason instanceof Error ? reason.message : String(reason),
+          note: 'Do not retry native graphics calls in this guest session after a partial failure. Restart the emulator first.',
+        })
+        throw reason
       }
     }
 
@@ -836,15 +968,30 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           // It reads and temporarily modifies four GFLBitmap RAM tiles after
           // PRK34 has already uploaded the clean black window to BG2 VRAM.
           if (romBytes && prk38GlyphRomOffset !== null) {
+            let prk38Passed = false
             try {
               await verifyGlyphBitmapRam(
                 directPixels, romBytes, prk38GlyphRomOffset, bytesPerTile,
               )
+              prk38Passed = true
             } catch (reason) {
               console.info('[PokéRun interaction] PRK38 GLYPH BITMAP RAM REJECTED', {
                 reason: reason instanceof Error ? reason.message : String(reason),
                 note: 'PRK34 BG2 visual remains the baseline. PRK38 does not call any guest native routine or BG2 character upload.',
               })
+            }
+            if (prk38Passed) {
+              try {
+                await uploadGlyphAToBg2(
+                  directPixels, directCharPos, bg2, romBytes,
+                  prk38GlyphRomOffset, bytesPerTile,
+                )
+              } catch (reason) {
+                console.info('[PokéRun interaction] PRK39 VISUAL GLYPH REJECTED', {
+                  reason: reason instanceof Error ? reason.message : String(reason),
+                  note: 'PRK39 stopped; the user should restart the guest before rerunning if a native tile upload failed.',
+                })
+              }
             }
           } else {
             console.info('[PokéRun interaction] PRK38 GLYPH BITMAP RAM SKIPPED', {
