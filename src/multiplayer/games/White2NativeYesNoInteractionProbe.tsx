@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import { White2ActorSystemProbe } from './White2ActorSystem'
-import { auditWhite2AsciiFont, composeWhite2GlyphInTileRam, composeWhite2GlyphOverExistingTiles, decodeWhite2PackedFontGlyph, verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
+import { auditWhite2AsciiFont, composeWhite2GlyphInTileRam, composeWhite2GlyphOverExistingTiles, decodeWhite2PackedFontGlyph, simulateWhite2AsciiLine, verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
 import { WHITE2_INTERACT_EVENT } from './White2PlayerInteractionRuntime'
 
 const FLD_ACT_GET_FIELD_EFFECTS = 0x02194f18
@@ -188,11 +188,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk40-ab-visual-plus-prk41-readonly-ascii-audit',
+      mode: 'prk40-ab-visual-plus-prk42-variable-width-offline-composition',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK41 audits all 95 printable ASCII glyph offsets/widths/advances from browser ROM before native calls. The existing PRK40 AB GPU path remains identical; no new emulator writes or native calls.',
+      researchNote: 'PRK42 tests variable-width glyph composition and DS 4bpp tile changes entirely in browser memory, and cross-checks generated AB tiles against PRK39/40. Native P2, window and AB GPU calls remain unchanged.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -409,6 +409,99 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         console.info('[PokéRun interaction] PRK41 ASCII FONT METRICS REJECTED', {
           reason: reason instanceof Error ? reason.message : String(reason),
           note: 'ROM-only research audit rejected. PRK40 visual experiment is independent.',
+        })
+      }
+      // PRK42: fully offline text raster/placement research. The existing
+      // PRK39/40 two-glyph visual is an independent, known-good reference.
+      // Compare ALL 60 simulated AB character tiles byte-for-byte to the
+      // independently proven four-tile A+B composers. Neither RAM nor VRAM
+      // is modified by this inspection.
+      try {
+        const memberStart = result.fatEntryStart + result.narcMemberOffset
+        const texts = ['AB', 'A B', 'Wi il', 'I! i', 'Hello, P2!']
+        const samples = texts.map(text =>
+          simulateWhite2AsciiLine(
+            verifiedRomBytes, memberStart, result.narcMemberLength,
+            glyphsOffset, text,
+          ),
+        )
+        for (const sample of samples) {
+          if (sample.clippedPixels !== 0 || sample.overlappingPixels !== 0) {
+            throw new Error(
+              'PRK42 unexpected clipped/overlapping pixels for "' + sample.text +
+              '": clipped=' + sample.clippedPixels +
+              ' overlaps=' + sample.overlappingPixels,
+            )
+          }
+        }
+        if (samples[0].penAdvancePx !== 12 ||
+            samples[1].penAdvancePx !== 16 ||
+            samples[2].penAdvancePx !== 20) {
+          throw new Error('PRK42 line advances disagree with PRK41 ASCII font audit.')
+        }
+
+        // This comparison is NOT the same code path as the PRK42 composer:
+        // PRK39+40 composed A+B within a standalone 2x2 tile block.
+        const referenceBlank = new Uint8Array(128)
+        referenceBlank.fill(0xff)
+        const referenceA = composeWhite2GlyphInTileRam(
+          verifiedRomBytes, result.glyphAbsoluteRomOffset, 48, 12, 15,
+          referenceBlank,
+        )
+        const referenceAB = composeWhite2GlyphOverExistingTiles(
+          verifiedRomBytes,
+          result.glyphAbsoluteRomOffset + 48,
+          referenceA.nextTiles,
+          referenceA.decodedAdvance,
+        )
+        const abTileIndices = [13, 14, 25, 26]
+        const simulatedAB = samples[0].tiles
+        let tilesChecked = 0
+        for (let tileIndex = 0; tileIndex < 60; tileIndex += 1) {
+          const localRefIndex = abTileIndices.indexOf(tileIndex)
+          for (let byte = 0; byte < 32; byte += 1) {
+            const expected = localRefIndex === -1 ? 0xff :
+              referenceAB.nextTiles[localRefIndex * 32 + byte]
+            if (simulatedAB[tileIndex * 32 + byte] !== expected) {
+              throw new Error('PRK42 AB tile reference mismatch at tile ' + tileIndex +
+                ', byte ' + byte)
+            }
+          }
+          tilesChecked += 1
+        }
+        if (samples[0].dirtyTileIndices.join(',') !== '13,14,25,26' ||
+            tilesChecked !== 60) {
+          throw new Error('PRK42 AB tile footprint is inconsistent with PRK39/40.')
+        }
+        console.info('[PokéRun interaction] PRK42 OFFLINE VARIABLE-WIDTH TEXT COMPOSITION VERIFIED', {
+          textCount: samples.length,
+          knownGoodCrossCheck: 'AB equals PRK39+PRK40 reference across ALL 60 native BG2 tiles',
+          referenceTilesChecked: tilesChecked,
+          referenceBytesChecked: tilesChecked * 32,
+          fontMemberStart: hex(memberStart),
+          glyphCellBytes: 48,
+          cellDimensions: { width: 12, height: 15 },
+          windowDimensions: { widthTiles: 12, heightTiles: 5 },
+          fontCopyRule: 'copy GlyphInfo.width columns at penX + GlyphInfo.x; advance pen by GlyphInfo.advance',
+          samples: samples.map(sample => ({
+            text: sample.text,
+            penAdvancePx: sample.penAdvancePx,
+            placements: sample.placements,
+            inkPixels: sample.inkPixels,
+            shadowPixels: sample.shadowPixels,
+            clippedPixels: sample.clippedPixels,
+            overlappingPixels: sample.overlappingPixels,
+            dirtyTileIndices: sample.dirtyTileIndices,
+            changedBytesByTile: sample.changedBytesByTile,
+            outputFnv1a32: sample.outputFnv1a32,
+            asciiPreview: sample.asciiPreview,
+          })),
+          note: 'All composition is browser-only Uint8Array data. No new native calls, guest filesystem reads, GFLBitmap writes, or BG2 graphics uploads.',
+        })
+      } catch (reason) {
+        console.info('[PokéRun interaction] PRK42 OFFLINE VARIABLE-WIDTH TEXT COMPOSITION REJECTED', {
+          reason: reason instanceof Error ? reason.message : String(reason),
+          note: 'Read-only text composer failed independently; PRK40 native AB visual is unchanged.',
         })
       }
       return result
