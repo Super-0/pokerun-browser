@@ -51,9 +51,9 @@ export function White2MemoryResearchPanel({ bridge, rom }: {
     <details>
       <summary style={{ cursor: 'pointer', fontWeight: 800 }}>PRK62 • WHITE 2 PARTY STRUCTURE RESEARCH (READ ONLY)</summary>
       <p style={{ fontSize: 12, marginTop: 10 }}>
-        One-time memory inspection. The derived GameData party pointer is not trusted
-        until a live read validates the header. This never changes Pokémon, saves, or
-        the simulated trainer.
+        One-time read of local White 2 RAM. The party header is checked first,
+        then any encrypted Pokémon bytes are decoded in separate browser copies
+        and verified against their checksums. No guest decryption or writes.
       </p>
       <button type="button" disabled={!eligible || reading} onClick={() => void inspectParty()}>
         {reading ? 'INSPECTING...' : 'INSPECT LOCAL PARTY STRUCTURE'}
@@ -64,19 +64,24 @@ export function White2MemoryResearchPanel({ bridge, rom }: {
         <p><strong>Candidate party:</strong> {snapshot.party} • GameData + {snapshot.partyPointerOffset}</p>
         <p><strong>Header:</strong> capacity {snapshot.capacity}, count {snapshot.count},
           marked slots {snapshot.markedSlots} • mask {snapshot.slotExistsMask}</p>
-        <p><strong>Cross-check:</strong> {snapshot.countMatchesMask
+        <p><strong>Header cross-check:</strong> {snapshot.countMatchesMask
           ? 'Count and slot flags agree.' : 'Count and slot flags disagree — do not trust this layout yet.'}
           {' '}Pointer remained stable throughout the inspection.</p>
+        <p><strong>Decoded data:</strong> {snapshot.decodedSlotsVerified
+          ? 'Every occupied slot has a matching box checksum, a plausible species ID and valid level/HP.'
+          : 'At least one occupied slot failed checksum or metadata validation. Do not trust those fields yet.'}
+        </p>
         <div style={{ display: 'grid', gap: 4 }}>
           {snapshot.slots.map(slot => <div key={slot.slot}>
             Slot {slot.slot}: {slot.existsFlag
-              ? `Lv${slot.level} • HP ${slot.currentHp}/${slot.maxHp} • ${slot.hpPlausible ? 'metadata plausible' : 'METADATA UNVERIFIED'}`
+              ? `Species #${slot.speciesId} • Lv${slot.level} • HP ${slot.currentHp}/${slot.maxHp} • ${slot.boxChecksumValid && slot.speciesPlausible && slot.hpPlausible ? 'CHECKS PASSED' : 'UNVERIFIED'} • ${slot.partyWasEncrypted ? 'party bytes decoded' : 'party bytes already decrypted'}`
               : 'empty by slot flag'}
           </div>)}
         </div>
         <p style={{ fontSize: 11, opacity: .75 }}>
-          PID and checksum values are not displayed. Species and nicknames are not decoded.
-          No Pokémon records were transmitted or written.
+          Species numbers are research values, not verified names. Raw PID and checksum
+          values are not displayed. Encrypted/decoded Pokémon bytes remain local:
+          no guest memory writes, Pokémon transfers, or protocol messages.
         </p>
       </div>}
     </details>
