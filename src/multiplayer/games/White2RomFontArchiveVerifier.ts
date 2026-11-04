@@ -500,3 +500,166 @@ export function auditWhite2AsciiFont(
     sampleText,
   }
 }
+
+
+/**
+ * PRK42: read-only native-font line compositor for a 12x5 BG2 bitmap.
+ *
+ * In White 2's printsys.c the text pen starts at x; each glyph is copied
+ * from its 12x15 2bpp cell at (penX + glyph.x, y) for glyph.width columns,
+ * then the pen advances by glyph.advance. This function independently
+ * simulates that pixel placement in a LOCAL Uint8Array of 60 4bpp DS tiles.
+ *
+ * No guest RAM writes, native calls, VRAM writes, or font streaming.
+ */
+export function simulateWhite2AsciiLine(
+  rom: Uint8Array,
+  memberStartRomOffset: number,
+  memberLength: number,
+  glyphsOffset: number,
+  text: string,
+): {
+  text: string
+  widthTiles: number
+  heightTiles: number
+  startPixel: { x: number; y: number }
+  penAdvancePx: number
+  placements: Array<{
+    character: string
+    codepoint: number
+    penX: number
+    xOffset: number
+    drawX: number
+    width: number
+    advance: number
+  }>
+  inkPixels: number
+  shadowPixels: number
+  clippedPixels: number
+  overlappingPixels: number
+  dirtyTileIndices: number[]
+  changedBytesByTile: Array<{ tileIndex: number; changedBytes: number }>
+  outputFnv1a32: string
+  asciiPreview: string[]
+  tiles: Uint8Array
+} {
+  const widthTiles = 12
+  const heightTiles = 5
+  const widthPixels = widthTiles * 8
+  const heightPixels = heightTiles * 8
+  const startX = 8
+  const startY = 8
+  const glyphCellSize = 48
+  const minCodepoint = 32
+  const maxCodepoint = 126
+  if (!Number.isSafeInteger(memberStartRomOffset) ||
+      !Number.isSafeInteger(memberLength) || !Number.isSafeInteger(glyphsOffset) ||
+      memberStartRomOffset < 0 || memberLength <= 0 || glyphsOffset < 0 ||
+      memberStartRomOffset + memberLength > rom.byteLength ||
+      glyphsOffset + (maxCodepoint - minCodepoint + 1) * glyphCellSize > memberLength ||
+      text.length < 1 || text.length > 64) {
+    throw new Error('PRK42 font archive or text bounds are invalid.')
+  }
+
+  const tiles = new Uint8Array(widthTiles * heightTiles * 32)
+  tiles.fill(0xff)
+  const placements = []
+  let inkPixels = 0
+  let shadowPixels = 0
+  let clippedPixels = 0
+  let overlappingPixels = 0
+  let penX = startX
+
+  for (const char of text) {
+    const cp = char.codePointAt(0)
+    if (cp === undefined || cp < minCodepoint || cp > maxCodepoint) {
+      throw new Error('PRK42 refuses non-printable or non-ASCII font characters.')
+    }
+    const cellOffset = memberStartRomOffset + glyphsOffset +
+      (cp - minCodepoint) * glyphCellSize
+    const glyph = decodeWhite2PackedFontGlyph(rom, cellOffset, glyphCellSize, 12, 15)
+    const drawX = penX + glyph.x
+    placements.push({
+      character: char,
+      codepoint: cp,
+      penX: penX - startX,
+      xOffset: glyph.x,
+      drawX: drawX - startX,
+      width: glyph.width,
+      advance: glyph.advance,
+    })
+
+    // This is the decompiled TextRenderer behavior: only the visible
+    // glyph.width columns are blitted, not all 12 source-cell columns.
+    for (let y = 0; y < 15; y += 1) {
+      for (let x = 0; x < glyph.width; x += 1) {
+        const pixel = glyph.asciiRows[y][x]
+        const palette = pixel === '#' ? 1 : pixel === '+' ? 2 : 0
+        if (!palette) continue
+        const px = drawX + x
+        const py = startY + y
+        if (px < 0 || px >= widthPixels || py < 0 || py >= heightPixels) {
+          clippedPixels += 1
+          continue
+        }
+        const tileIndex = (py >> 3) * widthTiles + (px >> 3)
+        const pixelInTile = (py & 7) * 8 + (px & 7)
+        const byteIndex = tileIndex * 32 + (pixelInTile >> 1)
+        const shift = (pixelInTile & 1) * 4
+        const before = (tiles[byteIndex] >>> shift) & 0x0f
+        if (before !== 15) overlappingPixels += 1
+        tiles[byteIndex] =
+          (tiles[byteIndex] & ~(0x0f << shift)) | (palette << shift)
+        if (palette === 1) inkPixels += 1
+        else shadowPixels += 1
+      }
+    }
+    penX += glyph.advance
+  }
+
+  const dirtyTileIndices: number[] = []
+  const changedBytesByTile: Array<{ tileIndex: number; changedBytes: number }> = []
+  let hash = 0x811c9dc5
+  for (let tile = 0; tile < widthTiles * heightTiles; tile += 1) {
+    let changedBytes = 0
+    for (let byte = 0; byte < 32; byte += 1) {
+      const value = tiles[tile * 32 + byte]
+      if (value !== 0xff) changedBytes += 1
+      hash ^= value
+      hash = Math.imul(hash, 0x01000193) >>> 0
+    }
+    if (changedBytes) {
+      dirtyTileIndices.push(tile)
+      changedBytesByTile.push({ tileIndex: tile, changedBytes })
+    }
+  }
+
+  const readPalette = (x: number, y: number) => {
+    const tile = (y >> 3) * widthTiles + (x >> 3)
+    const bit = (y & 7) * 8 + (x & 7)
+    const b = tiles[tile * 32 + (bit >> 1)]
+    return (b >> ((bit & 1) * 4)) & 0x0f
+  }
+  const previewWidth = Math.min(widthPixels - startX, Math.max(penX - startX, 1) + 3)
+  const asciiPreview = Array.from({ length: 15 }, (_, row) =>
+    Array.from({ length: previewWidth }, (_, x) => {
+      const index = readPalette(startX + x, startY + row)
+      return index === 1 ? '#' : index === 2 ? '+' : index === 15 ? '.' : '?'
+    }).join(''),
+  )
+  return {
+    text, widthTiles, heightTiles,
+    startPixel: { x: startX, y: startY },
+    penAdvancePx: penX - startX,
+    placements,
+    inkPixels,
+    shadowPixels,
+    clippedPixels,
+    overlappingPixels,
+    dirtyTileIndices,
+    changedBytesByTile,
+    outputFnv1a32: '0x' + hash.toString(16).padStart(8, '0'),
+    asciiPreview,
+    tiles,
+  }
+}
