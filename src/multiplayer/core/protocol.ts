@@ -49,6 +49,23 @@ export type MultiplayerPlayerState = {
 }
 export type MultiplayerRoom = { code: string; gameId: GameId; hostId: string; players: MultiplayerPlayer[]; gameStart?: MultiplayerGameStart }
 
+// PRK60: development-only, room/start/peer-bound handshake metadata.
+// These packets NEVER contain ROM, save, party, or Pokémon data.
+export type MultiplayerTradeRequest = {
+  requestId: string
+  startId: string
+  fromPlayerId: string
+  toPlayerId: string
+  createdAt: number
+  expiresAt: number
+}
+export type MultiplayerTradeDecision = 'accepted' | 'declined'
+export type MultiplayerTradeState = {
+  request: MultiplayerTradeRequest
+  direction: 'incoming' | 'outgoing'
+  status: 'pending' | MultiplayerTradeDecision | 'cancelled' | 'expired'
+}
+
 type BaseMessage = { version: typeof MULTIPLAYER_PROTOCOL_VERSION; roomCode?: string; senderId: string; sentAt: number }
 export type MultiplayerMessage =
   | (BaseMessage & { type: 'HELLO'; player: MultiplayerPlayer })
@@ -59,6 +76,9 @@ export type MultiplayerMessage =
   | (BaseMessage & { type: 'PLAYER_READY'; playerId: string; ready: boolean })
   | (BaseMessage & { type: 'GAME_START'; start: MultiplayerGameStart })
   | (BaseMessage & { type: 'GAME_STATE'; startId: string; sequence: number; playerId: string; state: MultiplayerPlayerState })
+  | (BaseMessage & { type: 'TRADE_REQUEST'; request: MultiplayerTradeRequest })
+  | (BaseMessage & { type: 'TRADE_RESPONSE'; requestId: string; startId: string; fromPlayerId: string; toPlayerId: string; decision: MultiplayerTradeDecision })
+  | (BaseMessage & { type: 'TRADE_CANCEL'; requestId: string; startId: string; fromPlayerId: string; toPlayerId: string; reason: 'cancelled' | 'timeout' })
   | (BaseMessage & { type: 'PLAYER_LEAVE'; playerId: string })
   | (BaseMessage & { type: 'PING' | 'PONG' })
   | (BaseMessage & { type: 'ERROR'; code: string; message: string })
