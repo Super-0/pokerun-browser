@@ -243,7 +243,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
     // window write, so an unsafe CPU idle stack cannot block font research.
     // This function is read-only and never touches the guest FS or VRAM.
     async function verifyBrowserHeldFontRom(msgBg: number) {
-      if (!romBytes) {
+      // Capture the outer optional prop as a stable local before nested map callbacks.
+      const verifiedRomBytes = romBytes
+      if (!verifiedRomBytes) {
         console.info('[PokéRun interaction] PRK35 BROWSER ROM UNAVAILABLE', {
           reason: 'No browser-held NDS cartridge was supplied to this probe.',
           note: 'The visible PRK34 window remains the independent baseline.',
@@ -283,7 +285,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         glyphIndex < 0 || glyphIndex > 65535
       ) throw new Error('Live Nitro FSFile or glyph index metadata failed validation.')
 
-      const result = verifyWhite2FontGlyphFromRom(romBytes, {
+      const result = verifyWhite2FontGlyphFromRom(verifiedRomBytes, {
         rootRomFileId,
         fsFileStart,
         fsFileEnd,
@@ -342,7 +344,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             throw new Error('PRK37 glyph ' + character + ' points beyond its verified NARC member.')
           }
           const glyph = decodeWhite2PackedFontGlyph(
-            romBytes, absoluteOffset, glyphCellSize, cellWidth, cellHeight,
+            verifiedRomBytes, absoluteOffset, glyphCellSize, cellWidth, cellHeight,
           )
           if (character === 'A' && (glyph.x !== 0 || glyph.width !== 6 || glyph.advance !== 6)) {
             throw new Error('PRK37 glyph A placement differs from the PRK27 native six-pixel width.')
