@@ -95,6 +95,32 @@ export function White2PlayerInteractionRuntime() {
         gameTradeInitiated: false,
         note: 'Multiplayer UI consumed a bounded native result AFTER teardown; no transport or trade side effects. DOM events are not security/authentication proof.',
       })
+      // PRK58: inspect the actual LocalMultiplayerSession rather than
+      // trusting the app-level event to identify a peer or room. These
+      // diagnostics never send a message, grant authorization, or change game
+      // state; the development transport currently has no server-side identity.
+      if (candidate.choice === 'yes') {
+        const preview = multiplayerPresence.previewTradeRequest()
+        console.info(preview.eligible
+          ? '[PokéRun interaction] PRK58 SESSION TRADE PREFLIGHT READY - NO SEND'
+          : '[PokéRun interaction] PRK58 SESSION TRADE PREFLIGHT BLOCKED - NO SEND', {
+          ...preview,
+          selectionSequence: candidate.sequence,
+          nativeWindowClosed: candidate.nativeWindowClosed,
+          appResultConsumed: true,
+          serverIdentityAuthenticated: false,
+          guestTradeInitiated: false,
+          note: 'Read-only dry-run: future trade requests require session-bound sender validation, explicit remote consent and cancellation. No network packet or guest write.',
+        })
+      } else {
+        console.info('[PokéRun interaction] PRK58 NO CHOICE DECLINED - NO SEND', {
+          choice: candidate.choice,
+          sequence: candidate.sequence,
+          gameTradeInitiated: false,
+          transportMessagesSent: 0,
+          note: 'No was confirmed after native cleanup; the application does not initiate a trade.',
+        })
+      }
       if (candidate.sequence === 2) {
         const coveredBothChoices = acceptedChoices.includes('yes') &&
           acceptedChoices.includes('no')
