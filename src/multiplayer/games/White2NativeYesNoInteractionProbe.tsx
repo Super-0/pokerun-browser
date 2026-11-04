@@ -63,6 +63,14 @@ const WHITE2_KNOWN_FIELD_MSGBG = 0x02271cb0
 const PRK36_VALID_STACK_LO = 0x02fe2800
 const PRK36_VALID_STACK_HI = 0x02fe4000
 const PRK36_FRAME_POLLS = 240
+// PRK43: White 2's BGSys pointer is a static US ARM9 BSS symbol.
+// BGSysBG has 44 bytes, with eight records following an 8-byte header.
+// The BG2 screenBase array follows those records + two charArea pointers.
+const PRK43_BGSYS_GLOBAL_PTR = 0x0214194c
+const PRK43_BGSYS_BG2_RECORD_OFFSET = 8 + 2 * 44
+const PRK43_BGSYS_BG2_SCREEN_BASE_OFFSET = 8 + 8 * 44 + 2 * 4 + 8 * 4 + 2 * 4
+const PRK43_BG2_CONTROL_REGISTER = 0x0400000c
+const PRK43_MAIN_BG_VRAM_BASE = 0x06000000
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 
 type AtomicRuntime = {
@@ -86,6 +94,20 @@ type AtomicRuntime = {
 }
 
 type ProbeState = { window: number }
+type Prk43Bg2MapSnapshot = {
+  bgSys: number
+  screenPtr: number
+  screenSize: number
+  screenOffset: number
+  screenBase: number
+  mode: number
+  colorMode: number
+  tileSize: number
+  controlScreenBase: number
+  ramMap: number[] | null
+  vramMap: number[] | null
+  capturedPositions: number
+}
 
 function isMainRamPointer(value: number) {
   return Number.isInteger(value) && value >= 0x02000000 && value < 0x02400000 && (value & 3) === 0
@@ -188,11 +210,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk40-ab-visual-plus-prk42-variable-width-offline-composition',
+      mode: 'prk42-variable-width-plus-prk43-readonly-bg2-ownership',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK42 tests variable-width glyph composition and DS 4bpp tile changes entirely in browser memory, and cross-checks generated AB tiles against PRK39/40. Native P2, window and AB GPU calls remain unchanged.',
+      researchNote: 'PRK43 captures the 14x7 BG2 screen-map area in RAM shadow and, when BG2CNT agrees, real VRAM both before and after the unchanged PRK40 AB visual. It inventories owner allocations for future safe cleanup, but frees or clears nothing.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -876,6 +898,111 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       }
     }
 
+    // PRK43: NO native guest calls, VRAM/guest RAM writes, or screen cleanup.
+    // Capture the 14x7 BG2 tilemap area BEFORE the window is drawn, then
+    // compare it to the live map AFTER PRK40. This distinguishes the game's
+    // shadow map from the real BG2 VRAM entries and establishes what must be
+    // restored before char reservation / bitmap can be freed in PRK44+.
+    async function inspectBg2MapReadOnly(): Promise<Prk43Bg2MapSnapshot> {
+      const bgSys = await runtimeBridge.read32(PRK43_BGSYS_GLOBAL_PTR)
+      if (!isMainRamPointer(bgSys)) {
+        throw new Error('PRK43 global sBGSys pointer invalid: ' + hex(bgSys))
+      }
+      const record = bgSys + PRK43_BGSYS_BG2_RECORD_OFFSET
+      const screenPtr = await runtimeBridge.read32(record)
+      const screenSize = await runtimeBridge.read32(record + 4)
+      const screenOffset = await runtimeBridge.read32(record + 8)
+      const mode = await runtimeBridge.read8(record + 20)
+      const colorMode = await runtimeBridge.read8(record + 22)
+      const tileSize = await runtimeBridge.read8(record + 23)
+      const screenBase = await runtimeBridge.read32(
+        bgSys + PRK43_BGSYS_BG2_SCREEN_BASE_OFFSET,
+      )
+      const bg2Control = await runtimeBridge.read16(PRK43_BG2_CONTROL_REGISTER)
+      const controlScreenBase = ((bg2Control >>> 8) & 0x1f) * 0x800
+      if (mode !== 0 || colorMode !== 0 || tileSize !== 32 ||
+          screenBase > 0x10000 || screenBase % 0x800 !== 0) {
+        throw new Error('PRK43 BGSys BG2 record or screen base failed layout validation.')
+      }
+      const positions = Array.from({ length: WINDOW_HEIGHT + 2 }, (_, row) =>
+        Array.from({ length: WINDOW_WIDTH + 2 }, (_, col) =>
+          (WINDOW_Y - 1 + row) * TEXT_BG_WIDTH_TILES + WINDOW_X - 1 + col,
+        ),
+      ).flat()
+      if (positions.length !== 98) throw new Error('PRK43 expected 98 map entries.')
+      let ramMap: number[] | null = null
+      if (isMainRamPointer(screenPtr) && screenSize >= 2048 &&
+          screenSize <= 0x10000 && positions.at(-1)! * 2 + 2 <= screenSize) {
+        ramMap = []
+        for (const position of positions) {
+          ramMap.push(await runtimeBridge.read16(screenPtr + position * 2))
+        }
+      }
+      // The decompiled GX_LoadBG2Scr maps BG2 screen tiles into main BG VRAM.
+      // Do not interpret the VRAM snapshot unless hardware BG2CNT agrees with
+      // the BGSys screen-base bookkeeping. On mismatches log "unavailable".
+      let vramMap: number[] | null = null
+      if (screenBase === controlScreenBase &&
+          screenBase + (positions.at(-1)! + 1) * 2 <= 0x20000) {
+        try {
+          vramMap = []
+          for (const position of positions) {
+            vramMap.push(await runtimeBridge.read16(
+              PRK43_MAIN_BG_VRAM_BASE + screenBase + position * 2,
+            ))
+          }
+        } catch {
+          vramMap = null
+        }
+      }
+      return {
+        bgSys, screenPtr, screenSize, screenOffset, screenBase,
+        mode, colorMode, tileSize, controlScreenBase,
+        ramMap, vramMap, capturedPositions: positions.length,
+      }
+    }
+
+    function prk43ExpectedMapForWindow(charPos: number): number[] {
+      const expected: number[] = []
+      for (let y = WINDOW_Y - 1; y <= WINDOW_Y + WINDOW_HEIGHT; y += 1) {
+        for (let x = WINDOW_X - 1; x <= WINDOW_X + WINDOW_WIDTH; x += 1) {
+          const left = x === WINDOW_X - 1
+          const right = x === WINDOW_X + WINDOW_WIDTH
+          const top = y === WINDOW_Y - 1
+          const bottom = y === WINDOW_Y + WINDOW_HEIGHT
+          let character: number
+          let palette: number
+          if (top) {
+            palette = MSGBG_PLTT_BG2_FRAME
+            character = MSGBG_CHAR_FRAME + (left ? 0 : right ? 2 : 1)
+          } else if (bottom) {
+            palette = MSGBG_PLTT_BG2_FRAME
+            character = MSGBG_CHAR_FRAME + (left ? 6 : right ? 8 : 7)
+          } else if (left || right) {
+            palette = MSGBG_PLTT_BG2_FRAME
+            character = MSGBG_CHAR_FRAME + (left ? 3 : 5)
+          } else {
+            palette = MSGBG_PLTT_BG2
+            character = charPos + (y - WINDOW_Y) * WINDOW_WIDTH + (x - WINDOW_X)
+          }
+          expected.push((palette << 12) | character)
+        }
+      }
+      return expected
+    }
+
+    function prk43SnapshotHash(entries: number[] | null): string | null {
+      if (!entries) return null
+      let hash = 0x811c9dc5
+      for (const value of entries) {
+        hash ^= value & 255
+        hash = Math.imul(hash, 0x01000193) >>> 0
+        hash ^= (value >>> 8) & 255
+        hash = Math.imul(hash, 0x01000193) >>> 0
+      }
+      return hex(hash)
+    }
+
     async function runProbe() {
       if (openingRef.current || metadataCompleteRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current || metadataCompleteRef.current) {
@@ -887,6 +1014,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
 
       try {
         let prk38GlyphRomOffset: number | null = null
+        let prk43Before: Prk43Bg2MapSnapshot | null = null
         const scan = await probe.scanHeap()
         if (!scan.playerActor || !isMainRamPointer(scan.playerActor.address)) {
           throw new Error(`Player actor is invalid (${hex(scan.playerActor?.address ?? 0)}).`)
@@ -1082,6 +1210,33 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             bitmapCreate: hex(GFL_BITMAP_CREATE),
             note: 'Native bitmap and BG2 char/screen CPU transfers only; no BmpWin_CreateDynamic.',
           })
+          // Snapshot original tilemap before replacing any BG2 character
+          // entries. If this read-only check fails, preserve PRK34/40.
+          try {
+            prk43Before = await inspectBg2MapReadOnly()
+            console.info('[PokéRun interaction] PRK43 BG2 OWNERSHIP AND MAP BEFORE', {
+              bgSys: hex(prk43Before.bgSys),
+              shadowPointer: hex(prk43Before.screenPtr),
+              shadowSize: prk43Before.screenSize,
+              shadowOffset: prk43Before.screenOffset,
+              screenBaseBytes: prk43Before.screenBase,
+              bg2ControlBaseBytes: prk43Before.controlScreenBase,
+              bgMode: prk43Before.mode,
+              colorMode: prk43Before.colorMode,
+              tileSize: prk43Before.tileSize,
+              mapEntries: prk43Before.capturedPositions,
+              shadowAvailable: prk43Before.ramMap !== null,
+              vramReadAvailable: prk43Before.vramMap !== null,
+              shadowHash: prk43SnapshotHash(prk43Before.ramMap),
+              vramHash: prk43SnapshotHash(prk43Before.vramMap),
+              note: 'Read-only 14x7 BG2 screen-area baseline before ANY PRK34/40 tilemap upload. No cleanup or memory mutation.',
+            })
+          } catch (reason) {
+            console.info('[PokéRun interaction] PRK43 BG2 OWNERSHIP PREFLIGHT UNAVAILABLE', {
+              reason: reason instanceof Error ? reason.message : String(reason),
+              note: 'Native PRK34/40 visuals remain unchanged.',
+            })
+          }
           const charAlloc = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg2, requestedBytes, 1)
           const directCharPos = charAlloc.result
           if (directCharPos === AREAMAN_FAIL) {
@@ -1255,6 +1410,60 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
               hasBrowserRom: Boolean(romBytes),
               hasVerifiedGlyphOffset: prk38GlyphRomOffset !== null,
             })
+          }
+          // Read-only PRK43 post-state. Never tear down the onscreen AB
+          // window in this experiment. In particular GFL_BitmapFree alone
+          // would leave the BG2 map pointing at freed character tiles.
+          if (prk43Before) {
+            try {
+              const after = await inspectBg2MapReadOnly()
+              const sameBgSys = after.bgSys === prk43Before.bgSys
+              const sameShadow = after.screenPtr === prk43Before.screenPtr
+              const shadowUnchanged = prk43Before.ramMap !== null &&
+                after.ramMap !== null &&
+                after.ramMap.every((value, i) => value === prk43Before.ramMap![i])
+              const expected = prk43ExpectedMapForWindow(directCharPos)
+              const vramMatching = after.vramMap !== null
+                ? after.vramMap.reduce((n, value, i) => n + (value === expected[i] ? 1 : 0), 0)
+                : null
+              const vramChanged = prk43Before.vramMap !== null && after.vramMap !== null
+                ? after.vramMap.reduce((n, value, i) =>
+                    n + (value !== prk43Before.vramMap![i] ? 1 : 0), 0)
+                : null
+              const observedPixels = await runtimeBridge.read32(directBitmap)
+              const observedWidth = await runtimeBridge.read16(directBitmap + 4)
+              const observedHeight = await runtimeBridge.read16(directBitmap + 6)
+              const observedTileSize = await runtimeBridge.read16(directBitmap + 8)
+              const observedStorage = await runtimeBridge.read16(directBitmap + 10)
+              const ownedBitmapValid = observedPixels === directPixels &&
+                observedWidth === WINDOW_WIDTH * 8 &&
+                observedHeight === WINDOW_HEIGHT * 8 &&
+                observedTileSize === 32 && observedStorage === 0
+              console.info('[PokéRun interaction] PRK43 BG2 OWNERSHIP AND MAP AFTER', {
+                sameBgSys,
+                sameScreenShadowPointer: sameShadow,
+                shadowUnchanged,
+                shadowAvailable: after.ramMap !== null,
+                originalShadowHash: prk43SnapshotHash(prk43Before.ramMap),
+                afterShadowHash: prk43SnapshotHash(after.ramMap),
+                originalVramHash: prk43SnapshotHash(prk43Before.vramMap),
+                afterVramHash: prk43SnapshotHash(after.vramMap),
+                expectedOverlayEntries: expected.length,
+                vramOverlayEntriesMatching: vramMatching,
+                vramEntriesChanged: vramChanged,
+                bitmap: hex(directBitmap),
+                pixelBuffer: hex(observedPixels),
+                ownedBitmapValid,
+                charAllocation: { bg: bg2, position: directCharPos, tileCount, bytes: requestedBytes },
+                cleanupPlan: 'Restore original 14x7 BG2 screen-map entries before separately invoking GFL_BGSysFreeCharMemory(2,964,1920) and GFL_BitmapFree(bitmap) while same field and DTCM context remain valid.',
+                note: 'READ ONLY: does not restore, free, clear or otherwise modify the visible AB window. Vram map comparison is advisory until validated against the screenshot.',
+              })
+            } catch (reason) {
+              console.info('[PokéRun interaction] PRK43 BG2 OWNERSHIP AFTER UNAVAILABLE', {
+                reason: reason instanceof Error ? reason.message : String(reason),
+                note: 'Read-only research failed without modifying the unchanged native AB window.',
+              })
+            }
           }
           return
         }
