@@ -210,11 +210,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk42-variable-width-plus-prk43-readonly-bg2-ownership',
+      mode: 'prk43-ownership-plus-prk44-reversible-bg2-map',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK43 captures the 14x7 BG2 screen-map area in RAM shadow and, when BG2CNT agrees, real VRAM both before and after the unchanged PRK40 AB visual. It inventories owner allocations for future safe cleanup, but frees or clears nothing.',
+      researchNote: 'PRK44 first checks the PRK43 original shadow/VRAM map and full AB overlay match. Only with valid same-field ownership and safe Thumb4 CPU context, it restores seven original 28-byte map rows, verifies them, then reapplies all seven overlay rows and verifies AB remains visible. No bitmap/char frees.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -1003,6 +1003,219 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       return hex(hash)
     }
 
+    // PRK44: reversible screen-map restoration only. Two separate seven-row
+    // GFL_BGSysLoadScrCore CPU transfer phases, each <=28 bytes per call.
+    // Never free the 60 reserved BG2 char tiles or the owned GFLBitmap here.
+    // The original 98 map entries are captured before the first overlay
+    // transfer; the overlay 98 entries must match PRK43 byte-for-byte.
+    async function tryPrk44ReversibleMapRoundTrip(
+      baseline: Prk43Bg2MapSnapshot,
+      overlay: Prk43Bg2MapSnapshot,
+      playerActor: number,
+      directPixels: number,
+      bg: number,
+      charPos: number,
+    ) {
+      const original = baseline.vramMap
+      const shadow = baseline.ramMap
+      const overlayEntries = overlay.vramMap
+      const expected = prk43ExpectedMapForWindow(charPos)
+      const stableMetadata = (
+        overlay.bgSys === baseline.bgSys &&
+        overlay.screenPtr === baseline.screenPtr &&
+        overlay.screenSize === baseline.screenSize &&
+        overlay.screenOffset === baseline.screenOffset &&
+        overlay.screenBase === baseline.screenBase &&
+        overlay.controlScreenBase === baseline.controlScreenBase &&
+        overlay.screenBase === overlay.controlScreenBase &&
+        overlay.mode === baseline.mode &&
+        overlay.colorMode === baseline.colorMode &&
+        overlay.tileSize === baseline.tileSize &&
+        baseline.screenBase === baseline.controlScreenBase
+      )
+      const ready = (
+        bg === MSGBG_BG2 &&
+        charPos === 964 &&
+        isMainRamPointer(directPixels) &&
+        stableMetadata &&
+        original !== null && original.length === 98 &&
+        shadow !== null && shadow.length === 98 &&
+        overlayEntries !== null && overlayEntries.length === 98 &&
+        original.every((value, i) => value === shadow[i]) &&
+        overlayEntries.every((value, i) => value === expected[i])
+      )
+      if (!ready || original === null || overlayEntries === null) {
+        console.info('[PokéRun interaction] PRK44 RESTORATION PREFLIGHT SKIPPED', {
+          stableMetadata,
+          baselineVramAvailable: original !== null,
+          baselineShadowAvailable: shadow !== null,
+          overlayVramAvailable: overlayEntries !== null,
+          originalEqualsShadow: original !== null && shadow !== null &&
+            original.length === shadow.length &&
+            original.every((value, i) => value === shadow[i]),
+          overlayMatchesExpected: overlayEntries !== null &&
+            overlayEntries.length === expected.length &&
+            overlayEntries.every((value, i) => value === expected[i]),
+          note: 'Fail-closed. No BG2 tilemap writes. Existing AB window remains.',
+        })
+        return
+      }
+      async function sameField() {
+        if (disposed || runtimeBridge.status !== 'running') return false
+        const current = await probe.scanHeap()
+        return current.playerActor?.address === playerActor &&
+          current.playerActor.modelId === EXPECTED_STABLE_PLAYER_MODEL
+      }
+      if (!(await sameField())) {
+        console.info('[PokéRun interaction] PRK44 RESTORATION PREFLIGHT SKIPPED', {
+          reason: 'Player actor identity/model changed before restoration.',
+        })
+        return
+      }
+
+      const scratchOriginal = await runtimeBridge.readBytes(directPixels, FRAME_FULL_ROW_BYTES)
+      if (scratchOriginal.length !== FRAME_FULL_ROW_BYTES) {
+        throw new Error('PRK44 could not save 28 bytes of bitmap scratch.')
+      }
+      let restoredRows = 0
+      let reappliedRows = 0
+      let restoreVerified = false
+      let reapplyVerified = false
+      let unsafeNativeFailure = false
+      let restoreError: string | null = null
+      let reapplyError: string | null = null
+
+      // Keep original and overlay pointers immutable. Each row consists of
+      // 14 consecutive screen entries starting at x=17, y=1..7.
+      async function uploadRows(entries: number[], phase: 'restore' | 'reapply') {
+        for (let row = 0; row < WINDOW_HEIGHT + 2; row += 1) {
+          if (!(await sameField())) {
+            throw new Error('PRK44 aborted: field/player identity changed during ' + phase)
+          }
+          const beforeSp = await runtimeBridge.getArm9Sp()
+          if (!validNativeStack(beforeSp) && !(await waitForActiveNativeStack())) {
+            throw new Error('PRK44 no safe DTCM stack for ' + phase + ' row ' + row)
+          }
+          const data = new Uint8Array(FRAME_FULL_ROW_BYTES)
+          for (let col = 0; col < WINDOW_WIDTH + 2; col += 1) {
+            const word = entries[row * (WINDOW_WIDTH + 2) + col]
+            data[col * 2] = word & 255
+            data[col * 2 + 1] = word >>> 8
+          }
+          await runtimeBridge.writeBytes(directPixels, data)
+          const readback = await runtimeBridge.readBytes(directPixels, FRAME_FULL_ROW_BYTES)
+          if (readback.length !== FRAME_FULL_ROW_BYTES ||
+              readback.some((value, i) => value !== data[i])) {
+            throw new Error('PRK44 scratch readback failed for ' + phase + ' row ' + row)
+          }
+          try {
+            await atomicCall(
+              GFL_BGSYS_LOAD_SCR_CORE, bg, directPixels, FRAME_FULL_ROW_BYTES,
+              (WINDOW_Y - 1 + row) * TEXT_BG_WIDTH_TILES + WINDOW_X - 1,
+            )
+          } catch (reason) {
+            // Do not attempt additional ARM9 calls after a failed native
+            // invocation; the guest may be in exception/scheduler state.
+            unsafeNativeFailure = true
+            throw reason
+          }
+          if (phase === 'restore') restoredRows += 1
+          else reappliedRows += 1
+        }
+      }
+      async function verifyVramMap(expectedEntries: number[]) {
+        const now = await inspectBg2MapReadOnly()
+        const sameOwner = now.bgSys === baseline.bgSys &&
+          now.screenPtr === baseline.screenPtr &&
+          now.screenBase === baseline.screenBase &&
+          now.controlScreenBase === baseline.controlScreenBase
+        const matches = now.vramMap !== null &&
+          now.vramMap.length === expectedEntries.length &&
+          now.vramMap.every((value, i) => value === expectedEntries[i])
+        const shadowUnchanged = now.ramMap !== null &&
+          shadow !== null && now.ramMap.length === shadow.length &&
+          now.ramMap.every((value, i) => value === shadow[i])
+        return { sameOwner, matches, shadowUnchanged, hash: prk43SnapshotHash(now.vramMap) }
+      }
+
+      console.info('[PokéRun interaction] PRK44 REVERSIBLE SCREEN MAP PREFLIGHT PASSED', {
+        fieldActor: hex(playerActor),
+        bg,
+        charPos,
+        baselineVramHash: prk43SnapshotHash(original),
+        overlayVramHash: prk43SnapshotHash(overlayEntries),
+        screenBase: hex(baseline.screenBase),
+        entries: 98,
+        rowsPerPhase: WINDOW_HEIGHT + 2,
+        bytesPerCall: FRAME_FULL_ROW_BYTES,
+        maxTransferBytes: SCREEN_DMA_THRESHOLD,
+        note: 'Testing map restoration and reapplication only. All 60 char tiles and owned bitmap remain allocated; final AB window should look unchanged.',
+      })
+      try {
+        try {
+          await uploadRows(original, 'restore')
+          const result = await verifyVramMap(original)
+          if (!result.sameOwner || !result.matches || !result.shadowUnchanged) {
+            throw new Error('PRK44 original map readback or shadow identity mismatch.')
+          }
+          restoreVerified = true
+          console.info('[PokéRun interaction] PRK44 ORIGINAL MAP RESTORED AND VERIFIED', {
+            rowsTransferred: restoredRows,
+            bytesTransferred: restoredRows * FRAME_FULL_ROW_BYTES,
+            entriesVerified: original.length,
+            restoredVramHash: result.hash,
+            shadowUnchanged: result.shadowUnchanged,
+            note: 'Original background map restored to VRAM, but resources are not freed. Overlay reapplication begins immediately.',
+          })
+        } catch (reason) {
+          restoreError = reason instanceof Error ? reason.message : String(reason)
+        } finally {
+          if ((restoredRows > 0 || restoreVerified) &&
+              !unsafeNativeFailure && await sameField()) {
+            try {
+              await uploadRows(overlayEntries, 'reapply')
+              const finalState = await verifyVramMap(overlayEntries)
+              if (!finalState.sameOwner || !finalState.matches || !finalState.shadowUnchanged) {
+                throw new Error('PRK44 overlay reapplication did not restore all 98 VRAM map entries.')
+              }
+              reapplyVerified = true
+              console.info('[PokéRun interaction] PRK44 AB OVERLAY REAPPLIED AND VERIFIED', {
+                rowsTransferred: reappliedRows,
+                bytesTransferred: reappliedRows * FRAME_FULL_ROW_BYTES,
+                entriesVerified: overlayEntries.length,
+                overlayVramHash: finalState.hash,
+                shadowUnchanged: finalState.shadowUnchanged,
+                note: 'All original AB character tiles and their backing buffer remain allocated and unchanged. Final visual is the known-good AB window.',
+              })
+            } catch (reason) {
+              reapplyError = reason instanceof Error ? reason.message : String(reason)
+            }
+          }
+        }
+      } finally {
+        // Only RAM staging scratch is restored here. The helper never frees
+        // or overwrites glyph character VRAM, the GFLBitmap, or native actors.
+        await runtimeBridge.writeBytes(directPixels, scratchOriginal)
+        const scratchAfter = await runtimeBridge.readBytes(directPixels, FRAME_FULL_ROW_BYTES)
+        const scratchRestored = scratchAfter.length === FRAME_FULL_ROW_BYTES &&
+          scratchAfter.every((value, i) => value === scratchOriginal[i])
+        console.info('[PokéRun interaction] PRK44 SCREEN MAP ROUND TRIP RESULT', {
+          restoredRows,
+          reappliedRows,
+          restoreVerified,
+          reapplyVerified,
+          scratchRestored,
+          unsafeNativeFailure,
+          restoreError,
+          reapplyError,
+          nativeResourcesFreed: false,
+          note: restoreVerified && reapplyVerified && scratchRestored
+            ? 'Original BG2 map restored and AB overlay re-applied byte-for-byte; P2 health and screenshot remain external checks.'
+            : 'Incomplete/unsafe map round trip. Do not retry in the same emulator session; preserve logs and restart.',
+        })
+      }
+    }
+
     async function runProbe() {
       if (openingRef.current || metadataCompleteRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current || metadataCompleteRef.current) {
@@ -1463,6 +1676,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                 cleanupPlan: 'Restore original 14x7 BG2 screen-map entries before separately invoking GFL_BGSysFreeCharMemory(2,964,1920) and GFL_BitmapFree(bitmap) while same field and DTCM context remain valid.',
                 note: 'READ ONLY: does not restore, free, clear or otherwise modify the visible AB window. Vram map comparison is advisory until validated against the screenshot.',
               })
+              // PRK44 runs only when both original 98-entry maps agree,
+              // the full AB overlay matches, and the actor/BG2 identity
+              // is still the same. This is NOT resource deallocation.
+              await tryPrk44ReversibleMapRoundTrip(
+                prk43Before, after, playerActor, directPixels, bg2, directCharPos,
+              )
             } catch (reason) {
               console.info('[PokéRun interaction] PRK43 BG2 OWNERSHIP AFTER UNAVAILABLE', {
                 reason: reason instanceof Error ? reason.message : String(reason),
