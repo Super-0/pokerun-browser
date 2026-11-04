@@ -21,6 +21,8 @@ const DOOR_INTENT_MS = 40
 const DOOR_PREOPEN_MS = 120
 const DOOR_SETTLE_MS = 1100
 const REMOTE_DEPARTURE_TOTAL_MS = 430 + 260
+// PRK59: development fake P2 needs a fresh idle state just like a real peer.
+const PRK59_FAKE_IDLE_HEARTBEAT_MS = 1500
 
 type Direction = MultiplayerPlayerState['direction']
 type MovementMode = 'walk' | 'run'
@@ -113,6 +115,8 @@ class FakeRemoteDoorPeer {
   private roomCode = ''
   private startId = ''
   private sequence = 0
+  private lastPublishedAt = 0
+  private heartbeatTimer: number | null = null
   private hostState: MultiplayerPlayerState | null = null
   private fakeState: MultiplayerPlayerState | null = null
   private lastRomKey = ''
@@ -140,9 +144,26 @@ class FakeRemoteDoorPeer {
       this.update({ connection, phase: connection === 'connected' ? this.snapshot.phase : connection.toUpperCase() })
     })
     this.transport.connect()
+    this.heartbeatTimer = window.setInterval(() => {
+      // Never echo a transition or a one-shot emote as a heartbeat. Explicit
+      // movement/door scripts own their own packets until they finish.
+      if (this.script || !this.fakeState || !this.startId ||
+          this.snapshot.connection !== 'connected' ||
+          Date.now() - this.lastPublishedAt < PRK59_FAKE_IDLE_HEARTBEAT_MS) return
+      this.publish({
+        ...this.fakeState,
+        movementState: 'idle',
+        transition: undefined,
+        emote: undefined,
+      })
+    }, 500)
   }
 
   dispose() {
+    if (this.heartbeatTimer !== null) {
+      window.clearInterval(this.heartbeatTimer)
+      this.heartbeatTimer = null
+    }
     this.stopScript()
     if (this.roomCode) this.send({ type: 'PLAYER_LEAVE', roomCode: this.roomCode, playerId: this.playerId })
     this.unsubscribeMessage?.()
@@ -168,6 +189,7 @@ class FakeRemoteDoorPeer {
     this.room = null
     this.startId = ''
     this.sequence = 0
+    this.lastPublishedAt = 0
     this.hostState = null
     this.fakeState = null
     this.lastRomKey = ''
@@ -635,6 +657,7 @@ class FakeRemoteDoorPeer {
     if (this.startId === startId) return
     this.startId = startId
     this.sequence = 0
+    this.lastPublishedAt = 0
     this.fakeState = null
     this.doorCaptureArmed = false
     this.capturedDoorTransition = null
@@ -650,6 +673,7 @@ class FakeRemoteDoorPeer {
   private publish(state: MultiplayerPlayerState) {
     if (!this.roomCode || !this.startId) return
     this.fakeState = clonePlayerState(state)
+    this.lastPublishedAt = Date.now()
     this.send({
       type: 'GAME_STATE',
       roomCode: this.roomCode,
