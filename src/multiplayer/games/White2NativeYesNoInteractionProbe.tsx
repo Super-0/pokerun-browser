@@ -1359,9 +1359,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           bgAfter.vramMap !== null &&
           bgAfter.vramMap.length === expectedOverlay.length &&
           bgAfter.vramMap.every((value, i) => value === expectedOverlay[i])
-        const sameShadow = before.ramMap !== null && bgAfter.ramMap !== null &&
-          before.ramMap.length === bgAfter.ramMap.length &&
-          bgAfter.ramMap.every((value, i) => value === before.ramMap![i])
+        const beforeShadow = before.ramMap
+        const afterShadow = bgAfter.ramMap
+        const sameShadow = beforeShadow !== null && afterShadow !== null &&
+          beforeShadow.length === afterShadow.length &&
+          afterShadow.every((value, i) => value === beforeShadow[i])
         console.info('[PokéRun interaction] PRK45 DISPOSABLE FREE BASELINE VERIFIED', {
           freeReturned,
           sameLiveStruct,
