@@ -345,11 +345,12 @@ export function composeWhite2GlyphOverExistingTiles(
   advance: number
 } {
   if (originalTiles.length !== 128 || !Number.isInteger(startX) ||
-      startX < 0 || startX + 12 > 16) {
-    throw new Error('PRK40 requires a 16x16 four-tile block and room for 12px glyph cell.')
+      startX < 0 || startX >= 16) {
+    throw new Error('PRK40 requires a 16x16 four-tile block and a valid glyph X origin.')
   }
   const glyph = decodeWhite2PackedFontGlyph(rom, absoluteRomOffset, 48, 12, 15)
-  if (glyph.x !== 0 || glyph.width !== 6 || glyph.advance !== 6) {
+  if (glyph.x !== 0 || glyph.width !== 6 || glyph.advance !== 6 ||
+      startX + glyph.width > 16) {
     throw new Error('PRK40 B glyph has unexpected offset, width or character advance.')
   }
   const nextTiles = originalTiles.slice()
