@@ -3734,9 +3734,15 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         prk51ClosedBaselineRef.current = null
         openingRef.current = false
         await runProbe()
-        const newWindow = prk50CloseContextRef.current
+        // runProbe() updates these refs indirectly. TypeScript retains the
+        // null narrowing from the earlier reopen guard across await, even
+        // though a fresh native window may now be installed. Re-read them
+        // with their declared types; this changes only TS checking, not the
+        // PRK51 ownership checks or any native call/teardown behavior.
+        const newWindow = prk50CloseContextRef.current as Prk50CloseContext | null
+        const reopenedState = stateRef.current as ProbeState | null
         const reopened = newWindow !== null &&
-          stateRef.current?.window === newWindow.bitmap &&
+          reopenedState?.window === newWindow.bitmap &&
           newWindow.playerActor === playerActor &&
           newWindow.baseline.bgSys === baseline.bgSys
         if (!reopened) {
@@ -3745,7 +3751,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           metadataCompleteRef.current = true
           prk50CloseAttemptedRef.current = true
           console.info('[PokéRun interaction] PRK51 REOPEN INCOMPLETE - LOCKED', {
-            stateWindow: stateRef.current ? hex(stateRef.current.window) : null,
+            stateWindow: reopenedState ? hex(reopenedState.window) : null,
             closeContextArmed: Boolean(newWindow),
             note: 'No second attempt or speculative native cleanup. Restart emulator and preserve diagnostics.',
           })
