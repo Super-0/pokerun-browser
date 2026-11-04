@@ -430,7 +430,14 @@ export class LocalMultiplayerSession {
       this.updateRoom({ ...room, gameStart: message.start }, null)
     }
 
-    if (message.type === 'GAME_STATE' && room.gameStart?.startId === message.startId && message.playerId !== this.localPlayerId) {
+    // PRK58: never cache a remote trade-preflight position from a packet
+    // claiming some other playerId or a player not in this room. This does
+    // not authenticate identities; the current dev relay remains untrusted.
+    if (message.type === 'GAME_STATE' &&
+        room.gameStart?.startId === message.startId &&
+        message.playerId !== this.localPlayerId &&
+        message.senderId === message.playerId &&
+        room.players.some(player => player.id === message.playerId)) {
       const key = `${message.startId}:${message.playerId}`
       const previous = this.receivedSequences.get(key) ?? -1
       if (message.sequence > previous) {
