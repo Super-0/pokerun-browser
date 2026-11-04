@@ -217,11 +217,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk45-disposable-bitmap-plus-prk46-disposable-char-free',
+      mode: 'prk46-disposable-lifetime-plus-prk47-one-way-real-window-close',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK46 tests a separate single-tile BG2 AreaMan reservation after PRK45 passes: allocate/free/reallocate/free without any character VRAM writes; verifies the original 60-tile AB reservation and bitmap remain unchanged.',
+      researchNote: 'PRK47 performs one-way actual AB window teardown ONLY after PRK44/45/46 all pass: restore the original 98 BG2 map entries, verify, release the real 60-tile AreaMan reservation and owned bitmap, and block subsequent X presses. No reopen, transitions or new P2 changes.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -1406,7 +1406,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
     async function tryPrk46DisposableBg2CharLifetime(
       playerActor: number, expectedBgSys: number,
       bg: number, charPos: number, liveBitmap: number, livePixels: number,
-    ) {
+    ): Promise<boolean> {
       if (disposed || runtimeBridge.status !== 'running' ||
           bg !== MSGBG_BG2 || charPos !== 964 ||
           !isMainRamPointer(expectedBgSys) ||
@@ -1414,7 +1414,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR SKIPPED', {
           reason: 'The BG, field or live resource identities failed preflight.',
         })
-        return
+        return false
       }
       const mainArea = await runtimeBridge.read32(
         expectedBgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
@@ -1438,7 +1438,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           tilesTotal,
           reason: 'AreaMan or BG2 character range differs from verified 1024-tile allocation.',
         })
-        return
+        return false
       }
       const overlay = prk43ExpectedMapForWindow(charPos)
       const beforeMap = await inspectBg2MapReadOnly()
@@ -1459,7 +1459,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR SKIPPED', {
           reason: 'Visible AB BG2 map or native bitmap baseline changed after PRK45.',
         })
-        return
+        return false
       }
       async function sameFieldAndSafeStack(): Promise<boolean> {
         if (disposed || runtimeBridge.status !== 'running' ||
@@ -1479,7 +1479,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR SKIPPED', {
           reason: 'Field identity, AreaMan pointer, or ARM9 DTCM stack is no longer safe.',
         })
-        return
+        return false
       }
       console.info('[PokéRun interaction] PRK46 DISPOSABLE BG2 CHAR PREFLIGHT', {
         bg, bgSys: hex(expectedBgSys),
@@ -1622,6 +1622,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           overlayVramHash: prk43SnapshotHash(afterMap.vramMap),
           note: 'Native AreaMan single-tile reserve/free/reuse/final-free completed without changing AB tiles or screen. Does not yet prove full-window teardown or repeated reopening.',
         })
+        return true
       } catch (reason) {
         console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR REJECTED', {
           firstPos: firstPos === AREAMAN_FAIL ? null : firstPos,
@@ -1633,6 +1634,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           reason: reason instanceof Error ? reason.message : String(reason),
           note: 'Stop this session after rejection. Never issue speculative native frees or repeat allocations after unexpected AreaMan state.',
         })
+        return false
       }
     }
 
