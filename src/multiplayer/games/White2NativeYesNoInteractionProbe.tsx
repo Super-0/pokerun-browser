@@ -217,11 +217,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk46-disposable-lifetime-plus-prk47-one-way-real-window-close',
+      mode: 'prk48-hold-ab-overlay-until-emulator-reset',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK47 performs one-way actual AB window teardown ONLY after PRK44/45/46 all pass: restore the original 98 BG2 map entries, verify, release the real 60-tile AreaMan reservation and owned bitmap, and block subsequent X presses. No reopen, transitions or new P2 changes.',
+      researchNote: 'PRK48 retains the PRK40 AB BG2 graphics after PRK44/45/46 validation, intentionally skipping PRK47 teardown. Visual hold for screenshot only; one X per fresh emulated session, do not change maps, reset emulator after test.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -2447,10 +2447,38 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                       directCharPos, directBitmap, directPixels,
                     )
                     if (charLifetimeVerified) {
-                      await tryPrk47OneWayNativeWindowClose(
-                        playerActor, prk43Before, bg2,
-                        directCharPos, directBitmap, directPixels, heapId,
-                      )
+                      // PRK48: isolate visual persistence from PRK47's immediate
+                      // one-way teardown. Keep the already-verified native AB
+                      // BG2 map/char tiles and owned bitmap live until a fresh
+                      // emulator reset. No further guest calls or interaction
+                      // attempts are permitted in this research session.
+                      const prk48HoldForVisualTest = true
+                      if (prk48HoldForVisualTest) {
+                        const heldMap = await inspectBg2MapReadOnly()
+                        const expectedHeldMap = prk43ExpectedMapForWindow(directCharPos)
+                        const matchingEntries = heldMap.vramMap
+                          ? heldMap.vramMap.reduce(
+                              (n, value, i) => n + (value === expectedHeldMap[i] ? 1 : 0), 0,
+                            )
+                          : 0
+                        console.info('[PokéRun interaction] PRK48 AB OVERLAY VISUAL HOLD READY', {
+                          bitmap: hex(directBitmap),
+                          bg: bg2,
+                          charPos: directCharPos,
+                          expectedEntries: expectedHeldMap.length,
+                          matchingEntries,
+                          heldVramHash: prk43SnapshotHash(heldMap.vramMap),
+                          expectedVramHash: prk43SnapshotHash(expectedHeldMap),
+                          nativeResourcesFreed: false,
+                          furtherXBlocked: Boolean(stateRef.current),
+                          note: 'BG2 overlay will remain mapped for visual inspection; PRK47 deliberately NOT called. Do not change maps or press X again. Reset the emulator after the screenshot to release the test allocation.',
+                        })
+                      } else {
+                        await tryPrk47OneWayNativeWindowClose(
+                          playerActor, prk43Before, bg2,
+                          directCharPos, directBitmap, directPixels, heapId,
+                        )
+                      }
                     } else {
                       console.info('[PokéRun interaction] PRK47 REAL WINDOW CLOSE SKIPPED', {
                         reason: 'PRK46 AreaMan disposable allocation/free/reuse tests were not all verified.',
