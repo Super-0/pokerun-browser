@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import { White2ActorSystemProbe } from './White2ActorSystem'
-import { composeWhite2GlyphInTileRam, decodeWhite2PackedFontGlyph, verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
+import { composeWhite2GlyphInTileRam, composeWhite2GlyphOverExistingTiles, decodeWhite2PackedFontGlyph, verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
 import { WHITE2_INTERACT_EVENT } from './White2PlayerInteractionRuntime'
 
 const FLD_ACT_GET_FIELD_EFFECTS = 0x02194f18
@@ -188,11 +188,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk39-two-tile-glyph-a-visual',
+      mode: 'prk40-two-glyph-cross-tile-visual',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK39 runs the verified PRK38 RAM round-trip, then uploads only two changed 32-byte tiles of native glyph A using Thumb4. It leaves bitmap RAM and VRAM consistent for screenshot verification; no native streamed font call.',
+      researchNote: 'PRK40 preserves PRK39 visible glyph A, verifies its four RAM tiles byte-for-byte, and appends glyph B at the six-pixel advance. It uploads four changed 32-byte tiles with Thumb4 to test real two-glyph positioning across an 8px tile boundary.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -634,6 +634,126 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       }
     }
 
+    // PRK40: after PRK39's real glyph A is visible, append B at A's 6px
+    // font advance and cross the 8px BG2 tile boundary. Verify the existing
+    // A backing-store bytes BEFORE any change. No guest FS, text stream,
+    // >4-arg function, BG screen-map writes, or actor changes.
+    async function uploadGlyphBToBg2(
+      directPixels: number, directCharPos: number, bg: number,
+      verifiedRom: Uint8Array, glyphARomOffset: number, bytesPerTile: number,
+    ) {
+      if (bytesPerTile !== 32 || !isMainRamPointer(directPixels) ||
+          directCharPos !== 964 || directCharPos + WINDOW_WIDTH * WINDOW_HEIGHT !== 1024 ||
+          bg !== MSGBG_BG2) {
+        throw new Error('PRK40 bitmap geometry/character allocation guard rejected B draw.')
+      }
+      const tileIndices = [WINDOW_WIDTH + 1, WINDOW_WIDTH + 2,
+                           WINDOW_WIDTH * 2 + 1, WINDOW_WIDTH * 2 + 2]
+      const originalBlock = new Uint8Array(4 * bytesPerTile)
+      for (let i = 0; i < tileIndices.length; i += 1) {
+        const tile = await runtimeBridge.readBytes(
+          directPixels + tileIndices[i] * bytesPerTile, bytesPerTile,
+        )
+        if (tile.length !== bytesPerTile) throw new Error('PRK40 could not read existing A tiles.')
+        originalBlock.set(tile, i * bytesPerTile)
+      }
+      const black = new Uint8Array(4 * bytesPerTile)
+      black.fill(0xff)
+      const verifiedA = composeWhite2GlyphInTileRam(
+        verifiedRom, glyphARomOffset, 48, 12, 15, black,
+      )
+      if (originalBlock.some((value, i) => value !== verifiedA.nextTiles[i]) ||
+          verifiedA.changedBytes !== 26 || verifiedA.decodedAdvance !== 6) {
+        throw new Error('PRK40 rejected unexpected existing A bitmap state; no B upload attempted.')
+      }
+      const glyphBRomOffset = glyphARomOffset + 48
+      const composed = composeWhite2GlyphOverExistingTiles(
+        verifiedRom, glyphBRomOffset, originalBlock, verifiedA.decodedAdvance,
+      )
+      if (composed.changedPerTile.join(',') !== '6,10,5,7' ||
+          composed.changedBytes !== 28 ||
+          composed.inkPixels !== 26 || composed.shadowPixels !== 28 ||
+          composed.advance !== 6) {
+        throw new Error('PRK40 B tile/advance values disagree with independent PRK37 B raster.')
+      }
+      if (runtimeBridge.status !== 'running' ||
+          !validNativeStack(await runtimeBridge.getArm9Sp())) {
+        throw new Error('PRK40 refused B upload from an unsafe ARM9 stack context.')
+      }
+      console.info('[PokéRun interaction] PRK40 GLYPH B CROSS-TILE PREFLIGHT', {
+        previousGlyph: 'A',
+        nextGlyph: 'B',
+        glyphARomOffset: hex(glyphARomOffset),
+        glyphBRomOffset: hex(glyphBRomOffset),
+        previousAdvancePx: verifiedA.decodedAdvance,
+        secondGlyphStartInWindowPx: { x: 8 + verifiedA.decodedAdvance, y: 8 },
+        tileIndices,
+        charPositions: tileIndices.map(i => directCharPos + i),
+        changedPerTile: composed.changedPerTile,
+        changedBytes: composed.changedBytes,
+        inkPixels: composed.inkPixels,
+        shadowPixels: composed.shadowPixels,
+        totalUploadBytes: tileIndices.length * bytesPerTile,
+        note: 'The A glyph in native GFLBitmap RAM matched the exact offline ROM composition. Only B will be added; all four crossed BG2 tiles will use 32-byte CPU transfers.',
+      })
+      let ramTilesPrepared = 0
+      let tilesUploaded = 0
+      let totalInstructions = 0
+      try {
+        // Prepare all four tiles first, so each BG2 VRAM upload reads the same
+        // complete AB state. Each byte is read back before any native call.
+        for (let i = 0; i < tileIndices.length; i += 1) {
+          const tileIndex = tileIndices[i]
+          const desired = composed.nextTiles.slice(i * bytesPerTile, (i + 1) * bytesPerTile)
+          const source = directPixels + tileIndex * bytesPerTile
+          await runtimeBridge.writeBytes(source, desired)
+          const actual = await runtimeBridge.readBytes(source, bytesPerTile)
+          if (actual.length !== bytesPerTile ||
+              actual.some((value, byteIndex) => value !== desired[byteIndex])) {
+            throw new Error('PRK40 B bitmap RAM readback mismatch at tile ' + tileIndex)
+          }
+          ramTilesPrepared += 1
+        }
+        for (const tileIndex of tileIndices) {
+          const call = await atomicCall(
+            GFL_BGSYS_LOAD_CHAR, bg,
+            directPixels + tileIndex * bytesPerTile,
+            bytesPerTile,
+            directCharPos + tileIndex,
+          )
+          tilesUploaded += 1
+          totalInstructions += call.instructions
+          console.info('[PokéRun interaction] PRK40 BG2 CROSSED TILE UPLOADED', {
+            tileIndex,
+            charPosition: directCharPos + tileIndex,
+            bytes: bytesPerTile,
+            instructions: call.instructions,
+          })
+        }
+        console.info('[PokéRun interaction] PRK40 VISIBLE AB TEXT SUCCESS', {
+          text: 'AB',
+          glyphAStartPx: { x: 8, y: 8 },
+          glyphBStartPx: { x: 14, y: 8 },
+          glyphAdvancesPx: [6, 6],
+          tilesUploaded,
+          charPositions: tileIndices.map(i => directCharPos + i),
+          bytesTransferred: tilesUploaded * bytesPerTile,
+          changedPerTile: composed.changedPerTile,
+          changedBytes: composed.changedBytes,
+          totalInstructions,
+          note: 'AB is now in native bitmap RAM and BG2 VRAM. Verify glyph spacing and colors visually; screenshot required.',
+        })
+      } catch (reason) {
+        console.info('[PokéRun interaction] PRK40 AB PARTIAL STATE / RESTART REQUIRED', {
+          ramTilesPrepared,
+          tilesUploaded,
+          reason: reason instanceof Error ? reason.message : String(reason),
+          note: 'Do not retry this guest after an incomplete cross-tile transfer. Preserve the logs and restart before another test.',
+        })
+        throw reason
+      }
+    }
+
     async function runProbe() {
       if (openingRef.current || metadataCompleteRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current || metadataCompleteRef.current) {
@@ -981,16 +1101,31 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
               })
             }
             if (prk38Passed) {
+              let prk39Passed = false
               try {
                 await uploadGlyphAToBg2(
                   directPixels, directCharPos, bg2, romBytes,
                   prk38GlyphRomOffset, bytesPerTile,
                 )
+                prk39Passed = true
               } catch (reason) {
                 console.info('[PokéRun interaction] PRK39 VISUAL GLYPH REJECTED', {
                   reason: reason instanceof Error ? reason.message : String(reason),
                   note: 'PRK39 stopped; the user should restart the guest before rerunning if a native tile upload failed.',
                 })
+              }
+              if (prk39Passed) {
+                try {
+                  await uploadGlyphBToBg2(
+                    directPixels, directCharPos, bg2, romBytes,
+                    prk38GlyphRomOffset, bytesPerTile,
+                  )
+                } catch (reason) {
+                  console.info('[PokéRun interaction] PRK40 AB CROSS-TILE REJECTED', {
+                    reason: reason instanceof Error ? reason.message : String(reason),
+                    note: 'PRK39 A visual remains the known-good baseline. Do not retry failed native uploads without restarting.',
+                  })
+                }
               }
             }
           } else {
