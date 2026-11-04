@@ -1853,8 +1853,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         // The tilemap was verified to no longer reference 964..1023.
         // The real AreaMan reservation can now be released with the
         // same three-argument Thumb4 call proven by PRK46.
+        let charFreeInstructions = 0
         try {
-          await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg, charPos, 1920)
+          const released = await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg, charPos, 1920)
+          charFreeInstructions = released.instructions
         } catch (reason) {
           failedNativeCall = true
           throw reason
@@ -1865,6 +1867,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         metadataCompleteRef.current = true
         console.info('[PokéRun interaction] PRK47 REAL BG2 CHAR RESERVATION FREED', {
           bg, startTile: charPos, tileCount: 60, releasedBytes: 1920,
+          nativeFreeInstructions: charFreeInstructions,
           originalMapStillVerified: mapRestored,
           note: 'Native AreaMan release returned. No screen-map entries point to these character tiles.',
         })
