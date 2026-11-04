@@ -1505,7 +1505,13 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       let failedNativeCall = false
       let unexpectedReservation = false
       try {
-        const firstCall = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg, 32, 1)
+        let firstCall
+        try {
+          firstCall = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg, 32, 1)
+        } catch (reason) {
+          failedNativeCall = true
+          throw reason
+        }
         firstPos = firstCall.result
         firstAllocInstructions = firstCall.instructions
         const validIsolated = firstPos !== AREAMAN_FAIL &&
@@ -1543,7 +1549,13 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         if (!(await sameFieldAndSafeStack())) {
           throw new Error('PRK46 field/stack changed before reallocation; no further native call attempted.')
         }
-        const secondCall = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg, 32, 1)
+        let secondCall
+        try {
+          secondCall = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg, 32, 1)
+        } catch (reason) {
+          failedNativeCall = true
+          throw reason
+        }
         secondPos = secondCall.result
         secondAllocInstructions = secondCall.instructions
         const reuseVerified = secondPos === firstPos
@@ -1589,6 +1601,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         const sameAreaMan = (await runtimeBridge.read32(
           expectedBgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
         )) === mainArea
+        if (!sameAreaMan || !sameMap || !sameShadow ||
+            !sameLiveStruct || !sameLivePixels) {
+          throw new Error('PRK46 post-free AB graphics or AreaMan identity changed.')
+        }
         console.info('[PokéRun interaction] PRK46 DISPOSABLE BG2 CHAR LIFETIME VERIFIED', {
           firstPos, secondPos,
           firstFreeReturned, secondFreeReturned,
@@ -1606,10 +1622,6 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           overlayVramHash: prk43SnapshotHash(afterMap.vramMap),
           note: 'Native AreaMan single-tile reserve/free/reuse/final-free completed without changing AB tiles or screen. Does not yet prove full-window teardown or repeated reopening.',
         })
-        if (!sameAreaMan || !sameMap || !sameShadow ||
-            !sameLiveStruct || !sameLivePixels) {
-          throw new Error('PRK46 post-free AB graphics or AreaMan identity changed.')
-        }
       } catch (reason) {
         console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR REJECTED', {
           firstPos: firstPos === AREAMAN_FAIL ? null : firstPos,
