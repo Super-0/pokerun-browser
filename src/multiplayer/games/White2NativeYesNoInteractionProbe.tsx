@@ -100,6 +100,15 @@ type AtomicRuntime = {
 }
 
 type ProbeState = { window: number }
+type Prk50CloseContext = {
+  playerActor: number
+  baseline: Prk43Bg2MapSnapshot
+  bg: number
+  charPos: number
+  bitmap: number
+  pixels: number
+  heapId: number
+}
 type Prk43Bg2MapSnapshot = {
   bgSys: number
   screenPtr: number
@@ -127,6 +136,8 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
   const stateRef = useRef<ProbeState | null>(null)
   const openingRef = useRef(false)
   const metadataCompleteRef = useRef(false)
+  const prk50CloseContextRef = useRef<Prk50CloseContext | null>(null)
+  const prk50CloseAttemptedRef = useRef(false)
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
@@ -217,11 +228,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk49-long-line-on-held-native-bg2-window',
+      mode: 'prk50-second-x-one-way-close-after-prk49-visible-hold',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK49 retains PRK48 AB BG2 graphics, then replaces it with verified offline-composed Hello, P2! text using 32-byte Thumb4 CPU transfers. No native text printer or PRK47 close, one X per session, reset emulator after screenshot.',
+      researchNote: 'PRK50 retains verified PRK49 Hello P2 rendering. First X opens, next distinct X attempts one-way guarded PRK47 map restoration and native bitmap/char free. Reopen disabled until close verified. No ListMenuUI polling or BmpWin_CreateDynamic.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -2582,6 +2593,28 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                               nativeResourcesFreed: false,
                               note: 'Long text is in owned native bitmap RAM and BG2 character VRAM, with the 98-entry window map still held. Visually inspect; reset emulator after test. PRK47 was not called.',
                             })
+                            // PRK50: do not close in this call stack. Preserve
+                            // known-good text on screen until a distinct X
+                            // interaction arrives from the user.
+                            prk50CloseContextRef.current = {
+                              playerActor,
+                              baseline: prk43Before,
+                              bg: bg2,
+                              charPos: directCharPos,
+                              bitmap: directBitmap,
+                              pixels: directPixels,
+                              heapId,
+                            }
+                            console.info('[PokéRun interaction] PRK50 SECOND X CLOSE ARMED', {
+                              visibleText: 'Hello, P2!',
+                              windowBitmap: hex(directBitmap),
+                              charPos: directCharPos,
+                              baselineMapHash: prk43SnapshotHash(prk43Before.vramMap),
+                              heldMapHash: prk43SnapshotHash(finalMap.vramMap),
+                              firstInteractionComplete: true,
+                              reopensAllowed: false,
+                              note: 'The full text box stays visible until a new X press. That second X will call the separately verified PRK47 one-way cleanup with original map and resource ownership guards. Never close in the same first-X probe.',
+                            })
                           } catch (reason) {
                             console.info('[PokéRun interaction] PRK49 LONG TEXT UPLOAD REJECTED', {
                               tilesPrepared, tilesUploaded, totalInstructions,
@@ -3315,6 +3348,60 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       }
     }
 
+    async function tryPrk50SecondXClose() {
+      if (openingRef.current || prk50CloseAttemptedRef.current ||
+          !prk50CloseContextRef.current || runtimeBridge.status !== 'running') {
+        console.info('[PokéRun interaction] PRK50 SECOND X CLOSE HELD', {
+          opening: openingRef.current,
+          closeAttempted: prk50CloseAttemptedRef.current,
+          contextAvailable: Boolean(prk50CloseContextRef.current),
+          bridgeStatus: runtimeBridge.status,
+        })
+        return
+      }
+      const owned = prk50CloseContextRef.current
+      // A single one-way attempt per guest session, including preflight
+      // rejection: never retry after a partial native graphics operation.
+      prk50CloseAttemptedRef.current = true
+      prk50CloseContextRef.current = null
+      openingRef.current = true
+      console.info('[PokéRun interaction] PRK50 SECOND X CLOSE REQUESTED', {
+        bitmap: hex(owned.bitmap),
+        bg: owned.bg,
+        charPos: owned.charPos,
+        baselineMapHash: prk43SnapshotHash(owned.baseline.vramMap),
+        note: 'User-triggered close after visual hold. No reopen or speculative retry; PRK47 validates field, VRAM map, allocator, bitmap ownership, and safe DTCM stack again.',
+      })
+      try {
+        const closed = await tryPrk47OneWayNativeWindowClose(
+          owned.playerActor, owned.baseline, owned.bg,
+          owned.charPos, owned.bitmap, owned.pixels, owned.heapId,
+        )
+        if (closed) {
+          console.info('[PokéRun interaction] PRK50 SECOND X CLOSE VERIFIED', {
+            resourcesReleased: true,
+            mapRestored: true,
+            reopenAllowed: false,
+            furtherInteractionLocked: metadataCompleteRef.current,
+            note: 'PRK47 completed the one-way resource teardown on a distinct X press. Visually verify that the Hello P2 window disappeared while P2 remains healthy. Restart emulator to repeat.',
+          })
+        } else {
+          console.info('[PokéRun interaction] PRK50 SECOND X CLOSE REJECTED', {
+            resourcesReleased: 'see PRK47 phase logs',
+            reopenAllowed: false,
+            note: 'A PRK47 guard rejected cleanup. Do not retry in this guest; preserve the logs and restart before testing again.',
+          })
+        }
+      } catch (reason) {
+        console.info('[PokéRun interaction] PRK50 SECOND X CLOSE FAILED', {
+          reason: reason instanceof Error ? reason.message : String(reason),
+          note: 'No retry in this emulated session. If cleanup was partial, restart before another test.',
+        })
+      } finally {
+        openingRef.current = false
+      }
+    }
+
     const onInteract = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail : undefined
       console.info('[PokéRun interaction] INTERACT EVENT RECEIVED', {
@@ -3322,8 +3409,15 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         bridgeStatus: runtimeBridge.status,
         probeComplete: Boolean(stateRef.current),
         opening: openingRef.current,
+        closeArmed: Boolean(prk50CloseContextRef.current),
+        closeAttempted: prk50CloseAttemptedRef.current,
       })
-      void runProbe()
+      if (prk50CloseAttemptedRef.current) return
+      if (prk50CloseContextRef.current) {
+        void tryPrk50SecondXClose()
+      } else {
+        void runProbe()
+      }
     }
 
     window.addEventListener(WHITE2_INTERACT_EVENT, onInteract)
@@ -3331,9 +3425,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       disposed = true
       window.removeEventListener(WHITE2_INTERACT_EVENT, onInteract)
       emitMenuState(false)
-      // PRK47 frees the original ad-hoc GFLBitmap only on a validated close.
-      // Earlier or failed research probes may still own native allocations.
-      // Never invoke guest-free functions from a React unmount callback.
+      // React unmount must never call native guest frees, even if an
+      // interaction has a pending context. Restart the guest instead.
+      prk50CloseContextRef.current = null
+      prk50CloseAttemptedRef.current = false
       stateRef.current = null
       metadataCompleteRef.current = false
     }
