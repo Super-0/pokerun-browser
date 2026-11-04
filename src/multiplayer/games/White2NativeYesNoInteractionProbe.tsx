@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import { White2ActorSystemProbe } from './White2ActorSystem'
-import { composeWhite2GlyphInTileRam, composeWhite2GlyphOverExistingTiles, decodeWhite2PackedFontGlyph, verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
+import { auditWhite2AsciiFont, composeWhite2GlyphInTileRam, composeWhite2GlyphOverExistingTiles, decodeWhite2PackedFontGlyph, verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
 import { WHITE2_INTERACT_EVENT } from './White2PlayerInteractionRuntime'
 
 const FLD_ACT_GET_FIELD_EFFECTS = 0x02194f18
@@ -188,11 +188,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk40-two-glyph-cross-tile-visual',
+      mode: 'prk40-ab-visual-plus-prk41-readonly-ascii-audit',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK40 preserves PRK39 visible glyph A, verifies its four RAM tiles byte-for-byte, and appends glyph B at the six-pixel advance. It uploads four changed 32-byte tiles with Thumb4 to test real two-glyph positioning across an 8px tile boundary.',
+      researchNote: 'PRK41 audits all 95 printable ASCII glyph offsets/widths/advances from browser ROM before native calls. The existing PRK40 AB GPU path remains identical; no new emulator writes or native calls.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -380,6 +380,35 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         console.info('[PokéRun interaction] PRK37 OFFLINE FONT DECODE REJECTED', {
           reason: reason instanceof Error ? reason.message : String(reason),
           note: 'The independent read-only PRK37 parser failed. PRK35 FAT/NARC verification still passed; native window code is unaffected.',
+        })
+      }
+      // PRK41 strictly surveys local ROM font metrics before touching the
+      // guest CPU. It does not draw or alter the successful PRK40 AB window.
+      try {
+        const memberStart = result.fatEntryStart + result.narcMemberOffset
+        const audit = auditWhite2AsciiFont(
+          verifiedRomBytes,
+          memberStart,
+          result.narcMemberLength,
+          glyphsOffset,
+          glyphCellSize,
+        )
+        console.info('[PokéRun interaction] PRK41 ASCII FONT METRICS VERIFIED', {
+          glyphCount: audit.glyphCount,
+          advanceDistribution: audit.advanceDistribution,
+          advanceWidthDifferences: audit.advanceWidthDifferences,
+          nonzeroOffsetGlyphs: audit.nonzeroOffsetGlyphs,
+          blankGlyphs: audit.blankGlyphs,
+          fontMetricsFnv1a32: audit.fontMetricsFnv1a32,
+          sampleText: audit.sampleText,
+          metrics: audit.metrics,
+          nativeSpacingRule: 'GFL_TextRndDrawCharProc_IDX4 draws at penX + GlyphInfo.x and moves penX by GlyphInfo.advance.',
+          note: 'All 95 printable ASCII metrics parsed directly from the verified local ROM; no guest call, CPU stack mutation, GFLBitmap write, or BG2 VRAM upload.',
+        })
+      } catch (reason) {
+        console.info('[PokéRun interaction] PRK41 ASCII FONT METRICS REJECTED', {
+          reason: reason instanceof Error ? reason.message : String(reason),
+          note: 'ROM-only research audit rejected. PRK40 visual experiment is independent.',
         })
       }
       return result
