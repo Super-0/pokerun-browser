@@ -159,3 +159,101 @@ export function verifyWhite2FontGlyphFromRom(
     glyphFnv1a32: `0x${hash.toString(16).padStart(8, '0')}`,
   }
 }
+
+/**
+ * PRK37: independent, read-only decoder of one White 2 font glyph cell.
+ *
+ * Pinned pokebw2 src/system/gf_font.c:
+ * - GFL_FontGlyphCopy: cell[0..2] = x, width, advance; pixels at cell+3
+ * - GFL_FontBitmapCopy_16x16: read each source row as MSB-first 2bpp
+ * - GFL_TextRndUpdateColorIndexLUT(1,2,0): src 0/1/2/3 -> tile nibble 0/1/2/0
+ *
+ * The 12x15 field font uses 3 + ceil(12*15*2/8) = 48 bytes per cell.
+ * Output tiles are a separate 128-byte 16x16 4bpp buffer, NEVER guest VRAM.
+ */
+export type White2DecodedFontGlyph = {
+  absoluteRomOffset: number
+  cellBytes: number
+  cellWidth: number
+  cellHeight: number
+  x: number
+  width: number
+  advance: number
+  source2bppCounts: [number, number, number, number]
+  nonzeroColorPixels: number
+  native4bppTileBytes: number
+  native4bppTileFnv1a32: string
+  asciiRows: string[]
+}
+
+export function decodeWhite2PackedFontGlyph(
+  rom: Uint8Array,
+  absoluteRomOffset: number,
+  cellBytes: number,
+  cellWidth: number,
+  cellHeight: number,
+): White2DecodedFontGlyph {
+  if (!Number.isSafeInteger(absoluteRomOffset) || !Number.isSafeInteger(cellBytes) ||
+      absoluteRomOffset < 0 || cellBytes < 4 || absoluteRomOffset + cellBytes > rom.byteLength) {
+    throw new Error('PRK37 glyph cell points outside the browser-held ROM.')
+  }
+  if (!Number.isInteger(cellWidth) || !Number.isInteger(cellHeight) ||
+      cellWidth < 1 || cellWidth > 16 || cellHeight < 1 || cellHeight > 16) {
+    throw new Error('PRK37 only decodes glyphs fitting a 2x2-tile 16x16 destination.')
+  }
+  const sourcePixelBytes = Math.ceil(cellWidth * cellHeight * 2 / 8)
+  if (cellBytes !== sourcePixelBytes + 3) {
+    throw new Error(`PRK37 cell has ${cellBytes} bytes; expected 3 metadata + ${sourcePixelBytes} packed pixel bytes.`)
+  }
+  const x = rom[absoluteRomOffset]
+  const width = rom[absoluteRomOffset + 1]
+  const advance = rom[absoluteRomOffset + 2]
+  if (width > cellWidth || advance > 32) {
+    throw new Error(`PRK37 glyph placement invalid: x=${x} width=${width} advance=${advance} cellWidth=${cellWidth}.`)
+  }
+
+  // DS text tiles: 4 tiles, 32 bytes each. A pixel's low nibble comes before
+  // its horizontal neighbor's high nibble. Default White 2 text colors map
+  // glyph source colors 0/1/2/3 to 0/1/2/0 (transparent/ink/shadow/bg).
+  const nativeTiles = new Uint8Array(4 * 32)
+  const counts: [number, number, number, number] = [0, 0, 0, 0]
+  const symbols = ['.', '#', '+', '_']
+  const rows: string[] = []
+  for (let y = 0; y < cellHeight; y += 1) {
+    let row = ''
+    for (let xPixel = 0; xPixel < cellWidth; xPixel += 1) {
+      const pixelIndex = y * cellWidth + xPixel
+      const bitIndex = pixelIndex * 2
+      const packedByte = rom[absoluteRomOffset + 3 + (bitIndex >> 3)]
+      const sourceValue = (packedByte >>> (6 - (bitIndex & 7))) & 3
+      counts[sourceValue] += 1
+      row += symbols[sourceValue]
+      const destPalette = sourceValue === 1 ? 1 : sourceValue === 2 ? 2 : 0
+      const tileIndex = (y >> 3) * 2 + (xPixel >> 3)
+      const pixelInTile = (y & 7) * 8 + (xPixel & 7)
+      const destByteIndex = tileIndex * 32 + (pixelInTile >> 1)
+      nativeTiles[destByteIndex] |= destPalette << ((pixelInTile & 1) * 4)
+    }
+    rows.push(row)
+  }
+
+  let hash = 0x811c9dc5
+  for (const byte of nativeTiles) {
+    hash ^= byte
+    hash = Math.imul(hash, 0x01000193) >>> 0
+  }
+  return {
+    absoluteRomOffset,
+    cellBytes,
+    cellWidth,
+    cellHeight,
+    x,
+    width,
+    advance,
+    source2bppCounts: counts,
+    nonzeroColorPixels: counts[1] + counts[2],
+    native4bppTileBytes: nativeTiles.length,
+    native4bppTileFnv1a32: `0x${hash.toString(16).padStart(8, '0')}`,
+    asciiRows: rows,
+  }
+}
