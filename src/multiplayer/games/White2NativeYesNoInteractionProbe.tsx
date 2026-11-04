@@ -514,7 +514,6 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             observedArm9Sp: hex(originalArm9Sp),
             dtcmGuardPassed: validNativeStack(originalArm9Sp),
             bridge: 'callArm9Thumb4',
-            note: 'Thumb8 relocated stack is NEVER used.',
             bg: bg2,
             heapId,
             expectedCharPos: 964,
