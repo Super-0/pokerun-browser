@@ -3730,8 +3730,14 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
     ) {
       const owned = prk50CloseContextRef.current
       const browserRom = romBytes
+      // PRK54 used "verifiedCloses !== 0" here because only one window
+      // lifetime was permitted. PRK55 explicitly allows a second, freshly
+      // allocated window after PRK47 frees the first and PRK51 revalidates
+      // the original field/allocator. Keep the full close cap and ownership
+      // guards, but do NOT reject the reopened lifetime just for being #2.
       if (openingRef.current || prk54FailedRef.current ||
-          prk50CloseAttemptedRef.current || prk51VerifiedClosesRef.current !== 0 ||
+          prk50CloseAttemptedRef.current ||
+          prk51VerifiedClosesRef.current >= PRK55_MAX_VERIFIED_CLOSES ||
           !owned || !browserRom || runtimeBridge.status !== 'running' ||
           (firstDisplay && prk53SwapAttemptedRef.current) ||
           (!firstDisplay && (!prk53TextSwappedRef.current ||
@@ -3744,6 +3750,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           menuActive: prk53TextSwappedRef.current,
           navigations: prk54NavigationCountRef.current,
           bridgeStatus: runtimeBridge.status,
+          verifiedCloses: prk51VerifiedClosesRef.current,
+          maximumCloses: PRK55_MAX_VERIFIED_CLOSES,
+          secondLifetime: prk51ReopenVerifiedRef.current,
+          closeAttempted: prk50CloseAttemptedRef.current,
+          swapAttempted: prk53SwapAttemptedRef.current,
+          note: 'No native operation attempted. Gate details identify a blocked lifetime before rendering.',
         })
         return
       }
