@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import { White2ActorSystemProbe } from './White2ActorSystem'
-import { decodeWhite2PackedFontGlyph, verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
+import { composeWhite2GlyphInTileRam, decodeWhite2PackedFontGlyph, verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
 import { WHITE2_INTERACT_EVENT } from './White2PlayerInteractionRuntime'
 
 const FLD_ACT_GET_FIELD_EFFECTS = 0x02194f18
@@ -188,11 +188,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk36-visual-plus-prk37-offline-font-decode',
+      mode: 'prk36-visual-plus-prk38-reversible-ram-glyph',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK37 decodes 2bpp glyph raster and 4bpp tile hashes from browser ROM, after PRK35 FAT/NARC verification but before PRK36 stack-gated native visual calls.',
+      researchNote: 'PRK38 composes one verified ROM glyph into four existing GFLBitmap RAM tiles, checks changes, then restores the original 128 bytes without any extra VRAM upload; PRK36 stack-gated native frame remains unchanged.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -382,6 +382,109 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           note: 'The independent read-only PRK37 parser failed. PRK35 FAT/NARC verification still passed; native window code is unaffected.',
         })
       }
+      return result
+    }
+
+    // PRK38: after the PRK34 window is already displayed, verify offline
+    // 2bpp glyph A composition in the EXISTING GFLBitmap RAM backing store.
+    // The 4-tile 16x16 region is inside the 12x5 tile buffer at (8,8) px.
+    // We NEVER call GFL_BGSysLoadChar here: no glyph pixels enter BG2 VRAM.
+    async function verifyGlyphBitmapRam(
+      directPixels: number, verifiedRom: Uint8Array, glyphRomOffset: number,
+      bytesPerTile: number,
+    ) {
+      if (bytesPerTile !== 32 || !isMainRamPointer(directPixels)) {
+        throw new Error('PRK38 requires the verified 32-byte-tile native GFLBitmap.')
+      }
+      const tileIndices = [
+        WINDOW_WIDTH + 1, WINDOW_WIDTH + 2,
+        2 * WINDOW_WIDTH + 1, 2 * WINDOW_WIDTH + 2,
+      ]
+      const originals: Uint8Array[] = []
+      for (const tile of tileIndices) {
+        const bytes = await runtimeBridge.readBytes(directPixels + tile * bytesPerTile, bytesPerTile)
+        if (bytes.length !== bytesPerTile || bytes.some(value => value !== 0xff)) {
+          throw new Error('PRK38 expected four unmodified black-fill bitmap tiles.')
+        }
+        originals.push(bytes)
+      }
+      const originalBlock = new Uint8Array(4 * bytesPerTile)
+      for (let i = 0; i < originals.length; i += 1) {
+        originalBlock.set(originals[i], i * bytesPerTile)
+      }
+      const composed = composeWhite2GlyphInTileRam(
+        verifiedRom, glyphRomOffset, 48, 12, 15, originalBlock,
+      )
+      console.info('[PokéRun interaction] PRK38 GLYPH BITMAP RAM CALL', {
+        glyph: 'A',
+        romOffset: hex(glyphRomOffset),
+        bitmapPixelBase: hex(directPixels),
+        tileIndices,
+        tileAddresses: tileIndices.map(tile => hex(directPixels + tile * bytesPerTile)),
+        changedBytes: composed.changedBytes,
+        inkPixels: composed.inkPixels,
+        shadowPixels: composed.shadowPixels,
+        width: composed.decodedWidth,
+        advance: composed.decodedAdvance,
+        note: 'Temporarily modify only four tiles of the allocated bitmap; no VRAM upload or native guest calls.',
+      })
+      let wrote = false
+      let verified = false
+      let restored = false
+      try {
+        wrote = true
+        for (let i = 0; i < tileIndices.length; i += 1) {
+          const tile = composed.nextTiles.slice(i * bytesPerTile, (i + 1) * bytesPerTile)
+          await runtimeBridge.writeBytes(directPixels + tileIndices[i] * bytesPerTile, tile)
+        }
+        let observedChangedBytes = 0
+        for (let i = 0; i < tileIndices.length; i += 1) {
+          const actual = await runtimeBridge.readBytes(
+            directPixels + tileIndices[i] * bytesPerTile, bytesPerTile,
+          )
+          const wanted = composed.nextTiles.subarray(i * bytesPerTile, (i + 1) * bytesPerTile)
+          if (actual.length !== bytesPerTile || actual.some((value, j) => value !== wanted[j])) {
+            throw new Error('PRK38 bitmap RAM readback differs from composed A glyph (tile ' + tileIndices[i] + ').')
+          }
+          observedChangedBytes += actual.reduce(
+            (acc, value, j) => acc + (value !== originals[i][j] ? 1 : 0), 0,
+          )
+        }
+        if (observedChangedBytes !== composed.changedBytes) {
+          throw new Error('PRK38 RAM diff count disagrees with offline composition.')
+        }
+        verified = true
+        console.info('[PokéRun interaction] PRK38 GLYPH BITMAP RAM VERIFIED', {
+          tiles: tileIndices.length,
+          bytesChecked: 4 * bytesPerTile,
+          changedBytes: observedChangedBytes,
+          inkPixels: composed.inkPixels,
+          shadowPixels: composed.shadowPixels,
+          note: 'Decoded A is correctly composed in GFLBitmap RAM; BG2 VRAM was NOT modified.',
+        })
+      } finally {
+        if (wrote) {
+          for (let i = 0; i < tileIndices.length; i += 1) {
+            await runtimeBridge.writeBytes(
+              directPixels + tileIndices[i] * bytesPerTile, originals[i],
+            )
+          }
+          for (let i = 0; i < tileIndices.length; i += 1) {
+            const actual = await runtimeBridge.readBytes(
+              directPixels + tileIndices[i] * bytesPerTile, bytesPerTile,
+            )
+            if (actual.length !== bytesPerTile || actual.some((value, j) => value !== originals[i][j])) {
+              throw new Error('PRK38 failed to restore the original black bitmap RAM (tile ' + tileIndices[i] + ').')
+            }
+          }
+          restored = true
+        }
+        console.info('[PokéRun interaction] PRK38 GLYPH BITMAP RAM RESTORE', {
+          verified, restored,
+          bytesRestored: restored ? 4 * bytesPerTile : 0,
+          note: 'All touched backing-store tiles were restored before returning. The on-screen frame is unchanged.',
+        })
+      }
     }
 
     async function runProbe() {
@@ -394,6 +497,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       openingRef.current = true
 
       try {
+        let prk38GlyphRomOffset: number | null = null
         const scan = await probe.scanHeap()
         if (!scan.playerActor || !isMainRamPointer(scan.playerActor.address)) {
           throw new Error(`Player actor is invalid (${hex(scan.playerActor?.address ?? 0)}).`)
@@ -414,7 +518,8 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         // independent of the graphics/heap execution context.
         if (PRK33_FOUR_ARG_BG2_VISUAL) {
           try {
-            await verifyBrowserHeldFontRom(WHITE2_KNOWN_FIELD_MSGBG)
+            const verified = await verifyBrowserHeldFontRom(WHITE2_KNOWN_FIELD_MSGBG)
+            prk38GlyphRomOffset = verified?.glyphAbsoluteRomOffset ?? null
           } catch (reason) {
             console.info('[PokéRun interaction] PRK35 ROM FAT NARC VERIFICATION REJECTED', {
               reason: reason instanceof Error ? reason.message : String(reason),
@@ -712,6 +817,26 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             screenUploadInstructions,
             note: 'Native White 2 BG2 window tiles and border upload calls returned; visual confirmation requires screenshot. No BmpWin object, text printer, or menu lifecycle was created.',
           })
+          // PRK38 is deliberately NOT a new renderer or interaction menu.
+          // It reads and temporarily modifies four GFLBitmap RAM tiles after
+          // PRK34 has already uploaded the clean black window to BG2 VRAM.
+          if (romBytes && prk38GlyphRomOffset !== null) {
+            try {
+              await verifyGlyphBitmapRam(
+                directPixels, romBytes, prk38GlyphRomOffset, bytesPerTile,
+              )
+            } catch (reason) {
+              console.info('[PokéRun interaction] PRK38 GLYPH BITMAP RAM REJECTED', {
+                reason: reason instanceof Error ? reason.message : String(reason),
+                note: 'PRK34 BG2 visual remains the baseline. PRK38 does not call any guest native routine or BG2 character upload.',
+              })
+            }
+          } else {
+            console.info('[PokéRun interaction] PRK38 GLYPH BITMAP RAM SKIPPED', {
+              hasBrowserRom: Boolean(romBytes),
+              hasVerifiedGlyphOffset: prk38GlyphRomOffset !== null,
+            })
+          }
           return
         }
 
