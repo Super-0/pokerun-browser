@@ -257,3 +257,70 @@ export function decodeWhite2PackedFontGlyph(
     asciiRows: rows,
   }
 }
+
+
+/**
+ * PRK38: compose a single decoded glyph over FOUR existing 4bpp background
+ * tiles (2x2, 16x16 pixels) in JavaScript, leaving them in host memory.
+ * Nothing is written to emulated RAM or VRAM by this function.
+ *
+ * Black window fill 0xFF means a background pixel is palette nibble 15.
+ * Leave source 0/3 pixels untouched; source 1 and 2 become nibble 1 and 2.
+ * Uses the independently verified MSB-first PRK37 decoded ASCII rows.
+ */
+export function composeWhite2GlyphInTileRam(
+  rom: Uint8Array,
+  absoluteRomOffset: number,
+  cellBytes: number,
+  cellWidth: number,
+  cellHeight: number,
+  originalTiles: Uint8Array,
+): {
+  nextTiles: Uint8Array
+  changedBytes: number
+  inkPixels: number
+  shadowPixels: number
+  decodedWidth: number
+  decodedAdvance: number
+} {
+  if (originalTiles.length !== 128 || originalTiles.some(byte => byte !== 0xff)) {
+    throw new Error('PRK38 expected four untouched black-fill 4bpp tiles (128 bytes of 0xFF).')
+  }
+  const glyph = decodeWhite2PackedFontGlyph(
+    rom, absoluteRomOffset, cellBytes, cellWidth, cellHeight,
+  )
+  if (glyph.x !== 0 || glyph.width !== 6 || glyph.advance !== 6) {
+    throw new Error('PRK38 expects the verified six-pixel A glyph with zero X offset.')
+  }
+  const nextTiles = originalTiles.slice()
+  let inkPixels = 0
+  let shadowPixels = 0
+  for (let y = 0; y < cellHeight; y += 1) {
+    for (let x = 0; x < cellWidth; x += 1) {
+      const pixel = glyph.asciiRows[y][x]
+      const paletteIndex = pixel === '#' ? 1 : pixel === '+' ? 2 : 0
+      if (paletteIndex === 0) continue
+      if (paletteIndex === 1) inkPixels += 1
+      else shadowPixels += 1
+      const tile = (y >> 3) * 2 + (x >> 3)
+      const pixelWithinTile = (y & 7) * 8 + (x & 7)
+      const byteIndex = tile * 32 + (pixelWithinTile >> 1)
+      const shift = (pixelWithinTile & 1) * 4
+      nextTiles[byteIndex] =
+        (nextTiles[byteIndex] & ~(0x0f << shift)) | (paletteIndex << shift)
+    }
+  }
+  let changedBytes = 0
+  for (let i = 0; i < nextTiles.length; i += 1) {
+    if (nextTiles[i] !== originalTiles[i]) changedBytes += 1
+  }
+  if (inkPixels !== glyph.source2bppCounts[1] ||
+      shadowPixels !== glyph.source2bppCounts[2] ||
+      changedBytes === 0) {
+    throw new Error('PRK38 glyph composition does not match independently decoded source pixels.')
+  }
+  return {
+    nextTiles, changedBytes, inkPixels, shadowPixels,
+    decodedWidth: glyph.width, decodedAdvance: glyph.advance,
+  }
+}
