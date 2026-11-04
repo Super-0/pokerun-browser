@@ -110,8 +110,24 @@ export function White2PlayerInteractionRuntime() {
           appResultConsumed: true,
           serverIdentityAuthenticated: false,
           guestTradeInitiated: false,
-          note: 'Read-only dry-run: future trade requests require session-bound sender validation, explicit remote consent and cancellation. No network packet or guest write.',
+          note: 'PRK58 pre-send dry-run; PRK60 separately decides whether to send a dev-only trade request. No guest writes.',
         })
+        // PRK60 asks the session, not an untrusted DOM payload, to bind
+        // every room, game-start and peer ID and recheck freshness before
+        // sending. Explicit native No never calls the publisher.
+        if (preview.eligible) {
+          const requested = multiplayerPresence.requestTradeFromConfirmedNativeChoice()
+          console.info(requested
+            ? '[PokéRun trade] PRK60 NATIVE YES REQUEST DISPATCHED'
+            : '[PokéRun trade] PRK60 NATIVE YES REQUEST BLOCKED', {
+            resultSequence: candidate.sequence,
+            postNativeTeardown: true,
+            freshSessionPreflight: preview.eligible,
+            devHandshakeMessageSent: requested,
+            guestTradeInitiated: false,
+            note: 'Protocol-only development request. No Pokémon, save data or guest writes.',
+          })
+        }
       } else {
         console.info('[PokéRun interaction] PRK58 NO CHOICE DECLINED - NO SEND', {
           choice: candidate.choice,
@@ -130,9 +146,9 @@ export function White2PlayerInteractionRuntime() {
           choices: acceptedChoices,
           coveredBothChoices,
           sameMapAdjacentFacing: true,
-          networkMessagesSent: 0,
+          networkMessagesSentByNativeRenderer: 0,
           guestTradeInitiated: false,
-          note: 'Application-level receipt only; next stage must authenticate/session-bind an actual two-peer handshake before any trade action.',
+          note: 'Native renderer itself sends no messages. PRK60 session protocol separately handles any dev-only trade handshake; still no game/party exchange.',
         })
       }
     }
