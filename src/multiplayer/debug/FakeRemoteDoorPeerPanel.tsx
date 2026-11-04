@@ -6,6 +6,8 @@ import {
   type MultiplayerMessage,
   type MultiplayerPlayer,
   type MultiplayerPlayerState,
+  type MultiplayerTradeRequest,
+  type MultiplayerTradeDecision,
   type MultiplayerRomIdentity,
   type MultiplayerRoom,
   type MultiplayerWorldPosition,
@@ -38,6 +40,7 @@ type FakeRemoteSnapshot = {
   script: string | null
   doorCaptureArmed: boolean
   capturedDoorTransition: MultiplayerMapTransition | null
+  incomingTrade: MultiplayerTradeRequest | null
 }
 
 type Listener = (snapshot: FakeRemoteSnapshot) => void
@@ -119,6 +122,8 @@ class FakeRemoteDoorPeer {
   private heartbeatTimer: number | null = null
   private hostState: MultiplayerPlayerState | null = null
   private fakeState: MultiplayerPlayerState | null = null
+  private pendingTrade: MultiplayerTradeRequest | null = null
+  private readonly seenTradeRequests = new Set<string>()
   private lastRomKey = ''
   private readyRequested = false
   private scriptGeneration = 0
@@ -135,6 +140,7 @@ class FakeRemoteDoorPeer {
     script: null,
     doorCaptureArmed: false,
     capturedDoorTransition: null,
+    incomingTrade: null,
   }
 
   connect() {
@@ -145,6 +151,14 @@ class FakeRemoteDoorPeer {
     })
     this.transport.connect()
     this.heartbeatTimer = window.setInterval(() => {
+      if (this.pendingTrade && Date.now() >= this.pendingTrade.expiresAt) {
+        const requestId = this.pendingTrade.requestId
+        this.pendingTrade = null
+        this.update({ incomingTrade: null, phase: 'PRK60 REQUEST EXPIRED' })
+        console.info('[PokéRun trade] PRK60 FAKE P2 REQUEST EXPIRED', {
+          requestId, gameTradeInitiated: false,
+        })
+      }
       // Never echo a transition or a one-shot emote as a heartbeat. Explicit
       // movement/door scripts own their own packets until they finish.
       if (this.script || !this.fakeState || !this.startId ||
@@ -165,6 +179,7 @@ class FakeRemoteDoorPeer {
       this.heartbeatTimer = null
     }
     this.stopScript()
+    this.pendingTrade = null
     if (this.roomCode) this.send({ type: 'PLAYER_LEAVE', roomCode: this.roomCode, playerId: this.playerId })
     this.unsubscribeMessage?.()
     this.unsubscribeConnection?.()
@@ -192,6 +207,8 @@ class FakeRemoteDoorPeer {
     this.lastPublishedAt = 0
     this.hostState = null
     this.fakeState = null
+    this.pendingTrade = null
+    this.seenTradeRequests.clear()
     this.lastRomKey = ''
     this.readyRequested = false
     this.doorCaptureArmed = false
@@ -203,6 +220,7 @@ class FakeRemoteDoorPeer {
       fakeState: null,
       doorCaptureArmed: false,
       capturedDoorTransition: null,
+      incomingTrade: null,
       phase: `JOINING ${normalized}`,
     })
 
@@ -587,6 +605,53 @@ class FakeRemoteDoorPeer {
     this.update({ script: null, phase })
   }
 
+  // Fake P2 is a development transport client, not an authenticated server.
+  // The host must be on the expected adjacent facing tile before consent.
+  private hostIsFacingFake() {
+    const host = this.hostState
+    const remote = this.fakeState
+    if (!host || !remote || host.location.mapId !== remote.location.mapId) return false
+    const faces = (direction: Direction) => direction === 'north' ? [0, -1]
+      : direction === 'south' ? [0, 1]
+        : direction === 'west' ? [-1, 0] : [1, 0]
+    const hostDirection = faces(host.direction)
+    const remoteDirection = faces(remote.direction)
+    return remote.x - host.x === hostDirection[0] &&
+      remote.y - host.y === hostDirection[1] &&
+      host.x - remote.x === remoteDirection[0] &&
+      host.y - remote.y === remoteDirection[1]
+  }
+
+  respondTrade(decision: MultiplayerTradeDecision) {
+    const request = this.pendingTrade
+    if (!request || !this.startId || !this.roomCode ||
+        request.startId !== this.startId ||
+        Date.now() >= request.expiresAt ||
+        (decision === 'accepted' && !this.hostIsFacingFake())) {
+      console.info('[PokéRun trade] PRK60 FAKE P2 DECISION BLOCKED', {
+        decision, requestId: request?.requestId ?? null,
+        note: 'No timely pending session request or players not facing.',
+      })
+      return
+    }
+    this.send({
+      type: 'TRADE_RESPONSE',
+      roomCode: this.roomCode,
+      requestId: request.requestId,
+      startId: this.startId,
+      fromPlayerId: this.playerId,
+      toPlayerId: request.fromPlayerId,
+      decision,
+    })
+    this.pendingTrade = null
+    this.update({ incomingTrade: null, phase: `PRK60 ${decision.toUpperCase()} • NO GAME TRADE` })
+    console.info('[PokéRun trade] PRK60 FAKE P2 EXPLICIT DECISION SENT', {
+      requestId: request.requestId, decision,
+      gameTradeInitiated: false, saveBytesTransferred: 0,
+      note: 'Manual dev-controller decision; no Pokémon transfer or guest writes.',
+    })
+  }
+
   private receive(message: MultiplayerMessage) {
     if (message.senderId === this.playerId || message.version !== MULTIPLAYER_PROTOCOL_VERSION) return
 
@@ -626,6 +691,69 @@ class FakeRemoteDoorPeer {
 
     if (!this.roomCode || message.roomCode !== this.roomCode) return
 
+    if (message.type === 'TRADE_REQUEST') {
+      const request = message.request
+      const host = this.room?.players.find(player => player.id !== this.playerId)
+      const now = Date.now()
+      const valid = Boolean(request && this.room?.gameStart &&
+        host?.id === message.senderId &&
+        this.room.players.length === 2 &&
+        this.room.players.every(player => player.rom.status === 'verified') &&
+        new Set(this.room.players.map(player => player.rom.sha256)).size === 1 &&
+        request.fromPlayerId === message.senderId &&
+        request.toPlayerId === this.playerId &&
+        request.startId === this.startId &&
+        request.startId === this.room.gameStart.startId &&
+        typeof request.requestId === 'string' &&
+        /^[0-9a-f-]{36}$/i.test(request.requestId) &&
+        typeof request.createdAt === 'number' &&
+        typeof request.expiresAt === 'number' &&
+        request.createdAt <= now + 5000 &&
+        request.createdAt >= now - 30000 &&
+        request.expiresAt > now &&
+        request.expiresAt - request.createdAt <= 30000 &&
+        this.hostIsFacingFake() &&
+        !this.pendingTrade &&
+        !this.seenTradeRequests.has(request.requestId))
+      if (!valid) {
+        console.info('[PokéRun trade] PRK60 FAKE P2 REQUEST REJECTED', {
+          reason: 'Invalid start, peer IDs, ROM/position preflight, timeout, or duplicate.',
+          currentRoom: this.roomCode, currentStartId: this.startId,
+          noGameWrites: true,
+        })
+        return
+      }
+      this.seenTradeRequests.add(request.requestId)
+      if (this.seenTradeRequests.size > 64) {
+        const first = this.seenTradeRequests.values().next().value
+        if (first) this.seenTradeRequests.delete(first)
+      }
+      this.pendingTrade = request
+      this.update({ incomingTrade: request, phase: 'PRK60 INCOMING TRADE • ACCEPT OR DECLINE' })
+      console.info('[PokéRun trade] PRK60 FAKE P2 REQUEST RECEIVED', {
+        requestId: request.requestId, roomCode: this.roomCode,
+        startId: this.startId, fromPlayerId: message.senderId,
+        toPlayerId: this.playerId, expiresAt: request.expiresAt,
+        manualDecisionRequired: true, gameTradeInitiated: false,
+      })
+      return
+    }
+
+    if (message.type === 'TRADE_CANCEL' && this.pendingTrade &&
+        message.senderId === this.pendingTrade.fromPlayerId &&
+        message.fromPlayerId === message.senderId &&
+        message.toPlayerId === this.playerId &&
+        message.startId === this.startId &&
+        message.requestId === this.pendingTrade.requestId) {
+      this.pendingTrade = null
+      this.update({ incomingTrade: null, phase: 'PRK60 REQUEST CANCELLED BY HOST' })
+      console.info('[PokéRun trade] PRK60 FAKE P2 CANCEL RECEIVED', {
+        requestId: message.requestId, reason: message.reason,
+        gameTradeInitiated: false,
+      })
+      return
+    }
+
     if (message.type === 'GAME_START') {
       this.activateStart(message.start.startId)
       return
@@ -659,11 +787,14 @@ class FakeRemoteDoorPeer {
     this.sequence = 0
     this.lastPublishedAt = 0
     this.fakeState = null
+    this.pendingTrade = null
+    this.seenTradeRequests.clear()
     this.doorCaptureArmed = false
     this.capturedDoorTransition = null
     this.update({
       gameStarted: true,
       fakeState: null,
+      incomingTrade: null,
       doorCaptureArmed: false,
       capturedDoorTransition: null,
       phase: 'GAME STARTED • WAITING FOR HOST POSITION',
@@ -717,6 +848,7 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     script: null,
     doorCaptureArmed: false,
     capturedDoorTransition: null,
+    incomingTrade: null,
   })
 
   useEffect(() => {
@@ -770,6 +902,18 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     <div style={{ marginTop: 4, opacity: 0.75 }}>
       HOST {host ? `${host.location.mapId} • ${host.x},${host.y}` : 'WAITING'}<br/>
       P2 {fake ? `${fake.location.mapId} • ${fake.x},${fake.y} • ${fake.direction.toUpperCase()}` : 'WAITING'}
+    </div>
+
+    <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(53,84,107,0.35)' }}>
+      <b>PRK60 TRADE HANDSHAKE • DEV ONLY</b>
+      {snapshot.incomingTrade ? <>
+        <div style={{ marginTop: 5 }}>P1 requests a trade. Confirm independently as P2; no Pokémon will be exchanged.</div>
+        <div style={{ display: 'flex', gap: 6, marginTop: 7 }}>
+          <button onClick={() => peer.respondTrade('accepted')} style={{ flex: 1 }}>ACCEPT</button>
+          <button onClick={() => peer.respondTrade('declined')} style={{ flex: 1 }}>DECLINE</button>
+        </div>
+        <div style={{ opacity: 0.7, marginTop: 4 }}>ID {snapshot.incomingTrade.requestId.slice(0, 8)} • 30s expiry</div>
+      </> : <div style={{ marginTop: 5, opacity: 0.7 }}>No pending P1 trade request.</div>}
     </div>
 
     <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(53,84,107,0.35)' }}>
