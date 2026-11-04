@@ -7,6 +7,22 @@ export type MultiplayerPresenceSnapshot = {
 
 type Listener = (snapshot: MultiplayerPresenceSnapshot) => void
 type EmotePublisher = (kind: MultiplayerEmoteKind) => boolean
+// PRK58: an application-side, read-only, session-bound eligibility answer.
+// A preview is not an authorization token and never sends an outbound packet.
+export type TradeRequestPreflight = {
+  eligible: boolean
+  reason: string
+  roomCode: string | null
+  startId: string | null
+  localPlayerId: string | null
+  remotePlayerId: string | null
+  sameMap: boolean
+  bothFacing: boolean
+  localStateFresh: boolean
+  remoteStateFresh: boolean
+  transportMessagesSent: 0
+}
+type TradeRequestPreflightProvider = () => TradeRequestPreflight
 
 /**
  * Per-tab in-memory bridge between the multiplayer session and emulator UI.
@@ -17,6 +33,7 @@ class MultiplayerPresenceStore {
   private snapshot: MultiplayerPresenceSnapshot = { local: null, remote: null }
   private readonly listeners = new Set<Listener>()
   private emotePublisher: EmotePublisher | null = null
+  private tradePreflightProvider: TradeRequestPreflightProvider | null = null
 
   subscribe(listener: Listener) {
     this.listeners.add(listener)
@@ -43,6 +60,29 @@ class MultiplayerPresenceStore {
 
   sendEmote(kind: MultiplayerEmoteKind) {
     return this.emotePublisher?.(kind) ?? false
+  }
+
+  setTradePreflightProvider(provider: TradeRequestPreflightProvider) {
+    this.tradePreflightProvider = provider
+    return () => {
+      if (this.tradePreflightProvider === provider) this.tradePreflightProvider = null
+    }
+  }
+
+  previewTradeRequest(): TradeRequestPreflight {
+    return this.tradePreflightProvider?.() ?? {
+      eligible: false,
+      reason: 'No active multiplayer session has registered a trade preflight.',
+      roomCode: null,
+      startId: null,
+      localPlayerId: null,
+      remotePlayerId: null,
+      sameMap: false,
+      bothFacing: false,
+      localStateFresh: false,
+      remoteStateFresh: false,
+      transportMessagesSent: 0,
+    }
   }
 
   reset() {
