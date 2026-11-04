@@ -216,7 +216,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK45 executes one isolated GFL_BitmapCreate(1,1,32,fieldHeap)/GFL_BitmapFree round trip only after the PRK44 map restore/reapply is verified, preserving the existing 12x5 AB bitmap and BG2 character allocation. P2 health is checked externally.'
+      researchNote: 'PRK45 executes one isolated GFL_BitmapCreate(1,1,32,fieldHeap)/GFL_BitmapFree round trip only after the PRK44 map restore/reapply is verified, preserving the existing 12x5 AB bitmap and BG2 character allocation. P2 health is checked externally.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
