@@ -1228,6 +1228,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       try {
         let prk38GlyphRomOffset: number | null = null
         let prk43Before: Prk43Bg2MapSnapshot | null = null
+        let prk40VisualComplete = false
         const scan = await probe.scanHeap()
         if (!scan.playerActor || !isMainRamPointer(scan.playerActor.address)) {
           throw new Error(`Player actor is invalid (${hex(scan.playerActor?.address ?? 0)}).`)
@@ -1610,6 +1611,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                     directPixels, directCharPos, bg2, romBytes,
                     prk38GlyphRomOffset, bytesPerTile,
                   )
+                  prk40VisualComplete = true
                 } catch (reason) {
                   console.info('[PokéRun interaction] PRK40 AB CROSS-TILE REJECTED', {
                     reason: reason instanceof Error ? reason.message : String(reason),
@@ -1679,9 +1681,16 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
               // PRK44 runs only when both original 98-entry maps agree,
               // the full AB overlay matches, and the actor/BG2 identity
               // is still the same. This is NOT resource deallocation.
-              await tryPrk44ReversibleMapRoundTrip(
-                prk43Before, after, playerActor, directPixels, bg2, directCharPos,
-              )
+              if (prk40VisualComplete) {
+                await tryPrk44ReversibleMapRoundTrip(
+                  prk43Before, after, playerActor, directPixels, bg2, directCharPos,
+                )
+              } else {
+                console.info('[PokéRun interaction] PRK44 RESTORATION PREFLIGHT SKIPPED', {
+                  reason: 'Known-good PRK40 AB visual did not finish successfully.',
+                  note: 'No PRK44 BG2 tilemap writes. The earlier rendering failure remains the primary diagnostic.',
+                })
+              }
             } catch (reason) {
               console.info('[PokéRun interaction] PRK43 BG2 OWNERSHIP AFTER UNAVAILABLE', {
                 reason: reason instanceof Error ? reason.message : String(reason),
