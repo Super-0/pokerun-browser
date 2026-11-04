@@ -314,11 +314,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk55-two-yes-no-sessions-post-close-result-event',
+      mode: 'prk57-bitmap-reopen-allocation-return-telemetry',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK55 combines verified PRK52 two-window lifetime reuse and PRK54 ROM-font Yes/No navigation. First interaction: select No and confirm, PRK47 restores BG2/frees native resources, only then dispatch a browser result event. X4 guarded reopen, X5 show menu, choose Yes, X6 confirm/close/dispatch. No actual game trade/network send. All further interaction locked after exactly 2 verified closes.',
+      researchNote: 'PRK57 diagnoses one intermittent PRK55 second GFL_BitmapCreate return 0x00000080 after a previously verified native cleanup. Same two-interaction PRK56 app result test, same one-shot native calls and allocations. Bitmap call now records result/status/instructions/PC/LR/CPSR/SP before any dereference or further write. Invalid results remain locked, never retried or guessed-freed. No trade/network action.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -362,7 +362,14 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           + `lr=${hex(call.lr)} cpsr=${hex(call.cpsr)} instructions=${call.instructions}.`,
         )
       }
-      return { result: call.result >>> 0, instructions: call.instructions >>> 0 }
+      return {
+        result: call.result >>> 0,
+        instructions: call.instructions >>> 0,
+        status: call.status,
+        pc: call.pc >>> 0,
+        lr: call.lr >>> 0,
+        cpsr: call.cpsr >>> 0,
+      }
     }
 
     // PRK36: PRK35 now runs BEFORE any native field getter, allocator, or
@@ -2321,15 +2328,58 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg2, directCharPos, requestedBytes)
             return
           }
+          const bitmapCallSpBefore = await runtimeBridge.getArm9Sp()
+          const bitmapLifetime = prk51VerifiedClosesRef.current + 1
           console.info('[PokéRun interaction] PRK34 BITMAP CREATE CALL', {
             address: hex(GFL_BITMAP_CREATE),
             args: [WINDOW_WIDTH, WINDOW_HEIGHT, bytesPerTile, heapId],
-            originalArm9Sp: hex(await runtimeBridge.getArm9Sp()),
+            originalArm9Sp: hex(bitmapCallSpBefore),
             note: 'Four register arguments; native allocates GFLBitmap and pixel buffer internally.',
           })
           const bitmapAlloc = await atomicCall(GFL_BITMAP_CREATE, WINDOW_WIDTH, WINDOW_HEIGHT, bytesPerTile, heapId)
           const directBitmap = bitmapAlloc.result
-          if (!isMainRamPointer(directBitmap)) {
+          // PRK57: The previous PRK56 test got R0=0x80 on the SECOND
+          // lifetime after a reported successful Thumb4 call, while the
+          // first bitmap worked and the preceding PRK47 cleanup passed.
+          // Record the exact CPU completion metadata BEFORE any pointer
+          // dereference. This adds no native calls, retries or guest writes.
+          let bitmapCallSpAfter: number | null = null
+          try {
+            bitmapCallSpAfter = await runtimeBridge.getArm9Sp()
+          } catch {
+            // Keep the original native return/error diagnosis intact.
+          }
+          const bitmapPointerValid = isMainRamPointer(directBitmap)
+          console.info('[PokéRun interaction] PRK57 BITMAP CREATE RETURN DIAGNOSTIC', {
+            lifetime: bitmapLifetime,
+            verifiedPreviousCloses: prk51VerifiedClosesRef.current,
+            charTilePosition: directCharPos,
+            charTileBytes: requestedBytes,
+            expectedCharPos: 964,
+            bitmap: hex(directBitmap),
+            bitmapPointerValid,
+            nativeStatus: bitmapAlloc.status,
+            nativeInstructions: bitmapAlloc.instructions,
+            nativePc: hex(bitmapAlloc.pc),
+            nativeLr: hex(bitmapAlloc.lr),
+            nativeCpsr: hex(bitmapAlloc.cpsr),
+            stackBefore: hex(bitmapCallSpBefore),
+            stackAfter: bitmapCallSpAfter === null ? null : hex(bitmapCallSpAfter),
+            validStackBefore: validNativeStack(bitmapCallSpBefore),
+            validStackAfter: bitmapCallSpAfter === null ? null : validNativeStack(bitmapCallSpAfter),
+            note: 'Read-only native call telemetry. No GFLBitmap field dereference, cleanup, retry, or additional guest call was made by this diagnostic.',
+          })
+          if (!bitmapPointerValid) {
+            console.info('[PokéRun interaction] PRK57 INVALID NATIVE BITMAP RETURN - LOCKED', {
+              lifetime: bitmapLifetime,
+              returnValue: hex(directBitmap),
+              nativeStatus: bitmapAlloc.status,
+              nativeInstructions: bitmapAlloc.instructions,
+              nativePc: hex(bitmapAlloc.pc),
+              nativeLr: hex(bitmapAlloc.lr),
+              nativeCpsr: hex(bitmapAlloc.cpsr),
+              note: 'Cannot classify R0=0x80 as heap failure versus execution-context interference yet. No guessed native free, retry, or downstream BG2 upload; restart emulator.',
+            })
             throw new Error('GFL_BitmapCreate returned invalid bitmap ' + hex(directBitmap))
           }
           const directPixels = await runtimeBridge.read32(directBitmap + 0x00)
