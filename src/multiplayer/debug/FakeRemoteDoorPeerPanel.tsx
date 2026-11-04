@@ -121,6 +121,8 @@ class FakeRemoteDoorPeer {
   private lastPublishedAt = 0
   private heartbeatTimer: number | null = null
   private hostState: MultiplayerPlayerState | null = null
+  private lastHostStateAt = 0
+  private lastFakeStateAt = 0
   private fakeState: MultiplayerPlayerState | null = null
   private pendingTrade: MultiplayerTradeRequest | null = null
   private readonly seenTradeRequests = new Set<string>()
@@ -206,7 +208,11 @@ class FakeRemoteDoorPeer {
     this.sequence = 0
     this.lastPublishedAt = 0
     this.hostState = null
+    this.lastHostStateAt = 0
+    this.lastFakeStateAt = 0
     this.fakeState = null
+    this.lastHostStateAt = 0
+    this.lastFakeStateAt = 0
     this.pendingTrade = null
     this.seenTradeRequests.clear()
     this.lastRomKey = ''
@@ -610,7 +616,11 @@ class FakeRemoteDoorPeer {
   private hostIsFacingFake() {
     const host = this.hostState
     const remote = this.fakeState
-    if (!host || !remote || host.location.mapId !== remote.location.mapId) return false
+    if (!host || !remote || host.location.mapId !== remote.location.mapId ||
+        !this.lastHostStateAt || !this.lastFakeStateAt ||
+        Date.now() - this.lastHostStateAt > 5000 ||
+        Date.now() - this.lastFakeStateAt > 5000 ||
+        host.movementState === 'moving' || remote.movementState === 'moving') return false
     const faces = (direction: Direction) => direction === 'north' ? [0, -1]
       : direction === 'south' ? [0, 1]
         : direction === 'west' ? [-1, 0] : [1, 0]
@@ -697,6 +707,8 @@ class FakeRemoteDoorPeer {
       const now = Date.now()
       const valid = Boolean(request && this.room?.gameStart &&
         host?.id === message.senderId &&
+        host.id === this.room.hostId &&
+        this.room.gameId === 'white2' &&
         this.room.players.length === 2 &&
         this.room.players.every(player => player.rom.status === 'verified') &&
         new Set(this.room.players.map(player => player.rom.sha256)).size === 1 &&
@@ -744,7 +756,8 @@ class FakeRemoteDoorPeer {
         message.fromPlayerId === message.senderId &&
         message.toPlayerId === this.playerId &&
         message.startId === this.startId &&
-        message.requestId === this.pendingTrade.requestId) {
+        message.requestId === this.pendingTrade.requestId &&
+        (message.reason === 'cancelled' || message.reason === 'timeout')) {
       this.pendingTrade = null
       this.update({ incomingTrade: null, phase: 'PRK60 REQUEST CANCELLED BY HOST' })
       console.info('[PokéRun trade] PRK60 FAKE P2 CANCEL RECEIVED', {
@@ -761,6 +774,7 @@ class FakeRemoteDoorPeer {
 
     if (message.type === 'GAME_STATE' && message.playerId !== this.playerId && (!this.startId || message.startId === this.startId)) {
       this.hostState = message.state
+      this.lastHostStateAt = Date.now()
 
       if (this.doorCaptureArmed && message.state.transition) {
         this.doorCaptureArmed = false
@@ -787,6 +801,8 @@ class FakeRemoteDoorPeer {
     this.sequence = 0
     this.lastPublishedAt = 0
     this.fakeState = null
+    this.lastHostStateAt = 0
+    this.lastFakeStateAt = 0
     this.pendingTrade = null
     this.seenTradeRequests.clear()
     this.doorCaptureArmed = false
@@ -805,6 +821,7 @@ class FakeRemoteDoorPeer {
     if (!this.roomCode || !this.startId) return
     this.fakeState = clonePlayerState(state)
     this.lastPublishedAt = Date.now()
+    this.lastFakeStateAt = this.lastPublishedAt
     this.send({
       type: 'GAME_STATE',
       roomCode: this.roomCode,
