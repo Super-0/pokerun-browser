@@ -415,7 +415,22 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       const composed = composeWhite2GlyphInTileRam(
         verifiedRom, glyphRomOffset, 48, 12, 15, originalBlock,
       )
+      // This exact-ROM A glyph has 24 ink + 26 shadow pixels in two
+      // left-hand tiles. Independently derived from PRK37's ASCII rows.
+      const changedPerTile = tileIndices.map((_, i) => {
+        let changes = 0
+        for (let j = 0; j < bytesPerTile; j += 1) {
+          if (composed.nextTiles[i * bytesPerTile + j] !== originals[i][j]) changes += 1
+        }
+        return changes
+      })
+      if (changedPerTile.join(',') !== '15,0,11,0' ||
+          composed.changedBytes !== 26 ||
+          composed.inkPixels !== 24 || composed.shadowPixels !== 26) {
+        throw new Error('PRK38 offline 4bpp tile layout differs from verified PRK37 A glyph shape.')
+      }
       console.info('[PokéRun interaction] PRK38 GLYPH BITMAP RAM CALL', {
+        changedPerTile,
         glyph: 'A',
         romOffset: hex(glyphRomOffset),
         bitmapPixelBase: hex(directPixels),
