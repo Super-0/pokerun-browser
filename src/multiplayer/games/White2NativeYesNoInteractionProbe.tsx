@@ -3545,7 +3545,6 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         console.info('[PokéRun interaction] PRK51 SECOND WINDOW VISIBLE HOLD READY', {
           bitmap: hex(newWindow.bitmap),
           charPos: newWindow.charPos,
-          oldBitmapPointerReused: false,
           text: 'Hello, P2!',
           secondCloseArmed: true,
           note: 'A new verified lifetime is visible; next distinct X performs guarded PRK47 cleanup again. Do not move maps. Pointer reuse by the native allocator is permitted.',
