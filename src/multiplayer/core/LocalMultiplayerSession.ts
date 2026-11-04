@@ -1,9 +1,10 @@
 import type { LoadedRom } from '../../core/rom/RomLoader'
 import type { GameId } from '../../types'
-import { multiplayerPresence } from './MultiplayerPresence'
+import { multiplayerPresence, type TradeRequestPreflight } from './MultiplayerPresence'
 import {
   MULTIPLAYER_PROTOCOL_VERSION,
   type MultiplayerConnectionState,
+  type MultiplayerDirection,
   type MultiplayerEmoteKind,
   type MultiplayerGameStart,
   type MultiplayerMapTransition,
@@ -23,6 +24,7 @@ type OutboundMessage = { type: MultiplayerMessage['type']; [key: string]: unknow
 const codeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const TRANSITION_REPEAT_MS = 1200
 const MOVEMENT_IDLE_MS = 180
+const PRK58_MAX_STATE_AGE_MS = 5000
 const MAP_EDGE_WORLD_MAX_STEP = 0x10000
 const MAP_EDGE_WORLD_AXIS_SLOP = 0x1000
 const MAP_EDGE_HEIGHT_SLOP = 0x10000
@@ -108,9 +110,12 @@ export class LocalMultiplayerSession {
   private unsubscribeMessage: (() => void) | null = null
   private unsubscribeConnection: (() => void) | null = null
   private unsubscribeEmotePublisher: (() => void) | null = null
+  private unsubscribeTradePreflight: (() => void) | null = null
   private readonly handlePageHide = () => this.leave()
   private sequence = 0
   private readonly receivedSequences = new Map<string, number>()
+  private lastLocalStateAt = 0
+  private readonly lastRemoteStateAt = new Map<string, number>()
 
   // Transition metadata is derived at the transport boundary so game adapters can
   // keep publishing ordinary normalized state. The transition is briefly attached
@@ -130,6 +135,8 @@ export class LocalMultiplayerSession {
     this.unsubscribeConnection = this.transport.onConnectionChange(connection => this.update({ connection }))
     this.unsubscribeEmotePublisher?.()
     this.unsubscribeEmotePublisher = multiplayerPresence.setEmotePublisher(kind => this.publishEmote(kind))
+    this.unsubscribeTradePreflight?.()
+    this.unsubscribeTradePreflight = multiplayerPresence.setTradePreflightProvider(() => this.previewTradeRequest())
     window.addEventListener('pagehide', this.handlePageHide)
     this.transport.connect()
   }
@@ -139,6 +146,8 @@ export class LocalMultiplayerSession {
     window.removeEventListener('pagehide', this.handlePageHide)
     this.unsubscribeEmotePublisher?.()
     this.unsubscribeEmotePublisher = null
+    this.unsubscribeTradePreflight?.()
+    this.unsubscribeTradePreflight = null
     this.unsubscribeMessage?.()
     this.unsubscribeConnection?.()
     this.transport.disconnect()
@@ -213,6 +222,7 @@ export class LocalMultiplayerSession {
     const movementState = this.resolveMovementState(state)
     const outboundState = this.withTransitionMetadata({ ...state, movementState })
     multiplayerPresence.setLocal(outboundState)
+    this.lastLocalStateAt = Date.now()
     const sequence = ++this.sequence
     this.send({ type: 'GAME_STATE', roomCode: room.code, startId: start.startId, sequence, playerId: this.localPlayerId, state: outboundState })
 
@@ -249,6 +259,66 @@ export class LocalMultiplayerSession {
 
     console.info('[PokéRun interaction] EMOTE SENT', { id: emote.id, kind })
     return true
+  }
+
+  // PRK58 deliberately does not use the untrusted DOM event as authority.
+  // The session checks only its own verified room, start ID, local published
+  // state and the remote state received through its existing transport.
+  // No packet is sent and no guest memory is changed in this preflight.
+  private previewTradeRequest(): TradeRequestPreflight {
+    const room = this.snapshot.room
+    const startId = room?.gameStart?.startId ?? null
+    const otherPlayers = room?.players.filter(player => player.id !== this.localPlayerId) ?? []
+    const remotePlayer = otherPlayers.length === 1 ? otherPlayers[0] : null
+    const local = this.lastPublishedGameState
+    const remote = remotePlayer ? this.snapshot.remoteStates[remotePlayer.id] : undefined
+    const now = Date.now()
+    const localStateFresh = Boolean(local && this.lastLocalStateAt > 0 &&
+      now - this.lastLocalStateAt <= PRK58_MAX_STATE_AGE_MS)
+    const remoteLastSeen = remotePlayer ? this.lastRemoteStateAt.get(remotePlayer.id) ?? 0 : 0
+    const remoteStateFresh = Boolean(remote && remoteLastSeen > 0 &&
+      now - remoteLastSeen <= PRK58_MAX_STATE_AGE_MS)
+    const sameMap = Boolean(local && remote &&
+      local.location.mapId === remote.location.mapId)
+    const faced = (direction: MultiplayerDirection) => {
+      if (direction === 'north') return { x: 0, y: -1 }
+      if (direction === 'south') return { x: 0, y: 1 }
+      if (direction === 'west') return { x: -1, y: 0 }
+      return { x: 1, y: 0 }
+    }
+    const bothFacing = Boolean(local && remote && sameMap &&
+      remote.x - local.x === faced(local.direction).x &&
+      remote.y - local.y === faced(local.direction).y &&
+      local.x - remote.x === faced(remote.direction).x &&
+      local.y - remote.y === faced(remote.direction).y)
+    const validRoom = Boolean(room && room.gameId === 'white2' &&
+      room.players.length === 2 &&
+      room.players.some(player => player.id === this.localPlayerId) &&
+      remotePlayer && this.isCompatible(room))
+    const validStart = Boolean(startId && startId.length > 0)
+    const eligible = this.snapshot.connection === 'connected' && validRoom &&
+      validStart && localStateFresh && remoteStateFresh && bothFacing
+    const reason = this.snapshot.connection !== 'connected' ? 'Transport is not connected.'
+      : !validRoom ? 'No compatible two-player White 2 room with two verified ROM identities.'
+      : !validStart ? 'The active room has no validated game-start ID.'
+      : !localStateFresh ? 'Local game position was not published recently.'
+      : !remoteStateFresh ? 'Remote game position was not received recently.'
+      : !sameMap ? 'Players are on different maps.'
+      : !bothFacing ? 'Players are not adjacent and facing each other.'
+      : 'Dry-run passed; future request must be tied to the real peer, room and start IDs.'
+    return {
+      eligible,
+      reason,
+      roomCode: room?.code ?? null,
+      startId,
+      localPlayerId: this.localPlayerId,
+      remotePlayerId: remotePlayer?.id ?? null,
+      sameMap,
+      bothFacing,
+      localStateFresh,
+      remoteStateFresh,
+      transportMessagesSent: 0,
+    }
   }
 
   leave() {
@@ -322,6 +392,8 @@ export class LocalMultiplayerSession {
   private resetGameStateTracking() {
     this.clearMovementIdleTimer()
     this.lastPublishedGameState = null
+    this.lastLocalStateAt = 0
+    this.lastRemoteStateAt.clear()
     this.activeTransition = null
     this.activeTransitionUntil = 0
     this.transitionCounter = 0
@@ -363,6 +435,7 @@ export class LocalMultiplayerSession {
       const previous = this.receivedSequences.get(key) ?? -1
       if (message.sequence > previous) {
         this.receivedSequences.set(key, message.sequence)
+        this.lastRemoteStateAt.set(message.playerId, Date.now())
         multiplayerPresence.setRemote(message.state)
         if (message.state.emote) {
           console.info('[PokéRun interaction] EMOTE RECEIVED', {
