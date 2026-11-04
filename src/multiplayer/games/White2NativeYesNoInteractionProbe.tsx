@@ -78,10 +78,21 @@ const PRK46_BGSYS_MAIN_AREA_PTR_OFFSET = 8 + 8 * 44
 const PRK46_BGSYS_BG2_CHAR_BASE_OFFSET = 8 + 8 * 44 + 2 * 4 + 2 * 4
 const PRK46_BGSYS_BG2_CHAR_SIZE_OFFSET = 8 + 8 * 44 + 2 * 4 + 8 * 4 + 8 * 4 + 2 * 4
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
-// PRK54: ONE manually opened native window, bounded Up/Down Yes/No
-// choice navigation, one guarded close. No native menu or multiplayer action.
-const PRK53_MAX_VERIFIED_CLOSES = 1
+// PRK55: two complete manually confirmed Yes/No sessions (one No, one Yes),
+// each with independent native allocation/cleanup and a post-teardown result.
+// Never initiate a trade or automatically retry guest operations.
+const PRK55_MAX_VERIFIED_CLOSES = 2
 const PRK54_MAX_NAVIGATIONS = 4
+export const WHITE2_NATIVE_YES_NO_RESULT_EVENT = 'pokerun:white2-native-yes-no-result'
+export type White2NativeYesNoResult = {
+  interaction: 'trade'
+  choice: 'yes' | 'no'
+  sequence: number
+  totalAllowed: number
+  nativeWindowClosed: true
+  originalBg2Restored: true
+  guestTradeInitiated: false
+}
 
 type AtomicRuntime = {
   callArm9Thumb8Atomic(
@@ -206,8 +217,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
   const prk54ChoiceRef = useRef<'yes' | 'no'>('yes')
   const prk54NavigationCountRef = useRef(0)
   const prk54FailedRef = useRef(false)
-  // PRK51/52 machinery remains read-only reference; the one-lifetime cap
-  // disables reopen. PRK54 adds only bounded key-driven bitmap changes.
+  const prk55ResultsRef = useRef<Array<'yes' | 'no'>>([])
+  // PRK51/52 reopen machinery was independently verified. PRK55 now
+  // combines that path with the already verified PRK54 native Yes/No menu.
   const prk51VerifiedClosesRef = useRef(0)
   const prk51ReopenAttemptedRef = useRef(false)
   const prk51ReopenVerifiedRef = useRef(false)
@@ -302,11 +314,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk54-native-rom-yes-no-keyboard-menu',
+      mode: 'prk55-two-yes-no-sessions-post-close-result-event',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK54: X1 opens Hello P2. X2 swaps same held 96x40 GFLBitmap into ROM-rendered two-line Trade with me? / >Yes No menu. Left/Right or Up/Down shifts only owned BG2 character tiles (four changes maximum). Once open, X confirmation is captured by native dialogue runtime independent of field-facing gate. X3 calls unchanged PRK47 teardown. No second allocation, ListMenu, trade or Thumb8.',
+      researchNote: 'PRK55 combines verified PRK52 two-window lifetime reuse and PRK54 ROM-font Yes/No navigation. First interaction: select No and confirm, PRK47 restores BG2/frees native resources, only then dispatch a browser result event. X4 guarded reopen, X5 show menu, choose Yes, X6 confirm/close/dispatch. No actual game trade/network send. All further interaction locked after exactly 2 verified closes.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -2693,7 +2705,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                               heldMapHash: prk43SnapshotHash(finalMap.vramMap),
                               firstInteractionComplete: true,
                               reopensAllowed: false,
-                              note: 'First X opens Hello P2. Second X replaces native window with two-line Yes/No. Up/Down moves native highlighted choice, third X confirms and closes via PRK47.',
+                              note: 'First X opens Hello P2. Second X opens the Yes/No choices. Confirm No, then use a new X press to reopen for a second Yes selection. Each result is emitted only after PRK47 fully frees native resources.',
                             })
                           } catch (reason) {
                             console.info('[PokéRun interaction] PRK49 LONG TEXT UPLOAD REJECTED', {
@@ -3432,7 +3444,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       if (openingRef.current || prk50CloseAttemptedRef.current ||
           !prk53TextSwappedRef.current ||
           !prk50CloseContextRef.current || runtimeBridge.status !== 'running' ||
-          prk51VerifiedClosesRef.current >= PRK53_MAX_VERIFIED_CLOSES) {
+          prk51VerifiedClosesRef.current >= PRK55_MAX_VERIFIED_CLOSES) {
         console.info('[PokéRun interaction] PRK50 SECOND X CLOSE HELD', {
           opening: openingRef.current,
           closeAttempted: prk50CloseAttemptedRef.current,
@@ -3455,7 +3467,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           ? '[PokéRun interaction] PRK51 SECOND LIFETIME CLOSE REQUESTED'
           : '[PokéRun interaction] PRK53 THIRD X CLOSE REQUESTED', {
         lifetime,
-        maximumLifetimes: PRK53_MAX_VERIFIED_CLOSES,
+        maximumLifetimes: PRK55_MAX_VERIFIED_CLOSES,
         bitmap: hex(owned.bitmap),
         bg: owned.bg,
         charPos: owned.charPos,
@@ -3473,7 +3485,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           // Keep no stale bitmap or pixel pointers. The only possible
           // reusable data is the immutable BG2 baseline and same AreaMan.
           // This read occurs only AFTER PRK47 confirms both frees.
-          if (completed < PRK53_MAX_VERIFIED_CLOSES) {
+          if (completed < PRK55_MAX_VERIFIED_CLOSES) {
             const areaMan = await runtimeBridge.read32(
               owned.baseline.bgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
             )
@@ -3497,15 +3509,55 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             resourcesReleased: true,
             mapRestored: true,
             verifiedCloses: completed,
-            maximumLifetimes: PRK53_MAX_VERIFIED_CLOSES,
-            nextReopenAvailable: completed < PRK53_MAX_VERIFIED_CLOSES &&
+            maximumLifetimes: PRK55_MAX_VERIFIED_CLOSES,
+            nextReopenAvailable: completed < PRK55_MAX_VERIFIED_CLOSES &&
               prk51ClosedBaselineRef.current !== null,
             furtherInteractionLocked: metadataCompleteRef.current,
-            note: completed === PRK53_MAX_VERIFIED_CLOSES
-              ? 'PRK54 Yes/No window freed after selection; all further X blocked until restart.'
-              : 'Native resources freed and original BG2 map restored. Next X may initiate exactly one guarded reopen, with a fresh field and AreaMan preflight.',
+            note: completed === PRK55_MAX_VERIFIED_CLOSES
+              ? 'PRK55 two Yes/No native dialogue lifetimes completed; additional X locked until restart.'
+              : 'First Yes/No window fully freed. Next new X may initiate a single guarded reopen with fresh BG2/AreaMan/field validation.',
           })
-          if (completed === PRK53_MAX_VERIFIED_CLOSES) {
+          // Application-level results are emitted ONLY after PRK47 confirms
+          // BG2 restoration and both native frees. This event carries no
+          // raw guest pointers, save data, networking request, or side effect.
+          const confirmedChoice = prk54ChoiceRef.current
+          prk55ResultsRef.current.push(confirmedChoice)
+          const verifiedResult: White2NativeYesNoResult = {
+            interaction: 'trade',
+            choice: confirmedChoice,
+            sequence: completed,
+            totalAllowed: PRK55_MAX_VERIFIED_CLOSES,
+            nativeWindowClosed: true,
+            originalBg2Restored: true,
+            guestTradeInitiated: false,
+          }
+          console.info('[PokéRun interaction] PRK55 POST-CLOSE RESULT VERIFIED', {
+            ...verifiedResult,
+            confirmedChoices: [...prk55ResultsRef.current],
+            nextDialogueAvailable: completed < PRK55_MAX_VERIFIED_CLOSES,
+            event: WHITE2_NATIVE_YES_NO_RESULT_EVENT,
+            note: 'Result is dispatched only after native window cleanup. No game/network trade action is invoked.',
+          })
+          if (!disposed) {
+            window.dispatchEvent(new CustomEvent<White2NativeYesNoResult>(
+              WHITE2_NATIVE_YES_NO_RESULT_EVENT,
+              { detail: verifiedResult },
+            ))
+          }
+          if (completed === PRK55_MAX_VERIFIED_CLOSES) {
+            const bothChoicesVerified = prk55ResultsRef.current.includes('yes') &&
+              prk55ResultsRef.current.includes('no')
+            console.info(bothChoicesVerified
+              ? '[PokéRun interaction] PRK55 BOTH CHOICE RESULTS AND CLOSES VERIFIED'
+              : '[PokéRun interaction] PRK55 TWO CLOSES VERIFIED - CHOICE COVERAGE INCOMPLETE', {
+              confirmedChoices: [...prk55ResultsRef.current],
+              bothChoicesVerified,
+              verifiedOpens: completed,
+              verifiedCloses: completed,
+              guestTradesInitiated: 0,
+              furtherXLocked: true,
+              note: 'Both Yes and No results require independent confirmation. Event is app-level only; native cleanup passed before every result.',
+            })
             console.info('[PokéRun interaction] PRK54 YES NO SELECTION AND CLOSE VERIFIED', {
               initialText: 'Hello, P2!',
               question: 'Trade with me?',
@@ -3518,7 +3570,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
               charAndBitmapReleased: true,
               furtherXBlocked: true,
               gameTradeInitiated: false,
-              note: 'One actual ROM-font Yes/No menu, keyboard selection and verified PRK47 native cleanup. No networking/game action in this isolation test.',
+              note: 'Two ROM-font Yes/No dialogue lifetimes, keyboard navigation and verified PRK47 native cleanup. Results emitted after teardown; no networking/game trade invoked.',
             })
           }
         } else {
@@ -3541,7 +3593,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
     async function tryPrk51SingleReopen() {
       if (openingRef.current || prk51ReopenAttemptedRef.current ||
           prk51VerifiedClosesRef.current < 1 ||
-          prk51VerifiedClosesRef.current >= PRK53_MAX_VERIFIED_CLOSES ||
+          prk51VerifiedClosesRef.current >= PRK55_MAX_VERIFIED_CLOSES ||
           !prk51ClosedBaselineRef.current ||
           !prk50CloseAttemptedRef.current ||
           prk50CloseContextRef.current !== null ||
@@ -3554,7 +3606,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           verifiedCloses: prk51VerifiedClosesRef.current,
           closeAttempted: prk50CloseAttemptedRef.current,
           nativeWindowPresent: stateRef.current !== null,
-          note: 'No reopen unless the previous lifetime fully freed, the 5-cycle cap is not reached, and the original field is still valid.',
+          note: 'PRK55 second dialogue is allowed only if first native window completely freed and the field/allocator/actor remain the same.',
         })
         return
       }
@@ -3615,13 +3667,13 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           ? '[PokéRun interaction] PRK51 REOPEN PREFLIGHT PASSED'
           : '[PokéRun interaction] PRK52 REOPEN PREFLIGHT PASSED', {
           nextLifetime: prk51VerifiedClosesRef.current + 1,
-          maximumLifetimes: PRK53_MAX_VERIFIED_CLOSES,
+          maximumLifetimes: PRK55_MAX_VERIFIED_CLOSES,
           originalMapHash: prk43SnapshotHash(observed.vramMap),
           actor: hex(playerActor),
           bgSys: hex(baseline.bgSys),
           areaMan: hex(areaMan),
           verifiedCloses: prk51VerifiedClosesRef.current,
-          note: 'Previous lifetime freed, original 98-entry map unchanged, same field and AreaMan; exactly one new PRK34-49 creation pass is permitted.',
+          note: 'PRK55 first dialogue freed, original 98-entry BG2 map unchanged, same field/AreaMan; exactly one fresh native window creation permitted.',
         })
         // Drop the locked one-way PRK47 state ONLY after the independently
         // verified original-field baseline. The normal runProbe guards and
@@ -3653,12 +3705,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           ? '[PokéRun interaction] PRK51 SECOND WINDOW VISIBLE HOLD READY'
           : '[PokéRun interaction] PRK52 WINDOW REOPENED AND HELD', {
           lifetime: prk51VerifiedClosesRef.current + 1,
-          maximumLifetimes: PRK53_MAX_VERIFIED_CLOSES,
+          maximumLifetimes: PRK55_MAX_VERIFIED_CLOSES,
           bitmap: hex(newWindow.bitmap),
           charPos: newWindow.charPos,
           text: 'Hello, P2!',
           closeArmed: true,
-          note: 'New native resources verified and held; next distinct X closes using PRK47. Pointer reuse by the native allocator is permitted.',
+          note: 'Second lifetime allocated and held. Next distinct X shows Yes/No; after confirmation the same PRK47 teardown applies.',
         })
       } catch (reason) {
         metadataCompleteRef.current = true
@@ -3916,13 +3968,14 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         prk54SelectedChoice: prk54ChoiceRef.current,
         prk54NavigationCount: prk54NavigationCountRef.current,
         prk54Failed: prk54FailedRef.current,
+        prk55VerifiedResults: [...prk55ResultsRef.current],
         prk51VerifiedCloses: prk51VerifiedClosesRef.current,
-        prk53MaximumCloses: PRK53_MAX_VERIFIED_CLOSES,
+        prk53MaximumCloses: PRK55_MAX_VERIFIED_CLOSES,
         prk51ReopenAttempted: prk51ReopenAttemptedRef.current,
         prk51ReopenVerified: prk51ReopenVerifiedRef.current,
       })
       if (openingRef.current || prk54FailedRef.current ||
-          prk51VerifiedClosesRef.current >= PRK53_MAX_VERIFIED_CLOSES) return
+          prk51VerifiedClosesRef.current >= PRK55_MAX_VERIFIED_CLOSES) return
       if (prk50CloseContextRef.current) {
         if (!prk53SwapAttemptedRef.current) {
           void tryPrk54UpdateNativeMenu('yes', true)
@@ -3936,7 +3989,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         } // An attempted but rejected update stays locked until restart.
       } else if (prk50CloseAttemptedRef.current &&
                  prk51VerifiedClosesRef.current >= 1 &&
-                 prk51VerifiedClosesRef.current < PRK53_MAX_VERIFIED_CLOSES &&
+                 prk51VerifiedClosesRef.current < PRK55_MAX_VERIFIED_CLOSES &&
                  !prk51ReopenAttemptedRef.current) {
         void tryPrk51SingleReopen()
       } else if (!prk50CloseAttemptedRef.current) {
@@ -3960,6 +4013,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       prk54ChoiceRef.current = 'yes'
       prk54NavigationCountRef.current = 0
       prk54FailedRef.current = false
+      prk55ResultsRef.current = []
       prk51VerifiedClosesRef.current = 0
       prk51ReopenAttemptedRef.current = false
       prk51ReopenVerifiedRef.current = false
