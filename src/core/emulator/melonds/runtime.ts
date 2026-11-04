@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v12'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v13-prk63-wireless-audit'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B3C
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B3D
 export const POKERUN_ARM9_CALL_BUDGET = 1000000
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
@@ -37,6 +37,12 @@ type WasmEmulator = {
   arm9CallInstructions(): number
   arm9CallBudget(): number
   pokerunRuntimeVersion(): number
+  prk63WifiStarts(): number
+  prk63WifiStops(): number
+  prk63MpTxCalls(): number
+  prk63MpRxPolls(): number
+  prk63MpHostRxPolls(): number
+  prk63NetTxCalls(): number
   delete?: () => void
 }
 
@@ -90,9 +96,13 @@ export function loadMelonDsRuntime() {
           const stamp = probe.pokerunRuntimeVersion?.()
           const budget = probe.arm9CallBudget?.()
           const hasAtomicStackArgs = typeof probe.callArm9Thumb8Atomic === 'function'
-          if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET || !hasAtomicStackArgs) {
+          const hasPrk63WirelessCounters = [
+            'prk63WifiStarts', 'prk63WifiStops', 'prk63MpTxCalls',
+            'prk63MpRxPolls', 'prk63MpHostRxPolls', 'prk63NetTxCalls',
+          ].every(key => typeof (probe as unknown as Record<string, unknown>)[key] === 'function')
+          if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET || !hasAtomicStackArgs || !hasPrk63WirelessCounters) {
             reject(new Error(
-              `Stale melonDS runtime loaded (stamp=0x${(stamp ?? 0).toString(16).toUpperCase()}, ARM9 budget=${budget ?? 0}, atomic8=${hasAtomicStackArgs}); ` +
+              `Stale melonDS runtime loaded (stamp=0x${(stamp ?? 0).toString(16).toUpperCase()}, ARM9 budget=${budget ?? 0}, atomic8=${hasAtomicStackArgs}, prk63Counters=${hasPrk63WirelessCounters}); ` +
               `expected stamp=0x${POKERUN_MELONDS_RUNTIME_STAMP.toString(16).toUpperCase()}, budget=${POKERUN_ARM9_CALL_BUDGET}, atomic8=true. ` +
               'Run npm run build:melonds, restart Vite, and reopen the tab.',
             ))
