@@ -41,6 +41,7 @@ type FakeRemoteSnapshot = {
   doorCaptureArmed: boolean
   capturedDoorTransition: MultiplayerMapTransition | null
   incomingTrade: MultiplayerTradeRequest | null
+  tradeOutcome: { requestId: string; status: 'accepted' | 'declined' | 'cancelled' | 'expired' } | null
 }
 
 type Listener = (snapshot: FakeRemoteSnapshot) => void
@@ -143,6 +144,7 @@ class FakeRemoteDoorPeer {
     doorCaptureArmed: false,
     capturedDoorTransition: null,
     incomingTrade: null,
+    tradeOutcome: null,
   }
 
   connect() {
@@ -156,7 +158,11 @@ class FakeRemoteDoorPeer {
       if (this.pendingTrade && Date.now() >= this.pendingTrade.expiresAt) {
         const requestId = this.pendingTrade.requestId
         this.pendingTrade = null
-        this.update({ incomingTrade: null, phase: 'PRK60 REQUEST EXPIRED' })
+        this.update({
+          incomingTrade: null,
+          tradeOutcome: { requestId, status: 'expired' },
+          phase: 'PRK60 REQUEST EXPIRED',
+        })
         console.info('[PokéRun trade] PRK60 FAKE P2 REQUEST EXPIRED', {
           requestId, gameTradeInitiated: false,
         })
@@ -211,8 +217,6 @@ class FakeRemoteDoorPeer {
     this.lastHostStateAt = 0
     this.lastFakeStateAt = 0
     this.fakeState = null
-    this.lastHostStateAt = 0
-    this.lastFakeStateAt = 0
     this.pendingTrade = null
     this.seenTradeRequests.clear()
     this.lastRomKey = ''
@@ -227,6 +231,7 @@ class FakeRemoteDoorPeer {
       doorCaptureArmed: false,
       capturedDoorTransition: null,
       incomingTrade: null,
+      tradeOutcome: null,
       phase: `JOINING ${normalized}`,
     })
 
@@ -654,7 +659,11 @@ class FakeRemoteDoorPeer {
       decision,
     })
     this.pendingTrade = null
-    this.update({ incomingTrade: null, phase: `PRK60 ${decision.toUpperCase()} • NO GAME TRADE` })
+    this.update({
+      incomingTrade: null,
+      tradeOutcome: { requestId: request.requestId, status: decision },
+      phase: `PRK60 ${decision.toUpperCase()} • NO GAME TRADE`,
+    })
     console.info('[PokéRun trade] PRK60 FAKE P2 EXPLICIT DECISION SENT', {
       requestId: request.requestId, decision,
       gameTradeInitiated: false, saveBytesTransferred: 0,
@@ -741,7 +750,11 @@ class FakeRemoteDoorPeer {
         if (first) this.seenTradeRequests.delete(first)
       }
       this.pendingTrade = request
-      this.update({ incomingTrade: request, phase: 'PRK60 INCOMING TRADE • ACCEPT OR DECLINE' })
+      this.update({
+        incomingTrade: request,
+        tradeOutcome: null,
+        phase: 'PRK60 INCOMING TRADE • ACCEPT OR DECLINE',
+      })
       console.info('[PokéRun trade] PRK60 FAKE P2 REQUEST RECEIVED', {
         requestId: request.requestId, roomCode: this.roomCode,
         startId: this.startId, fromPlayerId: message.senderId,
@@ -759,7 +772,16 @@ class FakeRemoteDoorPeer {
         message.requestId === this.pendingTrade.requestId &&
         (message.reason === 'cancelled' || message.reason === 'timeout')) {
       this.pendingTrade = null
-      this.update({ incomingTrade: null, phase: 'PRK60 REQUEST CANCELLED BY HOST' })
+      this.update({
+        incomingTrade: null,
+        tradeOutcome: {
+          requestId: message.requestId,
+          status: message.reason === 'timeout' ? 'expired' : 'cancelled',
+        },
+        phase: message.reason === 'timeout'
+          ? 'PRK60 REQUEST TIMED OUT'
+          : 'PRK60 REQUEST CANCELLED BY HOST',
+      })
       console.info('[PokéRun trade] PRK60 FAKE P2 CANCEL RECEIVED', {
         requestId: message.requestId, reason: message.reason,
         gameTradeInitiated: false,
@@ -811,6 +833,7 @@ class FakeRemoteDoorPeer {
       gameStarted: true,
       fakeState: null,
       incomingTrade: null,
+      tradeOutcome: null,
       doorCaptureArmed: false,
       capturedDoorTransition: null,
       phase: 'GAME STARTED • WAITING FOR HOST POSITION',
@@ -855,6 +878,7 @@ class FakeRemoteDoorPeer {
 export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorageKey: string }) {
   const peer = useMemo(() => new FakeRemoteDoorPeer(), [])
   const [movementMode, setMovementMode] = useState<MovementMode>('walk')
+  const [tradeClockMs, setTradeClockMs] = useState(() => Date.now())
   const [snapshot, setSnapshot] = useState<FakeRemoteSnapshot>({
     connection: 'disconnected',
     phase: 'WAITING FOR HOST ROOM',
@@ -866,6 +890,7 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     doorCaptureArmed: false,
     capturedDoorTransition: null,
     incomingTrade: null,
+    tradeOutcome: null,
   })
 
   useEffect(() => {
@@ -882,6 +907,16 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
     }
   }, [peer, roomCodeStorageKey])
 
+  useEffect(() => {
+    if (!snapshot.incomingTrade) return
+    setTradeClockMs(Date.now())
+    const timer = window.setInterval(() => setTradeClockMs(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [snapshot.incomingTrade?.requestId])
+
+  const tradeSecondsRemaining = snapshot.incomingTrade
+    ? Math.max(0, Math.ceil((snapshot.incomingTrade.expiresAt - tradeClockMs) / 1000))
+    : 0
   const controlsDisabled = !snapshot.gameStarted || !snapshot.hostState
   const movementDisabled = controlsDisabled || !snapshot.fakeState || Boolean(snapshot.script)
   const fake = snapshot.fakeState
@@ -921,16 +956,34 @@ export function FakeRemoteDoorPeerPanel({ roomCodeStorageKey }: { roomCodeStorag
       P2 {fake ? `${fake.location.mapId} • ${fake.x},${fake.y} • ${fake.direction.toUpperCase()}` : 'WAITING'}
     </div>
 
-    <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(53,84,107,0.35)' }}>
-      <b>PRK60 TRADE HANDSHAKE • DEV ONLY</b>
+    <div style={{
+      marginTop: 10, padding: 10, border: '2px solid #35546b',
+      background: snapshot.incomingTrade ? '#e5f3fb' : '#f7fafc',
+    }} aria-label="Simulated trainer trade response">
+      <b>PRK61 TRAINER TRADE • SIMULATED P2</b>
       {snapshot.incomingTrade ? <>
-        <div style={{ marginTop: 5 }}>P1 requests a trade. Confirm independently as P2; no Pokémon will be exchanged.</div>
-        <div style={{ display: 'flex', gap: 6, marginTop: 7 }}>
-          <button onClick={() => peer.respondTrade('accepted')} style={{ flex: 1 }}>ACCEPT</button>
-          <button onClick={() => peer.respondTrade('declined')} style={{ flex: 1 }}>DECLINE</button>
+        <div role="status" style={{ marginTop: 7, fontWeight: 700 }}>P1 WANTS TO TRADE</div>
+        <div style={{ marginTop: 5 }}>Decide as the simulated remote trainer. This sends a protocol response only.</div>
+        <div style={{ marginTop: 6, fontWeight: 700 }} aria-live="off">
+          REQUEST EXPIRES IN {tradeSecondsRemaining}s
         </div>
-        <div style={{ opacity: 0.7, marginTop: 4 }}>ID {snapshot.incomingTrade.requestId.slice(0, 8)} • 30s expiry</div>
-      </> : <div style={{ marginTop: 5, opacity: 0.7 }}>No pending P1 trade request.</div>}
+        <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+          <button disabled={tradeSecondsRemaining === 0} onClick={() => peer.respondTrade('accepted')} style={{ flex: 1, minHeight: 32 }}>ACCEPT REQUEST</button>
+          <button disabled={tradeSecondsRemaining === 0} onClick={() => peer.respondTrade('declined')} style={{ flex: 1, minHeight: 32 }}>DECLINE REQUEST</button>
+        </div>
+        <div style={{ opacity: 0.7, marginTop: 5 }}>ID {snapshot.incomingTrade.requestId.slice(0, 8)}</div>
+      </> : snapshot.tradeOutcome ? <>
+        <div role="status" style={{ marginTop: 8, fontWeight: 700 }}>
+          {snapshot.tradeOutcome.status === 'accepted' ? 'ACCEPTANCE SENT TO P1'
+            : snapshot.tradeOutcome.status === 'declined' ? 'DECLINE SENT TO P1'
+              : snapshot.tradeOutcome.status === 'expired' ? 'REQUEST EXPIRED'
+                : 'P1 CANCELLED THE REQUEST'}
+        </div>
+        <div style={{ marginTop: 5, opacity: 0.75 }}>
+          ID {snapshot.tradeOutcome.requestId.slice(0, 8)} • No Pokémon or save data exchanged.
+        </div>
+      </> : <div style={{ marginTop: 7, opacity: 0.7 }}>No pending trade requests.</div>}
+      <div style={{ marginTop: 8, opacity: 0.75 }}>Development-only simulated trainer; not an authenticated second player.</div>
     </div>
 
     <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid rgba(53,84,107,0.35)' }}>
