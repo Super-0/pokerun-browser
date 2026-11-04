@@ -2417,10 +2417,21 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                     heapId, prk43Before.bgSys,
                   )
                   if (bitmapLifetimeVerified) {
-                    await tryPrk46DisposableBg2CharLifetime(
+                    const charLifetimeVerified = await tryPrk46DisposableBg2CharLifetime(
                       playerActor, prk43Before.bgSys, bg2,
                       directCharPos, directBitmap, directPixels,
                     )
+                    if (charLifetimeVerified) {
+                      await tryPrk47OneWayNativeWindowClose(
+                        playerActor, prk43Before, bg2,
+                        directCharPos, directBitmap, directPixels, heapId,
+                      )
+                    } else {
+                      console.info('[PokéRun interaction] PRK47 REAL WINDOW CLOSE SKIPPED', {
+                        reason: 'PRK46 AreaMan disposable allocation/free/reuse tests were not all verified.',
+                        note: 'The original AB window remains allocated and visible. No real-window resources were released.',
+                      })
+                    }
                   } else {
                     console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR SKIPPED', {
                       reason: 'PRK45 native bitmap destructor test did not fully pass.',
@@ -2442,7 +2453,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             } catch (reason) {
               console.info('[PokéRun interaction] PRK43 BG2 OWNERSHIP AFTER UNAVAILABLE', {
                 reason: reason instanceof Error ? reason.message : String(reason),
-                note: 'Read-only research failed without modifying the unchanged native AB window.',
+                note: 'Ownership or teardown stage rejected. If PRK47 began changing the real window, restart before retrying; inspect its phase logs.',
               })
             }
           }
@@ -3142,7 +3153,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       disposed = true
       window.removeEventListener(WHITE2_INTERACT_EVENT, onInteract)
       emitMenuState(false)
-      // Diagnostic BmpWin remains allocated only in sessions that successfully create it; restart between tests.
+      // PRK47 frees the original ad-hoc GFLBitmap only on a validated close.
+      // Earlier or failed research probes may still own native allocations.
+      // Never invoke guest-free functions from a React unmount callback.
       stateRef.current = null
       metadataCompleteRef.current = false
     }
