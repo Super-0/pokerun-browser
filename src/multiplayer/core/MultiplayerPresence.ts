@@ -23,6 +23,7 @@ export type TradeRequestPreflight = {
   transportMessagesSent: 0
 }
 type TradeRequestPreflightProvider = () => TradeRequestPreflight
+type TradeRequestPublisher = () => boolean
 
 /**
  * Per-tab in-memory bridge between the multiplayer session and emulator UI.
@@ -34,6 +35,7 @@ class MultiplayerPresenceStore {
   private readonly listeners = new Set<Listener>()
   private emotePublisher: EmotePublisher | null = null
   private tradePreflightProvider: TradeRequestPreflightProvider | null = null
+  private tradeRequestPublisher: TradeRequestPublisher | null = null
 
   subscribe(listener: Listener) {
     this.listeners.add(listener)
@@ -67,6 +69,19 @@ class MultiplayerPresenceStore {
     return () => {
       if (this.tradePreflightProvider === provider) this.tradePreflightProvider = null
     }
+  }
+
+  // Only LocalMultiplayerSession can publish; native DOM result details never
+  // contain an authoritative room or peer ID. The session rechecks preflight.
+  setTradeRequestPublisher(publisher: TradeRequestPublisher) {
+    this.tradeRequestPublisher = publisher
+    return () => {
+      if (this.tradeRequestPublisher === publisher) this.tradeRequestPublisher = null
+    }
+  }
+
+  requestTradeFromConfirmedNativeChoice() {
+    return this.tradeRequestPublisher?.() ?? false
   }
 
   previewTradeRequest(): TradeRequestPreflight {
