@@ -203,6 +203,104 @@
   margin-top: 18px;
 }
 
+/* PRK61: readable protocol feedback outside the DS emulator's native BG2 window.
+   Styling cannot alter guest graphics, ROM data, or the trade handshake. */
+.prk61-trade-feedback {
+  display: grid;
+  gap: 12px;
+  margin: 14px auto 18px;
+  padding: 16px 18px;
+  background: #f5f8fa;
+  color: #243443;
+  box-shadow: 5px 5px 0 rgba(29, 54, 77, .16);
+}
+
+.prk61-trade-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.prk61-trade-heading h2 {
+  margin: 6px 0;
+  font-family: 'Silkscreen', sans-serif;
+  font-size: clamp(16px, 2.2vw, 22px);
+}
+
+.prk61-trade-heading p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.prk61-trade-status {
+  padding: 7px 9px;
+  border: 2px solid #647b8b;
+  background: #e0e9ef;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .07em;
+}
+
+.prk61-trade-feedback.status-accepted .prk61-trade-status {
+  border-color: #4a8062;
+  background: #dceee2;
+}
+
+.prk61-trade-feedback.status-declined .prk61-trade-status,
+.prk61-trade-feedback.status-cancelled .prk61-trade-status,
+.prk61-trade-feedback.status-expired .prk61-trade-status {
+  border-color: #86704f;
+  background: #f1e9d9;
+}
+
+.prk61-trade-timer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 2px solid #9bacb9;
+  background: #fff;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.prk61-trade-timer strong {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.prk61-trade-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.prk61-trade-disclaimer {
+  margin: 0;
+  color: #576b79;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.prk61-trade-details {
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.prk61-trade-details summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.prk61-trade-details span {
+  display: block;
+  margin-top: 8px;
+}
+
 @media (max-width: 1180px) {
   .multiplayer-play-layout {
     grid-template-columns: minmax(165px, 200px) minmax(0, 520px) minmax(165px, 200px);
