@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import { White2ActorSystemProbe } from './White2ActorSystem'
-import { verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
+import { decodeWhite2PackedFontGlyph, verifyWhite2FontGlyphFromRom } from './White2RomFontArchiveVerifier'
 import { WHITE2_INTERACT_EVENT } from './White2PlayerInteractionRuntime'
 
 const FLD_ACT_GET_FIELD_EFFECTS = 0x02194f18
@@ -188,11 +188,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk36-stack-gated-prk34-visual-independent-prk35-rom',
+      mode: 'prk36-visual-plus-prk37-offline-font-decode',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK36 runs browser-ROM FAT/NARC verification before guest calls; PRK34 visuals are attempted only after a valid active DTCM stack is observed.',
+      researchNote: 'PRK37 decodes 2bpp glyph raster and 4bpp tile hashes from browser ROM, after PRK35 FAT/NARC verification but before PRK36 stack-gated native visual calls.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -316,6 +316,70 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         glyphFnv1a32: result.glyphFnv1a32,
         note: 'Independent browser-held NDS FAT/NARC validation of the live game font. No guest FS, CPU call, or memory write; only eight glyph preview bytes logged.',
       })
+
+      // PRK37: fully offline, no native guest call and no VRAM/bitmap writes.
+      // TextRenderer's native glyph function was unsafe because the font is
+      // streamed; use verified ROM bytes and the pinned gf_font.c packing.
+      try {
+        const cellWidth = await runtimeBridge.read8(font + 0x74)
+        const cellHeight = await runtimeBridge.read8(font + 0x75)
+        const sourceBpp = await runtimeBridge.read8(font + 0x7a)
+        const lineFeed = await runtimeBridge.read8(font + 0x59)
+        if (cellWidth !== 12 || cellHeight !== 15 || sourceBpp !== 2 ||
+            glyphCellSize !== 48 || result.glyphIndex !== 33 ||
+            firstChar !== 32 || lastChar !== 126 || firstIndex !== 0) {
+          throw new Error('PRK37 live glyph encoding differs from the verified direct ASCII 12x15/2bpp font layout.')
+        }
+        const memberStart = result.fatEntryStart + result.narcMemberOffset
+        const memberEnd = memberStart + result.narcMemberLength
+        const characters = ['A', 'B', '0', '?', ' '] as const
+        const samples = characters.map(character => {
+          const codepoint = character.charCodeAt(0)
+          const characterIndex = firstIndex + codepoint - firstChar
+          const absoluteOffset = result.glyphAbsoluteRomOffset +
+            (characterIndex - result.glyphIndex) * glyphCellSize
+          if (absoluteOffset < memberStart || absoluteOffset + glyphCellSize > memberEnd) {
+            throw new Error('PRK37 glyph ' + character + ' points beyond its verified NARC member.')
+          }
+          const glyph = decodeWhite2PackedFontGlyph(
+            romBytes, absoluteOffset, glyphCellSize, cellWidth, cellHeight,
+          )
+          if (character === 'A' && (glyph.x !== 0 || glyph.width !== 6 || glyph.advance !== 6)) {
+            throw new Error('PRK37 glyph A placement differs from the PRK27 native six-pixel width.')
+          }
+          return {
+            character: character === ' ' ? 'SPACE' : character,
+            codepoint,
+            glyphIndex: characterIndex,
+            absoluteRomOffset: hex(glyph.absoluteRomOffset),
+            x: glyph.x,
+            width: glyph.width,
+            advance: glyph.advance,
+            source2bppCounts: glyph.source2bppCounts,
+            nonzeroColorPixels: glyph.nonzeroColorPixels,
+            outputTileBytes: glyph.native4bppTileBytes,
+            outputTileFnv1a32: glyph.native4bppTileFnv1a32,
+            rows: glyph.asciiRows,
+          }
+        })
+        console.info('[PokéRun interaction] PRK37 OFFLINE FONT GLYPHS DECODED', {
+          glyphCount: samples.length,
+          cellSize: glyphCellSize,
+          cellWidth,
+          cellHeight,
+          sourceBpp,
+          lineFeed,
+          symbols: { '.': 'source pixel 0', '#': 'letter 1', '+': 'shadow 2', '_': 'background 3' },
+          defaultPaletteMapping: [0, 1, 2, 0],
+          samples,
+          note: '12x15 2bpp MSB-first pixels decoded from the existing browser ROM into separate 16x16 4bpp DS tile fingerprints. No glyph was drawn or uploaded.',
+        })
+      } catch (reason) {
+        console.info('[PokéRun interaction] PRK37 OFFLINE FONT DECODE REJECTED', {
+          reason: reason instanceof Error ? reason.message : String(reason),
+          note: 'The independent read-only PRK37 parser failed. PRK35 FAT/NARC verification still passed; native window code is unaffected.',
+        })
+      }
     }
 
     async function runProbe() {
