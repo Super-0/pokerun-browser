@@ -19,6 +19,11 @@ import type { GameId } from '../types'
 import '../styles/my-runs.css'
 import '../styles/multiplayer-session.css'
 
+// PRK59: publish successful, unchanged field reads periodically so both peers
+// can distinguish a still-present, stationary player from an abandoned packet.
+// Existing movement and map-transition publishing remains immediate.
+const PRK59_IDLE_STATE_HEARTBEAT_MS = 1500
+
 interface Props { onHome: () => void; onMyRuns: () => void; onSettings: () => void }
 
 export function MultiplayerScreen({ onHome, onMyRuns, onSettings }: Props) {
@@ -158,6 +163,7 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
     let cancelled = false
     let reading = false
     let lastPublished = ''
+    let lastPublishedAt = 0
     let lastPanelKey = ''
 
     async function poll() {
@@ -174,8 +180,10 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
         }
         setLiveStateError(null)
         const key = `${panelKey}:${worldPosition.x}:${worldPosition.y}:${worldPosition.z}`
-        if (key !== lastPublished) {
+        const now = Date.now()
+        if (key !== lastPublished || now - lastPublishedAt >= PRK59_IDLE_STATE_HEARTBEAT_MS) {
           lastPublished = key
+          lastPublishedAt = now
           session.publishGameState(normalized)
         }
       } catch (reason) {
