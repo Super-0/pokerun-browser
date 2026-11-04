@@ -1416,19 +1416,24 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           // would leave the BG2 map pointing at freed character tiles.
           if (prk43Before) {
             try {
+              // Capture the narrowed snapshot arrays as stable local constants.
+              // TypeScript does not retain nullable outer-variable narrowing in
+              // callbacks passed to every/reduce.
+              const beforeRamMap = prk43Before.ramMap
+              const beforeVramMap = prk43Before.vramMap
               const after = await inspectBg2MapReadOnly()
               const sameBgSys = after.bgSys === prk43Before.bgSys
               const sameShadow = after.screenPtr === prk43Before.screenPtr
-              const shadowUnchanged = prk43Before.ramMap !== null &&
+              const shadowUnchanged = beforeRamMap !== null &&
                 after.ramMap !== null &&
-                after.ramMap.every((value, i) => value === prk43Before.ramMap![i])
+                after.ramMap.every((value, i) => value === beforeRamMap[i])
               const expected = prk43ExpectedMapForWindow(directCharPos)
               const vramMatching = after.vramMap !== null
                 ? after.vramMap.reduce((n, value, i) => n + (value === expected[i] ? 1 : 0), 0)
                 : null
-              const vramChanged = prk43Before.vramMap !== null && after.vramMap !== null
+              const vramChanged = beforeVramMap !== null && after.vramMap !== null
                 ? after.vramMap.reduce((n, value, i) =>
-                    n + (value !== prk43Before.vramMap![i] ? 1 : 0), 0)
+                    n + (value !== beforeVramMap[i] ? 1 : 0), 0)
                 : null
               const observedPixels = await runtimeBridge.read32(directBitmap)
               const observedWidth = await runtimeBridge.read16(directBitmap + 4)
