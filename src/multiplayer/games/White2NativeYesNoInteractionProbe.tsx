@@ -1713,7 +1713,13 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             (await runtimeBridge.read32(PRK43_BGSYS_GLOBAL_PTR)) !== baseline.bgSys ||
             (await runtimeBridge.read32(
               baseline.bgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
-            )) !== areaMan) {
+            )) !== areaMan ||
+            (await runtimeBridge.read32(
+              baseline.bgSys + PRK46_BGSYS_BG2_CHAR_BASE_OFFSET,
+            )) !== charBase ||
+            (await runtimeBridge.read32(
+              baseline.bgSys + PRK46_BGSYS_BG2_CHAR_SIZE_OFFSET,
+            )) !== charSize) {
           return false
         }
         const current = await probe.scanHeap()
@@ -1827,6 +1833,22 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
 
         if (!(await sameFieldAndSafeStack())) {
           throw new Error('PRK47 field or native stack changed before real BG2 character free.')
+        }
+        // The guest is still running between asynchronous calls. Recheck
+        // the full tilemap immediately before deallocating its 60 live tiles:
+        // no game-side screen update may have reintroduced those references.
+        const preFreeMap = await inspectBg2MapReadOnly()
+        const preFreeMatches = preFreeMap.bgSys === baseline.bgSys &&
+          preFreeMap.screenPtr === baseline.screenPtr &&
+          preFreeMap.screenBase === baseline.screenBase &&
+          preFreeMap.vramMap !== null &&
+          preFreeMap.vramMap.length === originalVram.length &&
+          preFreeMap.vramMap.every((value, i) => value === originalVram[i]) &&
+          preFreeMap.ramMap !== null &&
+          preFreeMap.ramMap.length === originalShadow.length &&
+          preFreeMap.ramMap.every((value, i) => value === originalShadow[i])
+        if (!preFreeMatches) {
+          throw new Error('PRK47 BG2 map changed between restoration and real char deallocation.')
         }
         // The tilemap was verified to no longer reference 964..1023.
         // The real AreaMan reservation can now be released with the
