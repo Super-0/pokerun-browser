@@ -1638,6 +1638,310 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       }
     }
 
+    // PRK47: first one-way close of the *real* native White 2 AB window.
+    // PRK44 verified reversible BG2 map restoration, PRK45 native bitmap
+    // destructor, and PRK46 one-tile AreaMan free/reuse independently.
+    // Do not attempt to reopen in this experiment: the ref state is
+    // intentionally locked after cleanup until a completely fresh session.
+    async function tryPrk47OneWayNativeWindowClose(
+      playerActor: number,
+      baseline: Prk43Bg2MapSnapshot,
+      bg: number,
+      charPos: number,
+      liveBitmap: number,
+      livePixels: number,
+      heapId: number,
+    ): Promise<boolean> {
+      const expectedOverlay = prk43ExpectedMapForWindow(charPos)
+      const originalVram = baseline.vramMap
+      const originalShadow = baseline.ramMap
+      const screenNow = await inspectBg2MapReadOnly()
+      const areaMan = await runtimeBridge.read32(
+        baseline.bgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
+      )
+      const charBase = await runtimeBridge.read32(
+        baseline.bgSys + PRK46_BGSYS_BG2_CHAR_BASE_OFFSET,
+      )
+      const charSize = await runtimeBridge.read32(
+        baseline.bgSys + PRK46_BGSYS_BG2_CHAR_SIZE_OFFSET,
+      )
+      const bitmapHeader = await runtimeBridge.readBytes(liveBitmap, 12)
+      const preflight =
+        !disposed && runtimeBridge.status === 'running' &&
+        !metadataCompleteRef.current &&
+        stateRef.current?.window === liveBitmap &&
+        bg === MSGBG_BG2 && charPos === 964 && heapId === 21 &&
+        isMainRamPointer(baseline.bgSys) &&
+        isMainRamPointer(areaMan) &&
+        isMainRamPointer(liveBitmap) &&
+        isMainRamPointer(livePixels) &&
+        charBase === 65536 && charSize === 32768 &&
+        originalVram !== null && originalVram.length === 98 &&
+        originalShadow !== null && originalShadow.length === 98 &&
+        originalVram.every((value, i) => value === originalShadow[i]) &&
+        screenNow.bgSys === baseline.bgSys &&
+        screenNow.screenPtr === baseline.screenPtr &&
+        screenNow.screenSize === baseline.screenSize &&
+        screenNow.screenBase === baseline.screenBase &&
+        screenNow.controlScreenBase === baseline.controlScreenBase &&
+        screenNow.screenBase === screenNow.controlScreenBase &&
+        screenNow.ramMap !== null && screenNow.ramMap.length === 98 &&
+        screenNow.ramMap.every((value, i) => value === originalShadow[i]) &&
+        screenNow.vramMap !== null && screenNow.vramMap.length === 98 &&
+        screenNow.vramMap.every((value, i) => value === expectedOverlay[i]) &&
+        bitmapHeader.length === 12 &&
+        (await runtimeBridge.read32(liveBitmap)) === livePixels &&
+        (await runtimeBridge.read16(liveBitmap + 4)) === 96 &&
+        (await runtimeBridge.read16(liveBitmap + 6)) === 40 &&
+        (await runtimeBridge.read16(liveBitmap + 8)) === 32 &&
+        (await runtimeBridge.read16(liveBitmap + 10)) === 0
+
+      if (!preflight || originalVram === null || originalShadow === null) {
+        console.info('[PokéRun interaction] PRK47 REAL WINDOW CLOSE PREFLIGHT SKIPPED', {
+          stateWindow: stateRef.current ? hex(stateRef.current.window) : null,
+          expectedBitmap: hex(liveBitmap),
+          baselineVramAvailable: originalVram !== null,
+          baselineShadowAvailable: originalShadow !== null,
+          charBase, charSize, areaMan: hex(areaMan),
+          note: 'No real-window resources freed or map entries modified; the known-good AB window is preserved.',
+        })
+        return false
+      }
+
+      async function sameFieldAndSafeStack(): Promise<boolean> {
+        if (disposed || runtimeBridge.status !== 'running' ||
+            (await runtimeBridge.read32(PRK43_BGSYS_GLOBAL_PTR)) !== baseline.bgSys ||
+            (await runtimeBridge.read32(
+              baseline.bgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
+            )) !== areaMan) {
+          return false
+        }
+        const current = await probe.scanHeap()
+        if (current.playerActor?.address !== playerActor ||
+            current.playerActor.modelId !== EXPECTED_STABLE_PLAYER_MODEL) {
+          return false
+        }
+        return validNativeStack(await runtimeBridge.getArm9Sp()) ||
+          await waitForActiveNativeStack()
+      }
+      if (!(await sameFieldAndSafeStack())) {
+        console.info('[PokéRun interaction] PRK47 REAL WINDOW CLOSE PREFLIGHT SKIPPED', {
+          reason: 'Field actor, AreaMan ownership, or active ARM9 stack not ready.',
+        })
+        return false
+      }
+
+      console.info('[PokéRun interaction] PRK47 REAL WINDOW CLOSE PREFLIGHT PASSED', {
+        playerActor: hex(playerActor), bg, charPos,
+        charTileRange: [charPos, charPos + 59],
+        ownedBitmap: hex(liveBitmap),
+        ownedPixels: hex(livePixels),
+        areaMan: hex(areaMan),
+        originalMapHash: prk43SnapshotHash(originalVram),
+        displayedMapHash: prk43SnapshotHash(screenNow.vramMap),
+        entriesToRestore: originalVram.length,
+        rowsToRestore: WINDOW_HEIGHT + 2,
+        bytesPerCall: FRAME_FULL_ROW_BYTES,
+        note: 'ONE-WAY CLOSE: restore 98 BG2 map entries, verify, then free the original 60-tile reservation and owned bitmap. The AB window should disappear. NO reopen is attempted.',
+      })
+
+      let restoredRows = 0
+      let mapRestored = false
+      let scratchRestored = false
+      let charReleased = false
+      let bitmapReleased = false
+      let failedNativeCall = false
+      let scratchOriginal: Uint8Array | null = null
+      try {
+        scratchOriginal = await runtimeBridge.readBytes(
+          livePixels, FRAME_FULL_ROW_BYTES,
+        )
+        if (scratchOriginal.length !== FRAME_FULL_ROW_BYTES) {
+          throw new Error('PRK47 could not preserve native bitmap transfer scratch.')
+        }
+        for (let row = 0; row < WINDOW_HEIGHT + 2; row += 1) {
+          if (!(await sameFieldAndSafeStack())) {
+            throw new Error('PRK47 field or native stack changed before screen-map row ' + row)
+          }
+          const data = new Uint8Array(FRAME_FULL_ROW_BYTES)
+          for (let col = 0; col < WINDOW_WIDTH + 2; col += 1) {
+            const value = originalVram[row * (WINDOW_WIDTH + 2) + col]
+            data[2 * col] = value & 255
+            data[2 * col + 1] = value >>> 8
+          }
+          await runtimeBridge.writeBytes(livePixels, data)
+          const observedScratch = await runtimeBridge.readBytes(
+            livePixels, FRAME_FULL_ROW_BYTES,
+          )
+          if (observedScratch.length !== FRAME_FULL_ROW_BYTES ||
+              observedScratch.some((value, i) => value !== data[i])) {
+            throw new Error('PRK47 row scratch readback failed at row ' + row)
+          }
+          try {
+            await atomicCall(
+              GFL_BGSYS_LOAD_SCR_CORE, bg,
+              livePixels, FRAME_FULL_ROW_BYTES,
+              (WINDOW_Y - 1 + row) * TEXT_BG_WIDTH_TILES + WINDOW_X - 1,
+            )
+          } catch (reason) {
+            failedNativeCall = true
+            throw reason
+          }
+          restoredRows += 1
+        }
+
+        const originalMapCheck = await inspectBg2MapReadOnly()
+        const mapMatches = originalMapCheck.bgSys === baseline.bgSys &&
+          originalMapCheck.screenPtr === baseline.screenPtr &&
+          originalMapCheck.screenBase === baseline.screenBase &&
+          originalMapCheck.controlScreenBase === baseline.controlScreenBase &&
+          originalMapCheck.vramMap !== null &&
+          originalMapCheck.vramMap.length === originalVram.length &&
+          originalMapCheck.vramMap.every((value, i) => value === originalVram[i])
+        const originalShadowMatches = originalMapCheck.ramMap !== null &&
+          originalMapCheck.ramMap.length === originalShadow.length &&
+          originalMapCheck.ramMap.every((value, i) => value === originalShadow[i])
+        if (!mapMatches || !originalShadowMatches) {
+          throw new Error('PRK47 native BG2 original map or RAM shadow failed verification.')
+        }
+        mapRestored = true
+        console.info('[PokéRun interaction] PRK47 ORIGINAL BG2 MAP RESTORED VERIFIED', {
+          restoredRows, bytesTransferred: restoredRows * FRAME_FULL_ROW_BYTES,
+          entriesVerified: originalVram.length,
+          originalVramHash: prk43SnapshotHash(originalMapCheck.vramMap),
+          shadowUnchanged: originalShadowMatches,
+          note: 'The native AB window is now hidden behind the exact original BG2 map. No resources freed yet.',
+        })
+
+        // The first 28 bytes were an expendable native transfer scratch,
+        // but PRK47 must restore them BEFORE freeing its backing allocation.
+        await runtimeBridge.writeBytes(livePixels, scratchOriginal)
+        const restoredScratch = await runtimeBridge.readBytes(
+          livePixels, FRAME_FULL_ROW_BYTES,
+        )
+        scratchRestored = restoredScratch.length === FRAME_FULL_ROW_BYTES &&
+          restoredScratch.every((value, i) => value === scratchOriginal![i])
+        if (!scratchRestored) {
+          throw new Error('PRK47 bitmap staging scratch was not fully restored; no frees allowed.')
+        }
+
+        if (!(await sameFieldAndSafeStack())) {
+          throw new Error('PRK47 field or native stack changed before real BG2 character free.')
+        }
+        // The tilemap was verified to no longer reference 964..1023.
+        // The real AreaMan reservation can now be released with the
+        // same three-argument Thumb4 call proven by PRK46.
+        try {
+          await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg, charPos, 1920)
+        } catch (reason) {
+          failedNativeCall = true
+          throw reason
+        }
+        charReleased = true
+        // No new X press can re-enter this experiment after a partially
+        // completed real-resource free, even if a later call fails.
+        metadataCompleteRef.current = true
+        console.info('[PokéRun interaction] PRK47 REAL BG2 CHAR RESERVATION FREED', {
+          bg, startTile: charPos, tileCount: 60, releasedBytes: 1920,
+          originalMapStillVerified: mapRestored,
+          note: 'Native AreaMan release returned. No screen-map entries point to these character tiles.',
+        })
+
+        if (!(await sameFieldAndSafeStack())) {
+          throw new Error('PRK47 field or native stack changed before owned GFLBitmap destructor.')
+        }
+        // GFL_BitmapFree releases the owned 1920-byte pixel allocation
+        // followed by the separately allocated 12-byte bitmap structure.
+        try {
+          const freed = await atomicCall(GFL_BITMAP_FREE, liveBitmap)
+          bitmapReleased = true
+          stateRef.current = null // never retain a pointer to freed bitmap
+          emitMenuState(false)
+          console.info('[PokéRun interaction] PRK47 REAL OWNED BITMAP FREED', {
+            originalBitmap: hex(liveBitmap),
+            originalPixels: hex(livePixels),
+            nativeFreeInstructions: freed.instructions,
+            nativeReturnType: 'void',
+            note: 'Both original window allocations are now released. Never dereference these addresses or reopen in this session.',
+          })
+        } catch (reason) {
+          failedNativeCall = true
+          stateRef.current = null // avoid stale ownership after a failed destructor
+          throw reason
+        }
+
+        // After free we may read only still-owned BGSys/actor/map state.
+        // Never read the now-freed bitmap or its backing pixel buffer.
+        const finalMap = await inspectBg2MapReadOnly()
+        const finalActor = await probe.scanHeap()
+        const cleanMap = finalMap.bgSys === baseline.bgSys &&
+          finalMap.screenPtr === baseline.screenPtr &&
+          finalMap.vramMap !== null &&
+          finalMap.vramMap.length === originalVram.length &&
+          finalMap.vramMap.every((value, i) => value === originalVram[i])
+        const cleanShadow = finalMap.ramMap !== null &&
+          finalMap.ramMap.length === originalShadow.length &&
+          finalMap.ramMap.every((value, i) => value === originalShadow[i])
+        const stillSameAreaMan = (await runtimeBridge.read32(
+          baseline.bgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
+        )) === areaMan
+        const playerHealthy = finalActor.playerActor?.address === playerActor &&
+          finalActor.playerActor.modelId === EXPECTED_STABLE_PLAYER_MODEL
+        if (!cleanMap || !cleanShadow || !stillSameAreaMan ||
+            !playerHealthy || stateRef.current !== null ||
+            !metadataCompleteRef.current) {
+          throw new Error('PRK47 post-free screen, allocator, player, or ownership state changed.')
+        }
+        console.info('[PokéRun interaction] PRK47 ACTUAL WINDOW TEARDOWN VERIFIED', {
+          restoredRows, restoredEntries: 98,
+          originalMapHash: prk43SnapshotHash(finalMap.vramMap),
+          shadowUnchanged: cleanShadow,
+          playerHealthy, sameAreaMan: stillSameAreaMan,
+          charReleased, bitmapReleased, scratchRestored,
+          staleWindowPointerRetained: false,
+          furtherInteractionLocked: metadataCompleteRef.current,
+          note: 'First one-way real-window close passed. Background restored and both allocations released. P2 external health and screenshot still required. Reopening intentionally NOT attempted.',
+        })
+        return true
+      } catch (reason) {
+        // Never retry a partly completed teardown in the same guest. Once
+        // native free has begun, refs stay locked to prevent use-after-free.
+        if (restoredRows > 0 || charReleased || bitmapReleased) {
+          metadataCompleteRef.current = true
+        }
+        console.info('[PokéRun interaction] PRK47 REAL WINDOW TEARDOWN REJECTED', {
+          restoredRows, mapRestored, scratchRestored,
+          charReleased, bitmapReleased, failedNativeCall,
+          staleWindowPointerRetained: stateRef.current !== null,
+          reason: reason instanceof Error ? reason.message : String(reason),
+          note: 'Do NOT retry in this guest session. A partially restored map or freed resource cannot be blindly undone; restart and preserve the logs.',
+        })
+        return false
+      } finally {
+        // On an early failure before ownership is released, restore the RAM
+        // scratch (but never attempt to write through a freed pointer).
+        if (!charReleased && !bitmapReleased && scratchOriginal !== null) {
+          try {
+            await runtimeBridge.writeBytes(livePixels, scratchOriginal)
+            const readback = await runtimeBridge.readBytes(
+              livePixels, FRAME_FULL_ROW_BYTES,
+            )
+            scratchRestored = readback.length === FRAME_FULL_ROW_BYTES &&
+              readback.every((value, i) => value === scratchOriginal![i])
+            console.info('[PokéRun interaction] PRK47 BITMAP SCRATCH FINALIZED', {
+              restored: scratchRestored,
+              note: 'Only allocated bitmap RAM touched. No native ARM9 calls made in finalization.',
+            })
+          } catch (reason) {
+            console.info('[PokéRun interaction] PRK47 BITMAP SCRATCH RESTORE FAILED', {
+              reason: reason instanceof Error ? reason.message : String(reason),
+              note: 'No further operations should be attempted in this session.',
+            })
+          }
+        }
+      }
+    }
+
     async function runProbe() {
       if (openingRef.current || metadataCompleteRef.current || stateRef.current || runtimeBridge.status !== 'running') {
         if (stateRef.current || metadataCompleteRef.current) {
