@@ -1,9 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../core/MultiplayerPresence'
 import type { MultiplayerDirection, MultiplayerPlayerState } from '../core/protocol'
+import type { White2NativeYesNoResult } from './White2NativeYesNoInteractionProbe'
 
 export const WHITE2_INTERACT_EVENT = 'pokerun:white2-interact'
+// PRK56: consume the already verified post-teardown result. Deliberately
+// no room send, player-state mutation, trade request, or native guest call.
+const WHITE2_NATIVE_YES_NO_RESULT_EVENT = 'pokerun:white2-native-yes-no-result'
 
 function facingDelta(direction: MultiplayerDirection) {
   if (direction === 'north') return { x: 0, y: -1 }
@@ -21,8 +25,94 @@ function canInteract(local: MultiplayerPlayerState | null, remote: MultiplayerPl
 export function White2PlayerInteractionRuntime() {
   const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null)
+  const latestPresenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
+  const prk56VerifiedChoicesRef = useRef<Array<'yes' | 'no'>>([])
 
-  useEffect(() => multiplayerPresence.subscribe(setPresence), [])
+  // Multiplayer presence can update every field frame. Keep the native
+  // result listener stable instead of resubscribing on every position tick.
+  useEffect(() => multiplayerPresence.subscribe(snapshot => {
+    latestPresenceRef.current = snapshot
+    setPresence(snapshot)
+  }), [])
+
+  useEffect(() => {
+    const onNativeYesNoResult = (event: Event) => {
+      if (!(event instanceof CustomEvent)) return
+      const payload: unknown = event.detail
+      const candidate = payload as Partial<White2NativeYesNoResult> | null
+      const wellFormed = candidate !== null && typeof candidate === 'object' &&
+        candidate.interaction === 'trade' &&
+        (candidate.choice === 'yes' || candidate.choice === 'no') &&
+        (candidate.sequence === 1 || candidate.sequence === 2) &&
+        candidate.totalAllowed === 2 &&
+        candidate.nativeWindowClosed === true &&
+        candidate.originalBg2Restored === true &&
+        candidate.guestTradeInitiated === false
+      if (!wellFormed || !candidate) {
+        console.info('[PokéRun interaction] PRK56 APP RESULT REJECTED', {
+          reason: 'Unrecognized or incomplete post-close Yes/No event.',
+          note: 'Untrusted DOM event details are never used to authorize a trade.',
+        })
+        return
+      }
+      const snapshot = latestPresenceRef.current
+      if (!canInteract(snapshot.local, snapshot.remote)) {
+        console.info('[PokéRun interaction] PRK56 APP RESULT REJECTED', {
+          reason: 'Players no longer occupy the expected facing/adjacent same-map tiles.',
+          choice: candidate.choice,
+          sequence: candidate.sequence,
+          hasLocal: snapshot.local !== null,
+          hasRemote: snapshot.remote !== null,
+          note: 'Result is ignored; no trade/network action exists in PRK56.',
+        })
+        return
+      }
+      if (candidate.sequence === 1) {
+        // A new two-interaction experiment starts with a first result.
+        prk56VerifiedChoicesRef.current = []
+      } else if (prk56VerifiedChoicesRef.current.length !== 1) {
+        console.info('[PokéRun interaction] PRK56 APP RESULT REJECTED', {
+          reason: 'Second result arrived without an accepted first result.',
+          sequence: candidate.sequence,
+          note: 'No remote requests or guest writes were attempted.',
+        })
+        return
+      }
+      prk56VerifiedChoicesRef.current.push(candidate.choice!)
+      const acceptedChoices = [...prk56VerifiedChoicesRef.current]
+      console.info('[PokéRun interaction] PRK56 APP POST-CLOSE RESULT CONSUMED', {
+        choice: candidate.choice,
+        sequence: candidate.sequence,
+        totalAllowed: candidate.totalAllowed,
+        nativeWindowClosed: candidate.nativeWindowClosed,
+        originalBg2Restored: candidate.originalBg2Restored,
+        sameMapAdjacentFacing: true,
+        mapId: snapshot.local!.location.mapId,
+        localTile: { x: snapshot.local!.x, y: snapshot.local!.y },
+        remoteTile: { x: snapshot.remote!.x, y: snapshot.remote!.y },
+        acceptedChoices,
+        tradeRequestSent: false,
+        gameTradeInitiated: false,
+        note: 'Multiplayer UI consumed a bounded native result AFTER teardown; no transport or trade side effects. DOM events are not security/authentication proof.',
+      })
+      if (candidate.sequence === 2) {
+        const coveredBothChoices = acceptedChoices.includes('yes') &&
+          acceptedChoices.includes('no')
+        console.info(coveredBothChoices
+          ? '[PokéRun interaction] PRK56 APP BOTH CHOICES RECEIVED'
+          : '[PokéRun interaction] PRK56 APP TWO RESULTS RECEIVED - CHOICE COVERAGE INCOMPLETE', {
+          choices: acceptedChoices,
+          coveredBothChoices,
+          sameMapAdjacentFacing: true,
+          networkMessagesSent: 0,
+          guestTradeInitiated: false,
+          note: 'Application-level receipt only; next stage must authenticate/session-bind an actual two-peer handshake before any trade action.',
+        })
+      }
+    }
+    window.addEventListener(WHITE2_NATIVE_YES_NO_RESULT_EVENT, onNativeYesNoResult)
+    return () => window.removeEventListener(WHITE2_NATIVE_YES_NO_RESULT_EVENT, onNativeYesNoResult)
+  }, [])
 
   useEffect(() => {
     const findTarget = () => {
