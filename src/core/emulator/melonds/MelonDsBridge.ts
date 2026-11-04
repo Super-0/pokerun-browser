@@ -57,6 +57,22 @@ export class MelonDsBridge implements EmulatorBridge {
   setSpeedMultiplier(multiplier: DsSpeedMultiplier) { this.speedMultiplier = multiplier }
   getSpeedMultiplier() { return this.speedMultiplier }
   getFrameStats(): MelonDsFrameStats { return { ...this.frameStats } }
+
+  /** PRK63: read-only counters from the native Wi-Fi callback boundary.
+   * No raw packets or emulator memory are read, and no transport is enabled.
+   * These counts refer to this emulator, not the simulated P2 actor.
+   */
+  getNativeWirelessProbeCounters() {
+    const emu = this.assertEmulator()
+    return {
+      wifiStarts: emu.prk63WifiStarts() >>> 0,
+      wifiStops: emu.prk63WifiStops() >>> 0,
+      mpTxAttempts: emu.prk63MpTxCalls() >>> 0,
+      mpRxPolls: emu.prk63MpRxPolls() >>> 0,
+      mpHostRxPolls: emu.prk63MpHostRxPolls() >>> 0,
+      netTxAttempts: emu.prk63NetTxCalls() >>> 0,
+    }
+  }
   subscribeEmulatedFrame(listener: () => void) {
     this.emulatedFrameListeners.add(listener)
     return () => this.emulatedFrameListeners.delete(listener)
