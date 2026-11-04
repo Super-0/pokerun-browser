@@ -206,6 +206,21 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
       <AppHeader onHome={onHome} right={right}/>
       <section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>Both players keep independent saves. Live position is shared between the two games; party and gym reads are the next adapter fields.</p><span className={saveStatus === 'LOCAL SAVE FAILED' ? 'form-error' : 'memory-ok'}>{saveStatus}</span></div><PixelButton tone="ghost" onClick={() => session.leave()}>LEAVE SESSION</PixelButton></section>
 
+      {import.meta.env.DEV && state.trade && <section className="multiplayer-session-debug pixel-border" style={{ marginBottom: 12 }}>
+        <h2>PRK60 TRADE REQUEST • DEVELOPMENT TEST</h2>
+        <p>Handshake only. Accepting never transfers Pokémon or modifies either game.</p>
+        <p><strong>{state.trade.direction === 'incoming' ? 'INCOMING' : 'OUTGOING'}</strong> • {state.trade.status.toUpperCase()} • ID {state.trade.request.requestId.slice(0, 8)}</p>
+        {state.trade.status === 'pending' && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {state.trade.direction === 'incoming' && <>
+            <PixelButton onClick={() => session.respondTrade('accepted')}>ACCEPT REQUEST</PixelButton>
+            <PixelButton tone="ghost" onClick={() => session.respondTrade('declined')}>DECLINE REQUEST</PixelButton>
+          </>}
+          <PixelButton tone="ghost" onClick={() => session.cancelTrade()}>CANCEL REQUEST</PixelButton>
+        </div>}
+        {state.trade.status === 'accepted' && <p>Both players accepted the request. Pokémon exchange is deliberately disabled.</p>}
+        {state.trade.status === 'expired' && <p>The 30-second request expired without confirmation.</p>}
+      </section>}
+
       <section className="multiplayer-play-layout">
         <MultiplayerPlayerPanel playerLabel={localLabel} roleLabel={`PLAYER ${localIndex + 1} • YOU`} state={localState} relation={relation} error={liveStateError}/>
         <div className="multiplayer-emulator-center"><section className="emulator-column">{batteryReady ? <MelonDsPlayer game={roomGame} rom={state.localRom!.rom} onBridgeReady={setBridge} saveKey={saveProfileId ?? session.localPlayerId} batterySave={batterySave} onBatterySave={persistBatterySave}/> : <section className="runs-empty pixel-border"><h2>RESTORING LOCAL SAVE...</h2></section>}</section></div>
