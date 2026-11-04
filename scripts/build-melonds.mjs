@@ -21,6 +21,8 @@ const requiredRuntimeSymbols = [
   'getArm9Sp', 'callArm9Thumb4', 'callArm9Thumb8Atomic', 'arm9CallStatus',
   'arm9CallPc', 'arm9CallLr', 'arm9CallCpsr', 'arm9CallInstructions',
   'arm9CallBudget', 'pokerunRuntimeVersion',
+  'prk63WifiStarts', 'prk63WifiStops', 'prk63MpTxCalls',
+  'prk63MpRxPolls', 'prk63MpHostRxPolls', 'prk63NetTxCalls',
 ]
 
 function run(command, args, cwd = root) { execFileSync(command, args, { cwd, stdio: 'inherit' }) }
@@ -79,6 +81,29 @@ function applyExactWasmCppPatch(patchPath) {
   console.log(`[PokéRun] Strictly applied ${hunks.length} C++ hunks from ${patchPath}`)
 }
 
+
+function applyPrk63WirelessTelemetry() {
+  // Strict pinned-source transformations: fail on any unexpected upstream changes.
+  const platform = resolve(source, 'wasmelonDS/src/frontend/wasm/WasmPlatform.cpp')
+  const header = resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.h')
+  const cpp = resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.cpp')
+  function replaceUnique(path, before, after) {
+    const original = readFileSync(path, 'utf8')
+    const pieces = original.split(before)
+    if (pieces.length !== 2) {
+      throw new Error('PRK63 telemetry source context mismatch in ' + path + ': ' + (pieces.length - 1) + ' matches.')
+    }
+    writeFileSync(path, pieces.join(after))
+  }
+
+  replaceUnique(header, '#include <emscripten/bind.h>', '#include <emscripten/bind.h>\n#include <atomic>')
+  replaceUnique(header, "    std::string savePath;\n", "    std::string savePath;\n    // Per-emulator counters: Wi-Fi callbacks can run on an emulation worker.\n    std::atomic<melonDS::u32> prk63WifiStartsCount{0};\n    std::atomic<melonDS::u32> prk63WifiStopsCount{0};\n    std::atomic<melonDS::u32> prk63MpTxCallsCount{0};\n    std::atomic<melonDS::u32> prk63MpRxPollsCount{0};\n    std::atomic<melonDS::u32> prk63MpHostRxPollsCount{0};\n    std::atomic<melonDS::u32> prk63NetTxCallsCount{0};\n\n    melonDS::u32 prk63WifiStarts() const { return prk63WifiStartsCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk63WifiStops() const { return prk63WifiStopsCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk63MpTxCalls() const { return prk63MpTxCallsCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk63MpRxPolls() const { return prk63MpRxPollsCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk63MpHostRxPolls() const { return prk63MpHostRxPollsCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk63NetTxCalls() const { return prk63NetTxCallsCount.load(std::memory_order_relaxed); }\n")
+  replaceUnique(platform, "  // Local Multiplayer (DS Download Play)\n  void MP_Begin(void* userdata) { }\n  void MP_End(void* userdata) { }\n  int MP_SendPacket(u8* data, int len, u64 timestamp, void* userdata) { }\n  int MP_RecvPacket(u8* data, u64* timestamp, void* userdata) { }\n  int MP_SendCmd(u8* data, int len, u64 timestamp, void* userdata) { }\n  int MP_SendReply(u8* data, int len, u64 timestamp, u16 aid, void* userdata) { }\n  int MP_SendAck(u8* data, int len, u64 timestamp, void* userdata) { }\n  int MP_RecvHostPacket(u8* data, u64* timestamp, void* userdata) { }\n  u16 MP_RecvReplies(u8* data, u64 timestamp, u16 aidmask, void* userdata) { }\n\n  // NetPlay interface (going to likely remain unimplemented)\n  int Net_SendPacket(u8* data, int len, void* userdata) { }\n  int Net_RecvPacket(u8* data, void* userdata) { }", "  // PRK63: count wireless activity without delivering or collecting any packets.\n  // The old empty non-void stubs had undefined returns; 0 means no packet.\n  static wasmelon::WasmEmulator* Prk63Emulator(void* userdata) {\n    return static_cast<wasmelon::WasmEmulator*>(userdata);\n  }\n  void MP_Begin(void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63WifiStartsCount.fetch_add(1, std::memory_order_relaxed);\n  }\n  void MP_End(void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63WifiStopsCount.fetch_add(1, std::memory_order_relaxed);\n  }\n  int MP_SendPacket(u8*, int, u64, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }\n  int MP_RecvPacket(u8*, u64*, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpRxPollsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }\n  int MP_SendCmd(u8*, int, u64, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }\n  int MP_SendReply(u8*, int, u64, u16, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }\n  int MP_SendAck(u8*, int, u64, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }\n  int MP_RecvHostPacket(u8*, u64*, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpHostRxPollsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }\n  u16 MP_RecvReplies(u8*, u64, u16, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpHostRxPollsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }\n  int Net_SendPacket(u8*, int, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63NetTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }\n  int Net_RecvPacket(u8*, void*) { return 0; }")
+  replaceUnique(cpp, "    .function(\"getCartTitle\", &wasmelon::WasmEmulator::getCartTitle)", "    .function(\"getCartTitle\", &wasmelon::WasmEmulator::getCartTitle)\n    .function(\"prk63WifiStarts\", &wasmelon::WasmEmulator::prk63WifiStarts)\n    .function(\"prk63WifiStops\", &wasmelon::WasmEmulator::prk63WifiStops)\n    .function(\"prk63MpTxCalls\", &wasmelon::WasmEmulator::prk63MpTxCalls)\n    .function(\"prk63MpRxPolls\", &wasmelon::WasmEmulator::prk63MpRxPolls)\n    .function(\"prk63MpHostRxPolls\", &wasmelon::WasmEmulator::prk63MpHostRxPolls)\n    .function(\"prk63NetTxCalls\", &wasmelon::WasmEmulator::prk63NetTxCalls)")
+  replaceUnique(cpp, 'return 0x50524B3C;', 'return 0x50524B3D;')
+  console.log('[PokéRun] PRK63 counters installed on pinned native Wi-Fi stubs; packet routing disabled.')
+}
+
 function restorePinnedSource() {
   try {
     execFileSync('git', ['reset', '--hard', expectedRevision], { cwd: source, stdio: 'inherit' })
@@ -104,6 +129,7 @@ try {
     run('git', ['apply', '--recount', patch], source)
   }
   for (const patch of patches.slice(5)) applyExactWasmCppPatch(patch)
+  applyPrk63WirelessTelemetry()
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')
@@ -130,7 +156,7 @@ try {
       !patchedCpp.includes('arm.R[13] = injectedSp;')) {
     throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
   }
-  if (!patchedCpp.includes('return 0x50524B3C;')) {
+  if (!patchedCpp.includes('return 0x50524B3D;')) {
     throw new Error('PokéRun melonDS patch did not install the PRK32 runtime stamp.')
   }
 
