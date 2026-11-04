@@ -120,6 +120,8 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
   const [batterySave, setBatterySave] = useState<Uint8Array | null>(null)
   const [batteryReady, setBatteryReady] = useState(false)
   const [saveStatus, setSaveStatus] = useState('WAITING FOR IN-GAME SAVE')
+  const [exportingSave, setExportingSave] = useState(false)
+  const [exportSaveError, setExportSaveError] = useState<string | null>(null)
   const localRomIdentity = state.localRom!.identity
   const saveProfileId = state.localRom!.saveProfileId
   useEffect(() => {
@@ -135,6 +137,44 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
     })
     return () => { cancelled = true }
   }, [saveProfileId])
+
+  // Export a standalone copy of the *actual* melonDS battery-save file,
+  // without touching the game, save profile, or emulated memory. The browser
+  // stores saves in IndexedDB; users cannot attach them to a chat directly.
+  // PRK63 research can use an exported backup for independent offline editing.
+  const downloadSaveBackup = useCallback(async () => {
+    if (!import.meta.env.DEV || !bridge || exportingSave) return
+    setExportingSave(true)
+    setExportSaveError(null)
+    try {
+      const bytes = await bridge.exportBatterySave()
+      if (!bytes?.length) {
+        throw new Error('No in-game save found. Save normally using the Pokémon menu first.')
+      }
+      const copy = new Uint8Array(bytes)
+      const blob = new Blob([copy], { type: 'application/octet-stream' })
+      const url = URL.createObjectURL(blob)
+      try {
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = 'pokerun-white2-backup.sav'
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+        console.info('[PokéRun save] DEV BACKUP EXPORTED', {
+          bytes: copy.length,
+          readOnly: true,
+          gameSaveModified: false,
+        })
+      } finally {
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      }
+    } catch (error) {
+      setExportSaveError(error instanceof Error ? error.message : 'Could not export the save backup.')
+    } finally {
+      setExportingSave(false)
+    }
+  }, [bridge, exportingSave])
 
   const persistBatterySave = useCallback(async (save: Uint8Array) => {
     if (!saveProfileId) return
@@ -221,7 +261,16 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
         <MultiplayerPlayerPanel playerLabel={remoteLabel} roleLabel={`PLAYER ${remoteIndex + 1} • PARTNER`} state={remoteState} relation={relation}/>
       </section>
 
-      {import.meta.env.DEV && <><White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/><White2NativeWirelessResearchPanel bridge={bridge} rom={localRomIdentity}/><section className="multiplayer-debug multiplayer-session-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></>}
+      {import.meta.env.DEV && <>
+        <section className="multiplayer-session-debug pixel-border" style={{ padding: 12, marginBottom: 12 }}>
+          <h2>WHITE 2 • SAVE BACKUP (DEVELOPMENT)</h2>
+          <p style={{ fontSize: 12 }}>Save from the Pokémon menu first. Download a copy of the battery save for offline research or editing. This button does not modify the game or your stored save.</p>
+          <PixelButton disabled={!bridge || exportingSave} onClick={() => void downloadSaveBackup()}>
+            {exportingSave ? 'PREPARING BACKUP...' : 'DOWNLOAD SAVE BACKUP (.SAV)'}
+          </PixelButton>
+          {exportSaveError && <p className="form-error" role="alert">{exportSaveError}</p>}
+        </section>
+        <White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/><White2NativeWirelessResearchPanel bridge={bridge} rom={localRomIdentity}/><section className="multiplayer-debug multiplayer-session-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></>}
     </div>
   </main>
 }
