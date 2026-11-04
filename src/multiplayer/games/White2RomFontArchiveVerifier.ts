@@ -395,3 +395,108 @@ export function composeWhite2GlyphOverExistingTiles(
     advance: glyph.advance,
   }
 }
+
+
+/**
+ * PRK41: complete printable ASCII font-metric survey using only the validated
+ * NARC member bytes. White 2's native printsys.c draws at penX + glyph.x,
+ * copies glyph.width source pixels and moves penX by glyph.advance.
+ * No emulator call and no writes to ROM, guest RAM, or VRAM.
+ */
+export function auditWhite2AsciiFont(
+  rom: Uint8Array,
+  memberStartRomOffset: number,
+  memberLength: number,
+  glyphsOffset: number,
+  glyphCellSize: number,
+): {
+  glyphCount: number
+  metrics: Array<{
+    codepoint: number
+    character: string
+    x: number
+    width: number
+    advance: number
+    inkPixels: number
+    shadowPixels: number
+  }>
+  advanceDistribution: Record<string, number>
+  advanceWidthDifferences: number
+  nonzeroOffsetGlyphs: string[]
+  blankGlyphs: string[]
+  fontMetricsFnv1a32: string
+  sampleText: Array<{ text: string; totalAdvance: number; placements: number[] }>
+} {
+  const firstAscii = 32
+  const lastAscii = 126
+  if (!Number.isSafeInteger(memberStartRomOffset) ||
+      !Number.isSafeInteger(memberLength) ||
+      !Number.isSafeInteger(glyphsOffset) ||
+      !Number.isSafeInteger(glyphCellSize) ||
+      memberStartRomOffset < 0 || memberLength < 0 ||
+      glyphsOffset < 0 || glyphCellSize !== 48 ||
+      memberStartRomOffset + memberLength > rom.byteLength ||
+      glyphsOffset + (lastAscii - firstAscii + 1) * glyphCellSize > memberLength) {
+    throw new Error('PRK41 font member/ASCII glyph bounds do not validate.')
+  }
+  const metrics = []
+  const advanceDistribution: Record<string, number> = {}
+  const nonzeroOffsetGlyphs: string[] = []
+  const blankGlyphs: string[] = []
+  let advanceWidthDifferences = 0
+  let hash = 0x811c9dc5
+  for (let cp = firstAscii; cp <= lastAscii; cp += 1) {
+    const offset = memberStartRomOffset + glyphsOffset +
+      (cp - firstAscii) * glyphCellSize
+    const glyph = decodeWhite2PackedFontGlyph(rom, offset, 48, 12, 15)
+    const character = String.fromCharCode(cp)
+    const row = {
+      codepoint: cp,
+      character,
+      x: glyph.x,
+      width: glyph.width,
+      advance: glyph.advance,
+      inkPixels: glyph.source2bppCounts[1],
+      shadowPixels: glyph.source2bppCounts[2],
+    }
+    metrics.push(row)
+    advanceDistribution[String(row.advance)] =
+      (advanceDistribution[String(row.advance)] ?? 0) + 1
+    if (row.advance !== row.width) advanceWidthDifferences += 1
+    if (row.x !== 0) nonzeroOffsetGlyphs.push(character)
+    if (row.inkPixels + row.shadowPixels === 0) blankGlyphs.push(character)
+    for (const value of [cp, row.x, row.width, row.advance, row.inkPixels, row.shadowPixels]) {
+      hash ^= value & 0xff
+      hash = Math.imul(hash, 0x01000193) >>> 0
+    }
+  }
+  const byCharacter = new Map(metrics.map(item => [item.character, item]))
+  const sampleStrings = ['AB', 'A B', 'Wi il', '0?']
+  const sampleText = sampleStrings.map(text => {
+    let penX = 0
+    const placements: number[] = []
+    for (const character of text) {
+      const metric = byCharacter.get(character)
+      if (!metric) throw new Error('PRK41 sample contains non-ASCII glyph.')
+      placements.push(penX + metric.x)
+      penX += metric.advance
+    }
+    return { text, totalAdvance: penX, placements }
+  })
+  if (metrics.length !== 95 || byCharacter.get('A')?.advance !== 6 ||
+      byCharacter.get('B')?.advance !== 6 ||
+      byCharacter.get(' ')?.width !== 0 ||
+      byCharacter.get(' ')?.advance !== 4) {
+    throw new Error('PRK41 audited font conflicts with PRK35–40 verified characters.')
+  }
+  return {
+    glyphCount: metrics.length,
+    metrics,
+    advanceDistribution,
+    advanceWidthDifferences,
+    nonzeroOffsetGlyphs,
+    blankGlyphs,
+    fontMetricsFnv1a32: '0x' + hash.toString(16).padStart(8, '0'),
+    sampleText,
+  }
+}
