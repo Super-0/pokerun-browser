@@ -324,3 +324,73 @@ export function composeWhite2GlyphInTileRam(
     decodedWidth: glyph.width, decodedAdvance: glyph.advance,
   }
 }
+
+/**
+ * PRK40: overlay a second 12x15 native 2bpp font glyph into four adjacent
+ * 4bpp tiles. Input is a copy of PRK39's 16x16 bitmap block containing A.
+ * `startX=6` places B at A's verified advance, crossing the 8px tile edge.
+ * This pure function never writes emulator RAM or BG2 VRAM.
+ */
+export function composeWhite2GlyphOverExistingTiles(
+  rom: Uint8Array,
+  absoluteRomOffset: number,
+  originalTiles: Uint8Array,
+  startX: number,
+): {
+  nextTiles: Uint8Array
+  changedPerTile: [number, number, number, number]
+  changedBytes: number
+  inkPixels: number
+  shadowPixels: number
+  advance: number
+} {
+  if (originalTiles.length !== 128 || !Number.isInteger(startX) ||
+      startX < 0 || startX + 12 > 16) {
+    throw new Error('PRK40 requires a 16x16 four-tile block and room for 12px glyph cell.')
+  }
+  const glyph = decodeWhite2PackedFontGlyph(rom, absoluteRomOffset, 48, 12, 15)
+  if (glyph.x !== 0 || glyph.width !== 6 || glyph.advance !== 6) {
+    throw new Error('PRK40 B glyph has unexpected offset, width or character advance.')
+  }
+  const nextTiles = originalTiles.slice()
+  let inkPixels = 0
+  let shadowPixels = 0
+  for (let y = 0; y < 15; y += 1) {
+    for (let x = 0; x < 12; x += 1) {
+      const pixel = glyph.asciiRows[y][x]
+      const paletteIndex = pixel === '#' ? 1 : pixel === '+' ? 2 : 0
+      if (!paletteIndex) continue
+      const xDest = startX + x
+      if (xDest >= 16) throw new Error('PRK40 nonblank B pixel escapes four-tile block.')
+      const tileIndex = (y >> 3) * 2 + (xDest >> 3)
+      const pixelWithinTile = (y & 7) * 8 + (xDest & 7)
+      const byteOffset = tileIndex * 32 + (pixelWithinTile >> 1)
+      const shift = (pixelWithinTile & 1) * 4
+      const currentPaletteIndex = (nextTiles[byteOffset] >> shift) & 0xf
+      // The second glyph must not overwrite A's existing ink/shadow pixels.
+      if (currentPaletteIndex !== 15) {
+        throw new Error('PRK40 B glyph overlaps existing A ink/shadow at ' + xDest + ',' + y)
+      }
+      nextTiles[byteOffset] =
+        (nextTiles[byteOffset] & ~(0xf << shift)) | (paletteIndex << shift)
+      if (paletteIndex === 1) inkPixels += 1
+      else shadowPixels += 1
+    }
+  }
+  const changedPerTile = [0, 0, 0, 0] as [number, number, number, number]
+  for (let tile = 0; tile < 4; tile += 1) {
+    for (let i = 0; i < 32; i += 1) {
+      const idx = tile * 32 + i
+      if (nextTiles[idx] !== originalTiles[idx]) changedPerTile[tile] += 1
+    }
+  }
+  const changedBytes = changedPerTile.reduce((a, b) => a + b, 0)
+  if (inkPixels !== glyph.source2bppCounts[1] ||
+      shadowPixels !== glyph.source2bppCounts[2] || !changedBytes) {
+    throw new Error('PRK40 B glyph source pixels disagree with destination composition.')
+  }
+  return {
+    nextTiles, changedPerTile, changedBytes, inkPixels, shadowPixels,
+    advance: glyph.advance,
+  }
+}
