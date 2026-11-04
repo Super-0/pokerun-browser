@@ -79,7 +79,7 @@ const PRK46_BGSYS_BG2_CHAR_BASE_OFFSET = 8 + 8 * 44 + 2 * 4 + 2 * 4
 const PRK46_BGSYS_BG2_CHAR_SIZE_OFFSET = 8 + 8 * 44 + 2 * 4 + 8 * 4 + 8 * 4 + 2 * 4
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 // PRK52: bounded same-session lifecycle stress test; no unlimited or automatic loops.
-const PRK52_MAX_VERIFIED_CLOSES = 5
+const PRK52_MAX_VERIFIED_CLOSES = 1
 
 type AtomicRuntime = {
   callArm9Thumb8Atomic(
@@ -110,6 +110,7 @@ type Prk50CloseContext = {
   bitmap: number
   pixels: number
   heapId: number
+  fontLayout: { memberStart: number; memberLength: number; glyphsOffset: number }
 }
 type Prk51ClosedBaseline = {
   playerActor: number
@@ -145,6 +146,8 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
   const metadataCompleteRef = useRef(false)
   const prk50CloseContextRef = useRef<Prk50CloseContext | null>(null)
   const prk50CloseAttemptedRef = useRef(false)
+  const prk53SwapAttemptedRef = useRef(false)
+  const prk53TextSwappedRef = useRef(false)
   // PRK52: five manually triggered open/close lifetimes at most. Every
   // additional open still requires the full independent BG2/AreaMan/field
   // baseline test; any failed or partial operation locks this guest session.
@@ -242,11 +245,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk52-five-guarded-native-window-lifetimes',
+      mode: 'prk53-in-place-held-bitmap-text-change',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK52 extends the PRK51 verified two-lifetime path to five manually triggered, independent open/close cycles (10 separate X presses) in the same field. Every reopen verifies BG2/AreaMan/actor baseline, every close uses unchanged PRK47 teardown. Locks on failure or after fifth close; no native list menu, Thumb8, or speculative rollback.',
+      researchNote: 'PRK53: X1 opens held Hello P2 native BG2 bitmap, X2 replaces those same allocated text tiles with Trade with me?, X3 closes with original PRK47 teardown. One lifetime only; no second allocation/reopen, native menu, or Thumb8. Reject or partial upload locks the session.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -2618,8 +2621,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                               bitmap: directBitmap,
                               pixels: directPixels,
                               heapId,
+                              fontLayout: prk49FontLayout,
                             }
-                            console.info('[PokéRun interaction] PRK50 SECOND X CLOSE ARMED', {
+                            prk53SwapAttemptedRef.current = false
+                            prk53TextSwappedRef.current = false
+                            console.info('[PokéRun interaction] PRK53 IN-PLACE TEXT UPDATE ARMED', {
                               visibleText: 'Hello, P2!',
                               windowBitmap: hex(directBitmap),
                               charPos: directCharPos,
@@ -2627,7 +2633,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                               heldMapHash: prk43SnapshotHash(finalMap.vramMap),
                               firstInteractionComplete: true,
                               reopensAllowed: false,
-                              note: 'The full text box stays visible until a new X press. That second X will call the separately verified PRK47 one-way cleanup with original map and resource ownership guards. Never close in the same first-X probe.',
+                              note: 'First X opens Hello P2. Second X changes text inside the same native bitmap, without allocation or screen-map changes. Third X calls PRK47 close. No reopen in this research test.',
                             })
                           } catch (reason) {
                             console.info('[PokéRun interaction] PRK49 LONG TEXT UPLOAD REJECTED', {
@@ -3364,6 +3370,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
 
     async function tryPrk50SecondXClose() {
       if (openingRef.current || prk50CloseAttemptedRef.current ||
+          !prk53TextSwappedRef.current ||
           !prk50CloseContextRef.current || runtimeBridge.status !== 'running' ||
           prk51VerifiedClosesRef.current >= PRK52_MAX_VERIFIED_CLOSES) {
         console.info('[PokéRun interaction] PRK50 SECOND X CLOSE HELD', {
@@ -3386,7 +3393,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         ? '[PokéRun interaction] PRK52 LIFETIME CLOSE REQUESTED'
         : isReopenedLifetime
           ? '[PokéRun interaction] PRK51 SECOND LIFETIME CLOSE REQUESTED'
-          : '[PokéRun interaction] PRK50 SECOND X CLOSE REQUESTED', {
+          : '[PokéRun interaction] PRK53 THIRD X CLOSE REQUESTED', {
         lifetime,
         maximumLifetimes: PRK52_MAX_VERIFIED_CLOSES,
         bitmap: hex(owned.bitmap),
@@ -3426,7 +3433,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
             ? '[PokéRun interaction] PRK52 LIFETIME CLOSE VERIFIED'
             : isReopenedLifetime
               ? '[PokéRun interaction] PRK51 SECOND LIFETIME CLOSE VERIFIED'
-              : '[PokéRun interaction] PRK50 SECOND X CLOSE VERIFIED', {
+              : '[PokéRun interaction] PRK53 THIRD X CLOSE VERIFIED', {
             resourcesReleased: true,
             mapRestored: true,
             verifiedCloses: completed,
@@ -3435,17 +3442,20 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
               prk51ClosedBaselineRef.current !== null,
             furtherInteractionLocked: metadataCompleteRef.current,
             note: completed === PRK52_MAX_VERIFIED_CLOSES
-              ? 'Final guarded close passed. Five native windows were independently freed; further X is permanently locked until restart.'
+              ? 'PRK53 native bitmap released after in-place update; all further X blocked until restart.'
               : 'Native resources freed and original BG2 map restored. Next X may initiate exactly one guarded reopen, with a fresh field and AreaMan preflight.',
           })
           if (completed === PRK52_MAX_VERIFIED_CLOSES) {
-            console.info('[PokéRun interaction] PRK52 FIVE LIFETIMES COMPLETE', {
+            console.info('[PokéRun interaction] PRK53 UPDATE AND CLOSE LIFECYCLE COMPLETE', {
+              initialText: 'Hello, P2!',
+              replacementText: 'Trade with me?',
+              textSwappedInPlace: prk53TextSwappedRef.current,
               verifiedOpens: completed,
               verifiedCloses: completed,
               allMapsRestored: true,
-              charAndBitmapReleasedEachTime: true,
+              charAndBitmapReleased: true,
               furtherXBlocked: true,
-              note: 'This proves five successful bounded allocations/frees, not a formal heap leak audit or unlimited-cycle guarantee. No additional native calls in this guest.',
+              note: 'One allocation, one text replacement, one verified native cleanup. No second window allocated.',
             })
           }
         } else {
@@ -3599,6 +3609,144 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       }
     }
 
+    async function tryPrk53InPlaceTextSwap() {
+      if (openingRef.current || prk53SwapAttemptedRef.current ||
+          prk50CloseAttemptedRef.current || prk51VerifiedClosesRef.current !== 0 ||
+          !prk50CloseContextRef.current || !romBytes ||
+          runtimeBridge.status !== 'running') {
+        console.info('[PokéRun interaction] PRK53 TEXT UPDATE HELD', {
+          opening: openingRef.current, attempted: prk53SwapAttemptedRef.current,
+          closeAttempted: prk50CloseAttemptedRef.current,
+          hasOwnedWindow: Boolean(prk50CloseContextRef.current),
+          hasBrowserRom: Boolean(romBytes),
+          bridgeStatus: runtimeBridge.status,
+        })
+        return
+      }
+      // One-shot even if an initial guard rejects. Never send another
+      // VRAM write after an uncertain or partially completed upload.
+      prk53SwapAttemptedRef.current = true
+      openingRef.current = true
+      const owned = prk50CloseContextRef.current
+      const browserRom = romBytes
+      let tilesPrepared = 0
+      let tilesUploaded = 0
+      let instructions = 0
+      try {
+        const { memberStart, memberLength, glyphsOffset } = owned.fontLayout
+        const before = simulateWhite2AsciiLine(
+          browserRom, memberStart, memberLength, glyphsOffset, 'Hello, P2!',
+        )
+        const after = simulateWhite2AsciiLine(
+          browserRom, memberStart, memberLength, glyphsOffset, 'Trade with me?',
+        )
+        const sameDimensions = before.tiles.length === 1920 && after.tiles.length === 1920
+        const fits = after.penAdvancePx <= WINDOW_WIDTH * 8 - 16 &&
+          after.clippedPixels === 0 && after.overlappingPixels === 0
+        if (before.outputFnv1a32 !== '0xc359a40c' || !sameDimensions || !fits ||
+            stateRef.current?.window !== owned.bitmap || !metadataCompleteRef.current ||
+            !isMainRamPointer(owned.bitmap) || !isMainRamPointer(owned.pixels)) {
+          throw new Error('PRK53 source text, target geometry, or owned bitmap preflight failed.')
+        }
+        const map = await inspectBg2MapReadOnly()
+        const expectedMap = prk43ExpectedMapForWindow(owned.charPos)
+        const actor = await probe.scanHeap()
+        const ownedMapUnchanged = map.bgSys === owned.baseline.bgSys &&
+          map.screenPtr === owned.baseline.screenPtr &&
+          map.vramMap !== null && map.vramMap.length === expectedMap.length &&
+          map.vramMap.every((tile, i) => tile === expectedMap[i]) &&
+          map.ramMap !== null && owned.baseline.ramMap !== null &&
+          map.ramMap.length === owned.baseline.ramMap.length &&
+          map.ramMap.every((tile, i) => tile === owned.baseline.ramMap![i])
+        if (!ownedMapUnchanged ||
+            actor.playerActor?.address !== owned.playerActor ||
+            actor.playerActor?.modelId !== EXPECTED_STABLE_PLAYER_MODEL ||
+            !(await waitForActiveNativeStack()) ||
+            runtimeBridge.status !== 'running') {
+          throw new Error('PRK53 field actor, BG2 map, shadow, or DTCM stack changed.')
+        }
+        const actual = await runtimeBridge.readBytes(owned.pixels, 1920)
+        if (actual.length !== before.tiles.length ||
+            actual.some((value, i) => value !== before.tiles[i])) {
+          throw new Error('PRK53 original 1920-byte GFLBitmap differs from known-good Hello P2.')
+        }
+        const changed: number[] = []
+        for (let tile = 0; tile < 60; tile++) {
+          let differs = false
+          for (let j = 0; j < 32; j++) {
+            const index = tile * 32 + j
+            if (before.tiles[index] !== after.tiles[index]) { differs = true; break }
+          }
+          if (differs) changed.push(tile)
+        }
+        if (changed.length < 4 || changed.length > 24 ||
+            changed.some(i => i < 0 || i >= 60)) {
+          throw new Error('PRK53 changed tile footprint is unexpectedly large or empty.')
+        }
+        console.info('[PokéRun interaction] PRK53 IN-PLACE TEXT REPLACEMENT PREFLIGHT PASSED', {
+          from: 'Hello, P2!', to: 'Trade with me?',
+          sameBitmap: hex(owned.bitmap), samePixels: hex(owned.pixels),
+          sameCharPos: owned.charPos,
+          textWidthPx: after.penAdvancePx,
+          dirtyTiles: changed,
+          bytesToUpload: changed.length * 32,
+          originalBitmapHash: before.outputFnv1a32,
+          replacementBitmapHash: after.outputFnv1a32,
+          bg2MapEntries: expectedMap.length,
+          note: 'All 1920 original bitmap bytes, actor, BG2 map, and safe stack verified before first write. No allocation, char-map change, or native text printer.',
+        })
+        for (const tile of changed) {
+          const tileAddress = owned.pixels + tile * 32
+          const bytes = after.tiles.slice(tile * 32, tile * 32 + 32)
+          await runtimeBridge.writeBytes(tileAddress, bytes)
+          const readback = await runtimeBridge.readBytes(tileAddress, 32)
+          if (readback.length !== 32 || readback.some((byte, i) => byte !== bytes[i])) {
+            throw new Error('PRK53 owned RAM tile readback differs at ' + tile)
+          }
+          tilesPrepared += 1
+        }
+        const staged = await runtimeBridge.readBytes(owned.pixels, 1920)
+        if (staged.length !== 1920 || staged.some((byte, i) => byte !== after.tiles[i])) {
+          throw new Error('PRK53 full bitmap RAM readback failed before VRAM upload.')
+        }
+        for (const tile of changed) {
+          const call = await atomicCall(
+            GFL_BGSYS_LOAD_CHAR, owned.bg,
+            owned.pixels + tile * 32, 32, owned.charPos + tile,
+          )
+          tilesUploaded += 1
+          instructions += call.instructions
+        }
+        const finalMap = await inspectBg2MapReadOnly()
+        const held = finalMap.vramMap !== null &&
+          finalMap.vramMap.length === expectedMap.length &&
+          finalMap.vramMap.every((value, i) => value === expectedMap[i])
+        if (!held || runtimeBridge.status !== 'running' ||
+            stateRef.current?.window !== owned.bitmap) {
+          throw new Error('PRK53 overlay map or bitmap ownership changed after VRAM upload.')
+        }
+        prk53TextSwappedRef.current = true
+        console.info('[PokéRun interaction] PRK53 IN-PLACE TEXT UPDATED AND HELD', {
+          text: 'Trade with me?', textWidthPx: after.penAdvancePx,
+          sameBitmap: hex(owned.bitmap), samePixelBuffer: hex(owned.pixels),
+          sameCharPos: owned.charPos, noNewAllocations: true,
+          tilesPrepared, tilesUploaded, bytesTransferred: tilesUploaded * 32,
+          nativeInstructions: instructions,
+          bitmapHash: after.outputFnv1a32, heldBg2MapVerified: held,
+          closeArmedOnNextX: true,
+          note: 'Text changed inside the SAME native window, BG2 map unchanged. Confirm visually. Next distinct X invokes unchanged PRK47 guarded teardown.',
+        })
+      } catch (reason) {
+        console.info('[PokéRun interaction] PRK53 IN-PLACE TEXT UPDATE REJECTED - LOCKED', {
+          reason: reason instanceof Error ? reason.message : String(reason),
+          tilesPrepared, tilesUploaded, instructions,
+          note: 'No speculative rollback, close, or retry in this guest. Restart emulator and preserve diagnostics if any tile was changed.',
+        })
+      } finally {
+        openingRef.current = false
+      }
+    }
+
     const onInteract = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail : undefined
       console.info('[PokéRun interaction] INTERACT EVENT RECEIVED', {
@@ -3608,6 +3756,8 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         opening: openingRef.current,
         closeArmed: Boolean(prk50CloseContextRef.current),
         closeAttempted: prk50CloseAttemptedRef.current,
+        prk53SwapAttempted: prk53SwapAttemptedRef.current,
+        prk53TextSwapped: prk53TextSwappedRef.current,
         prk51VerifiedCloses: prk51VerifiedClosesRef.current,
         prk52MaximumCloses: PRK52_MAX_VERIFIED_CLOSES,
         prk51ReopenAttempted: prk51ReopenAttemptedRef.current,
@@ -3616,7 +3766,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       if (openingRef.current ||
           prk51VerifiedClosesRef.current >= PRK52_MAX_VERIFIED_CLOSES) return
       if (prk50CloseContextRef.current) {
-        void tryPrk50SecondXClose()
+        if (!prk53SwapAttemptedRef.current) {
+          void tryPrk53InPlaceTextSwap()
+        } else if (prk53TextSwappedRef.current) {
+          void tryPrk50SecondXClose()
+        } // An attempted but rejected swap stays locked until restart.
       } else if (prk50CloseAttemptedRef.current &&
                  prk51VerifiedClosesRef.current >= 1 &&
                  prk51VerifiedClosesRef.current < PRK52_MAX_VERIFIED_CLOSES &&
@@ -3636,6 +3790,8 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       // interaction has a pending context. Restart the guest instead.
       prk50CloseContextRef.current = null
       prk50CloseAttemptedRef.current = false
+      prk53SwapAttemptedRef.current = false
+      prk53TextSwappedRef.current = false
       prk51VerifiedClosesRef.current = 0
       prk51ReopenAttemptedRef.current = false
       prk51ReopenVerifiedRef.current = false
