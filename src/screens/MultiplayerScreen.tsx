@@ -9,7 +9,7 @@ import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import { multiplayerSaveStore, type MultiplayerSaveProfile } from '../core/storage/MultiplayerSaveStore'
 import { gameById } from '../data/games'
 import { LocalMultiplayerSession, type MultiplayerSessionSnapshot } from '../multiplayer/core/LocalMultiplayerSession'
-import type { MultiplayerPlayerState } from '../multiplayer/core/protocol'
+import type { MultiplayerPlayerState, MultiplayerTradeState } from '../multiplayer/core/protocol'
 import { identifyWhite2Rom } from '../multiplayer/games/white2Rom'
 import { White2LiveStateAdapter } from '../multiplayer/games/White2LiveStateAdapter'
 import { White2WorldPositionReader } from '../multiplayer/games/White2WorldPositionReader'
@@ -206,20 +206,11 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
       <AppHeader onHome={onHome} right={right}/>
       <section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>Both players keep independent saves. Live position is shared between the two games; party and gym reads are the next adapter fields.</p><span className={saveStatus === 'LOCAL SAVE FAILED' ? 'form-error' : 'memory-ok'}>{saveStatus}</span></div><PixelButton tone="ghost" onClick={() => session.leave()}>LEAVE SESSION</PixelButton></section>
 
-      {import.meta.env.DEV && state.trade && <section className="multiplayer-session-debug pixel-border" style={{ marginBottom: 12 }}>
-        <h2>PRK60 TRADE REQUEST • DEVELOPMENT TEST</h2>
-        <p>Handshake only. Accepting never transfers Pokémon or modifies either game.</p>
-        <p><strong>{state.trade.direction === 'incoming' ? 'INCOMING' : 'OUTGOING'}</strong> • {state.trade.status.toUpperCase()} • ID {state.trade.request.requestId.slice(0, 8)}</p>
-        {state.trade.status === 'pending' && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          {state.trade.direction === 'incoming' && <>
-            <PixelButton onClick={() => session.respondTrade('accepted')}>ACCEPT REQUEST</PixelButton>
-            <PixelButton tone="ghost" onClick={() => session.respondTrade('declined')}>DECLINE REQUEST</PixelButton>
-          </>}
-          <PixelButton tone="ghost" onClick={() => session.cancelTrade()}>CANCEL REQUEST</PixelButton>
-        </div>}
-        {state.trade.status === 'accepted' && <p>Both players accepted the request. Pokémon exchange is deliberately disabled.</p>}
-        {state.trade.status === 'expired' && <p>The 30-second request expired without confirmation.</p>}
-      </section>}
+      {import.meta.env.DEV && state.trade && <TradeHandshakeBanner
+        trade={state.trade}
+        remoteLabel={remoteLabel}
+        session={session}
+      />}
 
       <section className="multiplayer-play-layout">
         <MultiplayerPlayerPanel playerLabel={localLabel} roleLabel={`PLAYER ${localIndex + 1} • YOU`} state={localState} relation={relation} error={liveStateError}/>
@@ -230,6 +221,78 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
       {import.meta.env.DEV && <><White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/><section className="multiplayer-debug multiplayer-session-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></>}
     </div>
   </main>
+}
+
+function TradeHandshakeBanner({ trade, remoteLabel, session }: {
+  trade: MultiplayerTradeState
+  remoteLabel: string
+  session: LocalMultiplayerSession
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (trade.status !== 'pending') return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 250)
+    return () => window.clearInterval(timer)
+  }, [trade.request.requestId, trade.status])
+  useEffect(() => {
+    console.info('[PokéRun trade] PRK61 PLAYER FEEDBACK STATE', {
+      requestId: trade.request.requestId,
+      direction: trade.direction,
+      status: trade.status,
+      guestTradeInitiated: false,
+    })
+  }, [trade.request.requestId, trade.direction, trade.status])
+
+  const outgoing = trade.direction === 'outgoing'
+  const remaining = Math.max(0, Math.ceil((trade.request.expiresAt - now) / 1000))
+  const title = trade.status === 'pending'
+    ? outgoing ? 'TRADE REQUEST SENT' : 'TRADE REQUEST RECEIVED'
+    : trade.status === 'accepted' ? 'REQUEST ACCEPTED'
+      : trade.status === 'declined' ? 'REQUEST DECLINED'
+        : trade.status === 'cancelled' ? 'REQUEST CANCELLED' : 'REQUEST EXPIRED'
+  const description = trade.status === 'pending'
+    ? outgoing
+      ? `Waiting for ${remoteLabel} to respond. You can cancel before the request expires.`
+      : `${remoteLabel} wants to trade. Choose Accept or Decline before time runs out.`
+    : trade.status === 'accepted'
+      ? 'Both trainers agreed to the request. Pokémon exchange is not enabled yet.'
+      : trade.status === 'declined'
+        ? outgoing ? `${remoteLabel} declined the request.` : 'You declined the request.'
+        : trade.status === 'cancelled'
+          ? outgoing ? 'You cancelled the request.' : `${remoteLabel} cancelled the request.`
+          : 'No decision arrived before the 30-second deadline. Nothing was exchanged.'
+
+  return <section className={`prk61-trade-feedback pixel-border status-${trade.status}`} aria-label="Trainer trade request status">
+    <div className="prk61-trade-heading" aria-live="polite" aria-atomic="true">
+      <div>
+        <span className="eyebrow">TRAINER TRADE • DEVELOPMENT PREVIEW</span>
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </div>
+      <span className="prk61-trade-status">{trade.status.toUpperCase()}</span>
+    </div>
+    {trade.status === 'pending' && <>
+      <div className="prk61-trade-timer" aria-live="off">
+        <span>REQUEST EXPIRES IN</span>
+        <strong>{remaining}s</strong>
+      </div>
+      <div className="prk61-trade-actions">
+        {!outgoing && <>
+          <PixelButton disabled={remaining === 0} onClick={() => session.respondTrade('accepted')}>ACCEPT REQUEST</PixelButton>
+          <PixelButton tone="ghost" disabled={remaining === 0} onClick={() => session.respondTrade('declined')}>DECLINE REQUEST</PixelButton>
+        </>}
+        <PixelButton tone="ghost" disabled={remaining === 0} onClick={() => session.cancelTrade()}>
+          CANCEL REQUEST
+        </PixelButton>
+      </div>
+    </>}
+    <p className="prk61-trade-disclaimer">Protocol-only test: no Pokémon, party, or save data is transferred. The simulated remote trainer is not an authenticated player.</p>
+    <details className="prk61-trade-details">
+      <summary>REQUEST DETAILS</summary>
+      <span>ID {trade.request.requestId} • {outgoing ? 'OUTGOING' : 'INCOMING'}</span>
+    </details>
+  </section>
 }
 
 function Setup({ gameId, title, joinCode, setJoinCode, onCreate, onJoin, error, onBack, onHome, right }: { gameId: GameId; title: string; joinCode: string; setJoinCode: (code: string) => void; onCreate: () => void; onJoin: () => void; error: string | null; onBack: () => void; onHome: () => void; right: React.ReactNode }) { return <main className="screen home-screen"><div className="home-sky" aria-hidden="true"><div className="home-water"/><div className="home-grass"/></div><div className="screen-shell"><AppHeader onHome={onHome} right={right}/><section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER • EXPERIMENTAL</span><h1>{title.toUpperCase()}</h1><p>Create a local room or enter a room code from another tab.</p></div><PixelButton tone="ghost" onClick={onBack}>BACK</PixelButton></section><section className="multiplayer-setup pixel-border"><article><h2>CREATE ROOM</h2><p>Start a two-player local test room. Nothing is sent outside this browser profile.</p><PixelButton onClick={onCreate}>CREATE ROOM</PixelButton></article><article><h2>JOIN ROOM</h2><p>Enter the six-character code from the host tab.</p><div className="join-row"><input aria-label="Room code" value={joinCode} maxLength={6} onChange={event => setJoinCode(event.target.value.toUpperCase())} placeholder="ABCD12"/><PixelButton onClick={onJoin}>JOIN</PixelButton></div>{error && <span className="form-error">{error}</span>}</article></section></div></main> }
