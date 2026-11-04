@@ -530,6 +530,25 @@ export class LocalMultiplayerSession {
         message.toPlayerId === this.localPlayerId &&
         (message.decision === 'accepted' || message.decision === 'declined') &&
         Date.now() < current.request.expiresAt) {
+      // The responder validated its own live state, but the initiator can
+      // have moved or lost transport while the request was pending. A late
+      // ACCEPT must not become a successful handshake in that case.
+      if (message.decision === 'accepted' && !this.previewTradeRequest().eligible) {
+        this.clearTradeTimeout()
+        this.update({ trade: { ...current, status: 'cancelled' } })
+        this.send({
+          type: 'TRADE_CANCEL', roomCode: room.code,
+          requestId: current.request.requestId, startId,
+          fromPlayerId: this.localPlayerId, toPlayerId: peerId,
+          reason: 'cancelled',
+        })
+        console.info('[PokéRun trade] PRK60 REMOTE ACCEPT BLOCKED BY FRESH POSITION CHECK', {
+          requestId: current.request.requestId,
+          reason: 'Local session preflight no longer eligible when reply arrived.',
+          guestTradeInitiated: false,
+        })
+        return
+      }
       this.clearTradeTimeout()
       this.update({ trade: { ...current, status: message.decision } })
       console.info('[PokéRun trade] PRK60 REMOTE DECISION RECEIVED', {
