@@ -306,7 +306,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK54: X1 opens Hello P2. X2 swaps same held 96x40 GFLBitmap into ROM-rendered two-line Trade with me? / >Yes No menu. Up/Down keys shift only owned native BG2 character tiles (four changes maximum). X3 confirms selected result in diagnostics and calls unchanged guarded PRK47 teardown. No second allocation, native ListMenu, game trade, or Thumb8; any partial failure locks until restart.',
+      researchNote: 'PRK54: X1 opens Hello P2. X2 swaps same held 96x40 GFLBitmap into ROM-rendered two-line Trade with me? / >Yes No menu. Left/Right or Up/Down shifts only owned BG2 character tiles (four changes maximum). Once open, X confirmation is captured by native dialogue runtime independent of field-facing gate. X3 calls unchanged PRK47 teardown. No second allocation, ListMenu, trade or Thumb8.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -3842,7 +3842,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           remainingNavigationBudget: PRK54_MAX_NAVIGATIONS -
             prk54NavigationCountRef.current,
           closeOnNextX: true,
-          note: 'Physical native BG2 font tiles changed in-place, not a browser overlay. ArrowUp selects Yes, ArrowDown selects No, X confirms and closes.',
+          note: 'Physical native BG2 font tiles changed in-place, not a browser overlay. Left/Up selects Yes; Right/Down selects No. The active menu owns X confirmation even if P1 turned away.',
         })
       } catch (reason) {
         prk54FailedRef.current = true
@@ -3858,21 +3858,46 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
     }
 
     const onMenuNavigationKeydown = (event: KeyboardEvent) => {
-      const nextChoice = event.code === 'ArrowUp' || event.code === 'KeyW'
-        ? 'yes' : event.code === 'ArrowDown' || event.code === 'KeyS'
-          ? 'no' : null
-      if (!nextChoice || !prk50CloseContextRef.current ||
-          !prk53TextSwappedRef.current ||
+      // The options are HORIZONTAL in our rendered ROM-font line, so Left
+      // and Right are the primary movement keys. Support Up/Down and WASD
+      // as aliases, but prevent every handled key from reaching the game.
+      const selectYes = event.code === 'ArrowLeft' ||
+        event.code === 'ArrowUp' || event.code === 'KeyA' || event.code === 'KeyW'
+      const selectNo = event.code === 'ArrowRight' ||
+        event.code === 'ArrowDown' || event.code === 'KeyD' || event.code === 'KeyS'
+      const confirm = event.code === 'KeyX'
+      if ((!selectYes && !selectNo && !confirm) ||
+          !prk50CloseContextRef.current || !prk53TextSwappedRef.current ||
           prk50CloseAttemptedRef.current) return
       const element = event.target
       if (element instanceof HTMLElement &&
           element.closest('input, textarea, [contenteditable="true"]')) return
-      // Capture before the embedded game sees D-pad directions: navigation
-      // must not walk P1 away from the interaction target.
+      // Once this in-game dialogue is open, it owns both selection and
+      // confirm input. This is intentionally independent of the P1-facing-P2
+      // gate that opens the FIRST window: if P1 turned away previously,
+      // the existing open window must still be closable on X.
       event.preventDefault()
       event.stopImmediatePropagation()
-      if (event.repeat || openingRef.current || prk54FailedRef.current ||
-          nextChoice === prk54ChoiceRef.current ||
+      if (event.repeat || openingRef.current || prk54FailedRef.current) return
+      if (confirm) {
+        console.info('[PokéRun interaction] PRK54 YES NO CHOICE CONFIRM REQUESTED', {
+          choice: prk54ChoiceRef.current,
+          navigationCount: prk54NavigationCountRef.current,
+          keyboardOwnedConfirm: true,
+          note: 'Active native Yes/No menu directly receives X, regardless of P1 facing. No trade begins. PRK47 teardown must verify success.',
+        })
+        void tryPrk50SecondXClose()
+        return
+      }
+      const nextChoice = selectYes ? 'yes' : 'no'
+      console.info('[PokéRun interaction] PRK54 NAVIGATION KEY CAPTURED', {
+        code: event.code,
+        previousChoice: prk54ChoiceRef.current,
+        requestedChoice: nextChoice,
+        navigationCount: prk54NavigationCountRef.current,
+        playerMovementSuppressed: true,
+      })
+      if (nextChoice === prk54ChoiceRef.current ||
           prk54NavigationCountRef.current >= PRK54_MAX_NAVIGATIONS) return
       void tryPrk54UpdateNativeMenu(nextChoice, false)
     }
