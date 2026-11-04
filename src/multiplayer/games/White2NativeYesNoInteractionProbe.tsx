@@ -2704,8 +2704,9 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                               baselineMapHash: prk43SnapshotHash(prk43Before.vramMap),
                               heldMapHash: prk43SnapshotHash(finalMap.vramMap),
                               firstInteractionComplete: true,
-                              reopensAllowed: false,
-                              note: 'First X opens Hello P2. Second X opens the Yes/No choices. Confirm No, then use a new X press to reopen for a second Yes selection. Each result is emitted only after PRK47 fully frees native resources.',
+                              reopensAllowedOnlyAfterVerifiedClose:
+                                prk51VerifiedClosesRef.current < PRK55_MAX_VERIFIED_CLOSES - 1,
+                              note: 'First X opens Hello P2. Second X opens the Yes/No choices. Confirm No, then use a new X press to reopen for a second Yes selection. Reopen is permitted only after PRK47 cleanup and a new field/allocator preflight.',
                             })
                           } catch (reason) {
                             console.info('[PokéRun interaction] PRK49 LONG TEXT UPLOAD REJECTED', {
@@ -3970,7 +3971,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         prk54Failed: prk54FailedRef.current,
         prk55VerifiedResults: [...prk55ResultsRef.current],
         prk51VerifiedCloses: prk51VerifiedClosesRef.current,
-        prk53MaximumCloses: PRK55_MAX_VERIFIED_CLOSES,
+        prk55MaximumCloses: PRK55_MAX_VERIFIED_CLOSES,
         prk51ReopenAttempted: prk51ReopenAttemptedRef.current,
         prk51ReopenVerified: prk51ReopenVerifiedRef.current,
       })
