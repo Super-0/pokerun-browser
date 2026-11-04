@@ -13,11 +13,14 @@ import {
   type MultiplayerPlayerState,
   type MultiplayerRomIdentity,
   type MultiplayerRoom,
+  type MultiplayerTradeRequest,
+  type MultiplayerTradeDecision,
+  type MultiplayerTradeState,
 } from './protocol'
 import type { MultiplayerTransport } from './transport'
 
 export type LocalMultiplayerRom = { gameId: GameId; rom: LoadedRom; identity: MultiplayerRomIdentity; saveProfileId?: string }
-export type MultiplayerSessionSnapshot = { connection: MultiplayerConnectionState; room: MultiplayerRoom | null; error: string | null; localRom: LocalMultiplayerRom | null; remoteStates: Record<string, MultiplayerPlayerState> }
+export type MultiplayerSessionSnapshot = { connection: MultiplayerConnectionState; room: MultiplayerRoom | null; error: string | null; localRom: LocalMultiplayerRom | null; remoteStates: Record<string, MultiplayerPlayerState>; trade?: MultiplayerTradeState | null }
 type Listener = (snapshot: MultiplayerSessionSnapshot) => void
 type OutboundMessage = { type: MultiplayerMessage['type']; [key: string]: unknown }
 
@@ -25,6 +28,7 @@ const codeAlphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const TRANSITION_REPEAT_MS = 1200
 const MOVEMENT_IDLE_MS = 180
 const PRK58_MAX_STATE_AGE_MS = 5000
+const PRK60_TRADE_TIMEOUT_MS = 30000
 const MAP_EDGE_WORLD_MAX_STEP = 0x10000
 const MAP_EDGE_WORLD_AXIS_SLOP = 0x1000
 const MAP_EDGE_HEIGHT_SLOP = 0x10000
@@ -111,6 +115,9 @@ export class LocalMultiplayerSession {
   private unsubscribeConnection: (() => void) | null = null
   private unsubscribeEmotePublisher: (() => void) | null = null
   private unsubscribeTradePreflight: (() => void) | null = null
+  private unsubscribeTradeRequestPublisher: (() => void) | null = null
+  private tradeTimeoutTimer: number | null = null
+  private readonly seenTradeRequestIds = new Set<string>()
   private readonly handlePageHide = () => this.leave()
   private sequence = 0
   private readonly receivedSequences = new Map<string, number>()
@@ -137,6 +144,8 @@ export class LocalMultiplayerSession {
     this.unsubscribeEmotePublisher = multiplayerPresence.setEmotePublisher(kind => this.publishEmote(kind))
     this.unsubscribeTradePreflight?.()
     this.unsubscribeTradePreflight = multiplayerPresence.setTradePreflightProvider(() => this.previewTradeRequest())
+    this.unsubscribeTradeRequestPublisher?.()
+    this.unsubscribeTradeRequestPublisher = multiplayerPresence.setTradeRequestPublisher(() => this.requestTrade())
     window.addEventListener('pagehide', this.handlePageHide)
     this.transport.connect()
   }
@@ -148,6 +157,8 @@ export class LocalMultiplayerSession {
     this.unsubscribeEmotePublisher = null
     this.unsubscribeTradePreflight?.()
     this.unsubscribeTradePreflight = null
+    this.unsubscribeTradeRequestPublisher?.()
+    this.unsubscribeTradeRequestPublisher = null
     this.unsubscribeMessage?.()
     this.unsubscribeConnection?.()
     this.transport.disconnect()
@@ -321,8 +332,232 @@ export class LocalMultiplayerSession {
     }
   }
 
+  // PRK60: the native DOM event is only a user-interaction hint. This
+  // method gets every identity from this session and REVALIDATES the fresh
+  // room/start/peer preflight. No guest memory/Pokémon bytes are modified.
+  requestTrade() {
+    if (!import.meta.env.DEV) return false // no authenticated server yet
+    const preview = this.previewTradeRequest()
+    if (!preview.eligible || !preview.roomCode || !preview.startId ||
+        !preview.remotePlayerId || !preview.localPlayerId ||
+        this.snapshot.trade?.status === 'pending') {
+      console.info('[PokéRun trade] PRK60 OUTGOING REQUEST BLOCKED', {
+        reason: this.snapshot.trade?.status === 'pending'
+          ? 'A trade handshake is already pending.' : preview.reason,
+        eligible: preview.eligible,
+        noSend: true,
+      })
+      return false
+    }
+    const now = Date.now()
+    const request: MultiplayerTradeRequest = {
+      requestId: crypto.randomUUID(),
+      startId: preview.startId,
+      fromPlayerId: this.localPlayerId,
+      toPlayerId: preview.remotePlayerId,
+      createdAt: now,
+      expiresAt: now + PRK60_TRADE_TIMEOUT_MS,
+    }
+    this.update({ trade: { request, direction: 'outgoing', status: 'pending' } })
+    this.armTradeTimeout(request)
+    this.send({ type: 'TRADE_REQUEST', roomCode: preview.roomCode, request })
+    console.info('[PokéRun trade] PRK60 OUTGOING REQUEST SENT', {
+      requestId: request.requestId,
+      roomCode: preview.roomCode,
+      startId: request.startId,
+      fromPlayerId: request.fromPlayerId,
+      toPlayerId: request.toPlayerId,
+      expiresAt: request.expiresAt,
+      sameMap: preview.sameMap,
+      bothFacing: preview.bothFacing,
+      localStateFresh: preview.localStateFresh,
+      remoteStateFresh: preview.remoteStateFresh,
+      status: 'pending',
+      guestTradeInitiated: false,
+      note: 'Development BroadcastChannel message only. Remote consent required. No Pokémon or save data, game writes, or authenticated server authority.',
+    })
+    return true
+  }
+
+  respondTrade(decision: MultiplayerTradeDecision) {
+    if (!import.meta.env.DEV) return false
+    const current = this.snapshot.trade
+    const room = this.snapshot.room
+    if (!current || current.status !== 'pending' ||
+        current.direction !== 'incoming' || !room?.gameStart ||
+        room.gameStart.startId !== current.request.startId ||
+        current.request.toPlayerId !== this.localPlayerId ||
+        !room.players.some(player => player.id === current.request.fromPlayerId) ||
+        (decision === 'accepted' && !this.previewTradeRequest().eligible)) {
+      console.info('[PokéRun trade] PRK60 INCOMING DECISION BLOCKED', {
+        decision, status: current?.status ?? null,
+        reason: 'Incoming request is stale, no longer in the session, or player positions are invalid.',
+        noSend: true,
+      })
+      return false
+    }
+    this.clearTradeTimeout()
+    this.update({ trade: { ...current, status: decision } })
+    this.send({
+      type: 'TRADE_RESPONSE',
+      roomCode: room.code,
+      requestId: current.request.requestId,
+      startId: current.request.startId,
+      fromPlayerId: this.localPlayerId,
+      toPlayerId: current.request.fromPlayerId,
+      decision,
+    })
+    console.info('[PokéRun trade] PRK60 INCOMING DECISION SENT', {
+      requestId: current.request.requestId, decision, guestTradeInitiated: false,
+      note: 'Handshake result only. Acceptance never authorizes a Pokémon exchange.',
+    })
+    return true
+  }
+
+  cancelTrade() {
+    if (!import.meta.env.DEV) return false
+    const current = this.snapshot.trade
+    const room = this.snapshot.room
+    if (!current || current.status !== 'pending' || !room?.gameStart ||
+        room.gameStart.startId !== current.request.startId) return false
+    const peerId = current.direction === 'outgoing'
+      ? current.request.toPlayerId : current.request.fromPlayerId
+    this.clearTradeTimeout()
+    this.update({ trade: { ...current, status: 'cancelled' } })
+    this.send({
+      type: 'TRADE_CANCEL', roomCode: room.code,
+      requestId: current.request.requestId, startId: current.request.startId,
+      fromPlayerId: this.localPlayerId, toPlayerId: peerId,
+      reason: 'cancelled',
+    })
+    console.info('[PokéRun trade] PRK60 LOCAL CANCELLATION SENT', {
+      requestId: current.request.requestId, peerId, guestTradeInitiated: false,
+    })
+    return true
+  }
+
+  private clearTradeTimeout() {
+    if (this.tradeTimeoutTimer !== null) window.clearTimeout(this.tradeTimeoutTimer)
+    this.tradeTimeoutTimer = null
+  }
+
+  private armTradeTimeout(request: MultiplayerTradeRequest) {
+    this.clearTradeTimeout()
+    this.tradeTimeoutTimer = window.setTimeout(() => {
+      this.tradeTimeoutTimer = null
+      const current = this.snapshot.trade
+      if (!current || current.status !== 'pending' ||
+          current.request.requestId !== request.requestId) return
+      const room = this.snapshot.room
+      const peerId = current.direction === 'outgoing'
+        ? request.toPlayerId : request.fromPlayerId
+      if (room?.gameStart?.startId === request.startId) {
+        this.send({
+          type: 'TRADE_CANCEL', roomCode: room.code,
+          requestId: request.requestId, startId: request.startId,
+          fromPlayerId: this.localPlayerId, toPlayerId: peerId,
+          reason: 'timeout',
+        })
+      }
+      this.update({ trade: { ...current, status: 'expired' } })
+      console.info('[PokéRun trade] PRK60 HANDSHAKE TIMED OUT', {
+        requestId: request.requestId, peerId,
+        guestTradeInitiated: false,
+        note: 'No response before deadline; terminal state and explicit cancel packet.',
+      })
+    }, Math.max(0, request.expiresAt - Date.now()))
+  }
+
+  private receiveTradeMessage(message: MultiplayerMessage, room: MultiplayerRoom) {
+    if (!import.meta.env.DEV || !room.gameStart || room.gameId !== 'white2') return
+    const startId = room.gameStart.startId
+    if (message.type === 'TRADE_REQUEST') {
+      const req = message.request
+      const now = Date.now()
+      const wellFormed = req && typeof req === 'object' &&
+        typeof req.requestId === 'string' && /^[0-9a-f-]{36}$/i.test(req.requestId) &&
+        req.startId === startId &&
+        req.fromPlayerId === message.senderId &&
+        req.toPlayerId === this.localPlayerId &&
+        room.players.some(player => player.id === message.senderId) &&
+        typeof req.createdAt === 'number' && typeof req.expiresAt === 'number' &&
+        req.createdAt <= now + 5000 &&
+        req.createdAt >= now - PRK60_TRADE_TIMEOUT_MS &&
+        req.expiresAt > now &&
+        req.expiresAt - req.createdAt <= PRK60_TRADE_TIMEOUT_MS
+      const preflight = this.previewTradeRequest()
+      if (!wellFormed || !preflight.eligible ||
+          preflight.remotePlayerId !== message.senderId ||
+          this.snapshot.trade?.status === 'pending' ||
+          this.seenTradeRequestIds.has(req?.requestId)) {
+        console.info('[PokéRun trade] PRK60 INCOMING REQUEST BLOCKED', {
+          reason: !wellFormed ? 'Invalid room/peer/start/expiry payload.'
+            : !preflight.eligible ? preflight.reason
+              : 'Duplicate or concurrent request.',
+          noGameWrites: true,
+        })
+        return
+      }
+      this.seenTradeRequestIds.add(req.requestId)
+      if (this.seenTradeRequestIds.size > 64) {
+        const first = this.seenTradeRequestIds.values().next().value
+        if (first) this.seenTradeRequestIds.delete(first)
+      }
+      this.update({ trade: { request: req, direction: 'incoming', status: 'pending' } })
+      this.armTradeTimeout(req)
+      console.info('[PokéRun trade] PRK60 INCOMING REQUEST ACCEPTED FOR DECISION', {
+        requestId: req.requestId, roomCode: room.code, startId,
+        fromPlayerId: req.fromPlayerId, toPlayerId: req.toPlayerId,
+        expiresAt: req.expiresAt, bothFacing: preflight.bothFacing,
+        guestTradeInitiated: false,
+        note: 'Remote user must explicitly accept or decline. No auto-accept or game mutation.',
+      })
+      return
+    }
+
+    const current = this.snapshot.trade
+    if (!current || current.status !== 'pending' ||
+        message.senderId === this.localPlayerId ||
+        !room.players.some(player => player.id === message.senderId)) return
+    const peerId = current.direction === 'outgoing'
+      ? current.request.toPlayerId : current.request.fromPlayerId
+    if (message.senderId !== peerId) return
+    if (message.type === 'TRADE_RESPONSE' &&
+        current.direction === 'outgoing' &&
+        message.startId === startId &&
+        message.requestId === current.request.requestId &&
+        message.fromPlayerId === message.senderId &&
+        message.toPlayerId === this.localPlayerId &&
+        (message.decision === 'accepted' || message.decision === 'declined') &&
+        Date.now() < current.request.expiresAt) {
+      this.clearTradeTimeout()
+      this.update({ trade: { ...current, status: message.decision } })
+      console.info('[PokéRun trade] PRK60 REMOTE DECISION RECEIVED', {
+        requestId: current.request.requestId, decision: message.decision,
+        fromPlayerId: message.senderId, status: message.decision,
+        guestTradeInitiated: false,
+        note: 'Mutual consent handshake can finish, but NO native trade or save/party exchange exists.',
+      })
+    } else if (message.type === 'TRADE_CANCEL' &&
+        message.startId === startId &&
+        message.requestId === current.request.requestId &&
+        message.fromPlayerId === message.senderId &&
+        message.toPlayerId === this.localPlayerId &&
+        (message.reason === 'cancelled' || message.reason === 'timeout')) {
+      this.clearTradeTimeout()
+      this.update({
+        trade: { ...current, status: message.reason === 'timeout' ? 'expired' : 'cancelled' },
+      })
+      console.info('[PokéRun trade] PRK60 PEER CANCELLATION RECEIVED', {
+        requestId: current.request.requestId, reason: message.reason,
+        guestTradeInitiated: false,
+      })
+    }
+  }
+
   leave() {
     const room = this.snapshot.room
+    if (this.snapshot.trade?.status === 'pending') this.cancelTrade()
     multiplayerPresence.reset()
     this.resetGameStateTracking()
     if (!room) return
@@ -390,6 +625,9 @@ export class LocalMultiplayerSession {
   }
 
   private resetGameStateTracking() {
+    this.clearTradeTimeout()
+    this.seenTradeRequestIds.clear()
+    this.update({ trade: null })
     this.clearMovementIdleTimer()
     this.lastPublishedGameState = null
     this.lastLocalStateAt = 0
@@ -421,6 +659,11 @@ export class LocalMultiplayerSession {
     }
 
     if (!room || message.roomCode !== room.code) return
+    if (message.type === 'TRADE_REQUEST' || message.type === 'TRADE_RESPONSE' ||
+        message.type === 'TRADE_CANCEL') {
+      this.receiveTradeMessage(message, room)
+      return
+    }
     if (message.type === 'PLAYER_ROM' && room.hostId === this.localPlayerId) this.hostUpdatePlayer(message.playerId, player => ({ ...player, rom: message.rom, ready: false }))
     if (message.type === 'PLAYER_READY' && room.hostId === this.localPlayerId && this.canPlayerReady(message.playerId, message.ready)) this.hostUpdatePlayer(message.playerId, player => ({ ...player, ready: message.ready }))
 
