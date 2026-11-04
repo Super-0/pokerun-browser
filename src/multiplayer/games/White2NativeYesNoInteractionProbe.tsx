@@ -3642,9 +3642,34 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         const sameDimensions = before.tiles.length === 1920 && after.tiles.length === 1920
         const fits = after.penAdvancePx <= WINDOW_WIDTH * 8 - 16 &&
           after.clippedPixels === 0 && after.overlappingPixels === 0
-        if (before.outputFnv1a32 !== '0xc359a40c' || !sameDimensions || !fits ||
-            stateRef.current?.window !== owned.bitmap || !metadataCompleteRef.current ||
-            !isMainRamPointer(owned.bitmap) || !isMainRamPointer(owned.pixels)) {
+        // While a window is OPEN this flag must be false. PRK47 turns
+        // it true only once native teardown starts. The previous guard
+        // accidentally required true and rejected every valid X2.
+        const sourceHashMatches = before.outputFnv1a32 === '0xc359a40c'
+        const ownedWindowMatches = stateRef.current?.window === owned.bitmap
+        const ownedPointersValid = isMainRamPointer(owned.bitmap) &&
+          isMainRamPointer(owned.pixels)
+        const stillInOpenLifetime = !metadataCompleteRef.current
+        if (!sourceHashMatches || !sameDimensions || !fits ||
+            !ownedWindowMatches || !stillInOpenLifetime || !ownedPointersValid) {
+          console.info('[PokéRun interaction] PRK53 PREWRITE VALIDATION DETAILS', {
+            sourceHashMatches,
+            actualSourceHash: before.outputFnv1a32,
+            expectedSourceHash: '0xc359a40c',
+            sameDimensions,
+            beforeTileBytes: before.tiles.length,
+            afterTileBytes: after.tiles.length,
+            fits,
+            replacementWidthPx: after.penAdvancePx,
+            maximumWidthPx: WINDOW_WIDTH * 8 - 16,
+            replacementClippedPixels: after.clippedPixels,
+            replacementOverlappingPixels: after.overlappingPixels,
+            ownedWindowMatches,
+            stillInOpenLifetime,
+            metadataComplete: metadataCompleteRef.current,
+            ownedPointersValid,
+            note: 'Prewrite diagnostics only. No native calls or guest memory writes have occurred.',
+          })
           throw new Error('PRK53 source text, target geometry, or owned bitmap preflight failed.')
         }
         const map = await inspectBg2MapReadOnly()
