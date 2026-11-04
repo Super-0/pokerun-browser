@@ -72,6 +72,11 @@ const PRK43_BGSYS_BG2_RECORD_OFFSET = 8 + 2 * 44
 const PRK43_BGSYS_BG2_SCREEN_BASE_OFFSET = 8 + 8 * 44 + 2 * 4 + 8 * 4 + 2 * 4
 const PRK43_BG2_CONTROL_REGISTER = 0x0400000c
 const PRK43_MAIN_BG_VRAM_BASE = 0x06000000
+// PRK46: BGSys.charAreas[MAIN] follows the eight 44-byte BG records;
+// charBase[BG2] and charSize[BG2] follow both AreaMan pointers.
+const PRK46_BGSYS_MAIN_AREA_PTR_OFFSET = 8 + 8 * 44
+const PRK46_BGSYS_BG2_CHAR_BASE_OFFSET = 8 + 8 * 44 + 2 * 4 + 2 * 4
+const PRK46_BGSYS_BG2_CHAR_SIZE_OFFSET = 8 + 8 * 44 + 2 * 4 + 8 * 4 + 8 * 4 + 2 * 4
 const WHITE2_NATIVE_MENU_STATE_EVENT = 'pokerun:white2-native-menu-state'
 
 type AtomicRuntime = {
@@ -212,11 +217,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk44-map-roundtrip-plus-prk45-disposable-bitmap-free',
+      mode: 'prk45-disposable-bitmap-plus-prk46-disposable-char-free',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK45 executes one isolated GFL_BitmapCreate(1,1,32,fieldHeap)/GFL_BitmapFree round trip only after the PRK44 map restore/reapply is verified, preserving the existing 12x5 AB bitmap and BG2 character allocation. P2 health is checked externally.',
+      researchNote: 'PRK46 tests a separate single-tile BG2 AreaMan reservation after PRK45 passes: allocate/free/reallocate/free without any character VRAM writes; verifies the original 60-tile AB reservation and bitmap remain unchanged.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -1229,7 +1234,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       playerActor: number, bg: number, charPos: number,
       liveBitmap: number, livePixels: number, heapId: number,
       expectedBgSys: number,
-    ) {
+    ): Promise<boolean> {
       if (disposed || runtimeBridge.status !== 'running' ||
           bg !== MSGBG_BG2 || charPos !== 964 ||
           !isMainRamPointer(liveBitmap) ||
@@ -1238,7 +1243,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         console.info('[PokéRun interaction] PRK45 DISPOSABLE BITMAP SKIPPED', {
           reason: 'Field, heap, or baseline allocation guard did not validate.',
         })
-        return
+        return false
       }
       const current = await probe.scanHeap()
       if (current.playerActor?.address !== playerActor ||
@@ -1246,7 +1251,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         console.info('[PokéRun interaction] PRK45 DISPOSABLE BITMAP SKIPPED', {
           reason: 'Native player actor identity or model changed.',
         })
-        return
+        return false
       }
       const before = await inspectBg2MapReadOnly()
       const expectedOverlay = prk43ExpectedMapForWindow(charPos)
@@ -1268,14 +1273,14 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         console.info('[PokéRun interaction] PRK45 DISPOSABLE BITMAP SKIPPED', {
           reason: 'Existing AB window owner/VRAM preflight is not the verified PRK44 state.',
         })
-        return
+        return false
       }
       if (!validNativeStack(await runtimeBridge.getArm9Sp()) &&
           !(await waitForActiveNativeStack())) {
         console.info('[PokéRun interaction] PRK45 DISPOSABLE BITMAP SKIPPED', {
           reason: 'No safe active DTCM stack for native allocation.',
         })
-        return
+        return false
       }
       console.info('[PokéRun interaction] PRK45 DISPOSABLE BITMAP ALLOCATION PREFLIGHT', {
         heapId,
@@ -1379,6 +1384,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         if (!sameLiveStruct || !sameLivePixels || !sameBgMap || !sameShadow) {
           throw new Error('PRK45 post-free baseline diverged; preserve logs and restart the emulator.')
         }
+        return true
       } catch (reason) {
         console.info('[PokéRun interaction] PRK45 DISPOSABLE FREE REJECTED', {
           disposableBitmap: disposableBitmap ? hex(disposableBitmap) : null,
@@ -1386,6 +1392,234 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           freeReturned,
           reason: reason instanceof Error ? reason.message : String(reason),
           note: 'Never retry native allocation/free in this guest after a failed PRK45 probe. The live AB window remains the independent baseline.',
+        })
+        return false
+      }
+    }
+
+    // PRK46: prove AreaMan can reserve and release one *disposable*
+    // 32-byte tile without freeing or modifying the 60 live AB tiles.
+    // The native functions only change allocator reservation metadata:
+    // no BG2 character graphics upload, BG2 screen-map write, or heap free.
+    // Repeat the allocation ONCE to verify that the first free returned
+    // exactly the same tail block, then release it again.
+    async function tryPrk46DisposableBg2CharLifetime(
+      playerActor: number, expectedBgSys: number,
+      bg: number, charPos: number, liveBitmap: number, livePixels: number,
+    ) {
+      if (disposed || runtimeBridge.status !== 'running' ||
+          bg !== MSGBG_BG2 || charPos !== 964 ||
+          !isMainRamPointer(expectedBgSys) ||
+          !isMainRamPointer(liveBitmap) || !isMainRamPointer(livePixels)) {
+        console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR SKIPPED', {
+          reason: 'The BG, field or live resource identities failed preflight.',
+        })
+        return
+      }
+      const mainArea = await runtimeBridge.read32(
+        expectedBgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
+      )
+      const charBaseBytes = await runtimeBridge.read32(
+        expectedBgSys + PRK46_BGSYS_BG2_CHAR_BASE_OFFSET,
+      )
+      const charSizeBytes = await runtimeBridge.read32(
+        expectedBgSys + PRK46_BGSYS_BG2_CHAR_SIZE_OFFSET,
+      )
+      const tilesTotal = charSizeBytes / 32
+      if (!isMainRamPointer(mainArea) ||
+          charBaseBytes % 32 !== 0 ||
+          charBaseBytes > 0x10000 ||
+          charSizeBytes !== 32768 ||
+          tilesTotal !== 1024) {
+        console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR SKIPPED', {
+          mainArea: hex(mainArea),
+          charBaseBytes: hex(charBaseBytes),
+          charSizeBytes,
+          tilesTotal,
+          reason: 'AreaMan or BG2 character range differs from verified 1024-tile allocation.',
+        })
+        return
+      }
+      const overlay = prk43ExpectedMapForWindow(charPos)
+      const beforeMap = await inspectBg2MapReadOnly()
+      const beforeStruct = await runtimeBridge.readBytes(liveBitmap, 12)
+      const beforePixels = await runtimeBridge.readBytes(livePixels, 1920)
+      const beforeShadow = beforeMap.ramMap
+      const overlayOkay = beforeMap.bgSys === expectedBgSys &&
+        beforeMap.vramMap !== null &&
+        beforeMap.vramMap.length === overlay.length &&
+        beforeMap.vramMap.every((value, i) => value === overlay[i])
+      if (!overlayOkay || beforeShadow === null || beforeShadow.length !== 98 ||
+          beforeStruct.length !== 12 || beforePixels.length !== 1920 ||
+          (await runtimeBridge.read32(liveBitmap)) !== livePixels ||
+          (await runtimeBridge.read16(liveBitmap + 4)) !== 96 ||
+          (await runtimeBridge.read16(liveBitmap + 6)) !== 40 ||
+          (await runtimeBridge.read16(liveBitmap + 8)) !== 32 ||
+          (await runtimeBridge.read16(liveBitmap + 10)) !== 0) {
+        console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR SKIPPED', {
+          reason: 'Visible AB BG2 map or native bitmap baseline changed after PRK45.',
+        })
+        return
+      }
+      async function sameFieldAndSafeStack(): Promise<boolean> {
+        if (disposed || runtimeBridge.status !== 'running' ||
+            (await runtimeBridge.read32(PRK43_BGSYS_GLOBAL_PTR)) !== expectedBgSys ||
+            (await runtimeBridge.read32(expectedBgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET)) !== mainArea) {
+          return false
+        }
+        const current = await probe.scanHeap()
+        if (current.playerActor?.address !== playerActor ||
+            current.playerActor.modelId !== EXPECTED_STABLE_PLAYER_MODEL) {
+          return false
+        }
+        return validNativeStack(await runtimeBridge.getArm9Sp()) ||
+          await waitForActiveNativeStack()
+      }
+      if (!(await sameFieldAndSafeStack())) {
+        console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR SKIPPED', {
+          reason: 'Field identity, AreaMan pointer, or ARM9 DTCM stack is no longer safe.',
+        })
+        return
+      }
+      console.info('[PokéRun interaction] PRK46 DISPOSABLE BG2 CHAR PREFLIGHT', {
+        bg, bgSys: hex(expectedBgSys),
+        mainCharAreaMan: hex(mainArea),
+        charBaseBytes, charSizeBytes, tilesTotal,
+        liveCharPos: charPos,
+        liveTileRange: [charPos, charPos + WINDOW_WIDTH * WINDOW_HEIGHT - 1],
+        disposableSizeBytes: 32,
+        allocateFromEnd: true,
+        expectedTailPosition: charPos - 1,
+        beforeMapHash: prk43SnapshotHash(beforeMap.vramMap),
+        note: 'Reserve one unreferenced BG2 character block; free/reallocate/free using native AreaMan bookkeeping. Never upload any VRAM bytes.',
+      })
+
+      let firstPos = AREAMAN_FAIL
+      let secondPos = AREAMAN_FAIL
+      let firstFreeReturned = false
+      let secondFreeReturned = false
+      let firstAllocInstructions = 0
+      let firstFreeInstructions = 0
+      let secondAllocInstructions = 0
+      let secondFreeInstructions = 0
+      let failedNativeCall = false
+      let unexpectedReservation = false
+      try {
+        const firstCall = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg, 32, 1)
+        firstPos = firstCall.result
+        firstAllocInstructions = firstCall.instructions
+        const validIsolated = firstPos !== AREAMAN_FAIL &&
+          firstPos === charPos - 1 &&
+          firstPos + 1 <= charPos &&
+          firstPos >= 0 &&
+          firstPos < tilesTotal
+        console.info('[PokéRun interaction] PRK46 FIRST DISPOSABLE TILE RESERVED', {
+          position: firstPos === AREAMAN_FAIL ? 'AREAMAN_FAIL' : firstPos,
+          expected: charPos - 1,
+          isolatedFromLiveWindow: validIsolated,
+          instructions: firstAllocInstructions,
+        })
+        if (!validIsolated) {
+          unexpectedReservation = true
+          throw new Error('PRK46 AreaMan did not allocate the expected single tile preceding the 60 live tiles; no free attempted.')
+        }
+        if (!(await sameFieldAndSafeStack())) {
+          throw new Error('PRK46 field/stack changed after first disposable allocation; no native free attempted.')
+        }
+        try {
+          const call = await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg, firstPos, 32)
+          firstFreeInstructions = call.instructions
+          firstFreeReturned = true
+        } catch (reason) {
+          failedNativeCall = true
+          throw reason
+        }
+        console.info('[PokéRun interaction] PRK46 FIRST DISPOSABLE TILE FREED', {
+          position: firstPos,
+          instructions: firstFreeInstructions,
+          freeReturnType: 'void',
+          note: 'White 2 AreaManDeAlloc returned; next allocation tests if the same block became available.',
+        })
+        if (!(await sameFieldAndSafeStack())) {
+          throw new Error('PRK46 field/stack changed before reallocation; no further native call attempted.')
+        }
+        const secondCall = await atomicCall(GFL_BGSYS_ALLOC_CHAR, bg, 32, 1)
+        secondPos = secondCall.result
+        secondAllocInstructions = secondCall.instructions
+        const reuseVerified = secondPos === firstPos
+        console.info('[PokéRun interaction] PRK46 AREA MAN TILE REUSE', {
+          firstPosition: firstPos,
+          secondPosition: secondPos === AREAMAN_FAIL ? 'AREAMAN_FAIL' : secondPos,
+          reusedSameTile: reuseVerified,
+          firstFreeReturned,
+          instructions: secondAllocInstructions,
+        })
+        if (!reuseVerified) {
+          unexpectedReservation = true
+          throw new Error('PRK46 allocated a different tail block after native free; no unsafe second free.')
+        }
+        if (!(await sameFieldAndSafeStack())) {
+          throw new Error('PRK46 field/stack changed before final disposable tile free.')
+        }
+        try {
+          const call = await atomicCall(GFL_BGSYS_FREE_CHAR_MEMORY, bg, secondPos, 32)
+          secondFreeInstructions = call.instructions
+          secondFreeReturned = true
+        } catch (reason) {
+          failedNativeCall = true
+          throw reason
+        }
+        const afterMap = await inspectBg2MapReadOnly()
+        const afterShadow = afterMap.ramMap
+        const sameMap = afterMap.bgSys === beforeMap.bgSys &&
+          afterMap.screenPtr === beforeMap.screenPtr &&
+          afterMap.screenBase === beforeMap.screenBase &&
+          afterMap.vramMap !== null &&
+          afterMap.vramMap.length === overlay.length &&
+          afterMap.vramMap.every((value, i) => value === overlay[i])
+        const sameShadow = afterShadow !== null &&
+          afterShadow.length === beforeShadow.length &&
+          afterShadow.every((value, i) => value === beforeShadow[i])
+        const afterStruct = await runtimeBridge.readBytes(liveBitmap, 12)
+        const afterPixels = await runtimeBridge.readBytes(livePixels, 1920)
+        const sameLiveStruct = afterStruct.length === beforeStruct.length &&
+          afterStruct.every((value, i) => value === beforeStruct[i])
+        const sameLivePixels = afterPixels.length === beforePixels.length &&
+          afterPixels.every((value, i) => value === beforePixels[i])
+        const sameAreaMan = (await runtimeBridge.read32(
+          expectedBgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
+        )) === mainArea
+        console.info('[PokéRun interaction] PRK46 DISPOSABLE BG2 CHAR LIFETIME VERIFIED', {
+          firstPos, secondPos,
+          firstFreeReturned, secondFreeReturned,
+          reusedSameTile: reuseVerified,
+          sameAreaMan,
+          sameMap, sameShadow, sameLiveStruct, sameLivePixels,
+          instructions: {
+            firstAlloc: firstAllocInstructions,
+            firstFree: firstFreeInstructions,
+            secondAlloc: secondAllocInstructions,
+            secondFree: secondFreeInstructions,
+          },
+          liveReservation: { bg, start: charPos, tileCount: 60, bytes: 1920 },
+          disposableReservationsRemaining: 0,
+          overlayVramHash: prk43SnapshotHash(afterMap.vramMap),
+          note: 'Native AreaMan single-tile reserve/free/reuse/final-free completed without changing AB tiles or screen. Does not yet prove full-window teardown or repeated reopening.',
+        })
+        if (!sameAreaMan || !sameMap || !sameShadow ||
+            !sameLiveStruct || !sameLivePixels) {
+          throw new Error('PRK46 post-free AB graphics or AreaMan identity changed.')
+        }
+      } catch (reason) {
+        console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR REJECTED', {
+          firstPos: firstPos === AREAMAN_FAIL ? null : firstPos,
+          secondPos: secondPos === AREAMAN_FAIL ? null : secondPos,
+          firstFreeReturned,
+          secondFreeReturned,
+          failedNativeCall,
+          unexpectedReservation,
+          reason: reason instanceof Error ? reason.message : String(reason),
+          note: 'Stop this session after rejection. Never issue speculative native frees or repeat allocations after unexpected AreaMan state.',
         })
       }
     }
@@ -1860,10 +2094,20 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                   prk43Before, after, playerActor, directPixels, bg2, directCharPos,
                 )
                 if (roundTripVerified && ownedBitmapValid) {
-                  await tryPrk45DisposableBitmapLifetime(
+                  const bitmapLifetimeVerified = await tryPrk45DisposableBitmapLifetime(
                     playerActor, bg2, directCharPos, directBitmap, directPixels,
                     heapId, prk43Before.bgSys,
                   )
+                  if (bitmapLifetimeVerified) {
+                    await tryPrk46DisposableBg2CharLifetime(
+                      playerActor, prk43Before.bgSys, bg2,
+                      directCharPos, directBitmap, directPixels,
+                    )
+                  } else {
+                    console.info('[PokéRun interaction] PRK46 DISPOSABLE CHAR SKIPPED', {
+                      reason: 'PRK45 native bitmap destructor test did not fully pass.',
+                    })
+                  }
                 } else {
                   console.info('[PokéRun interaction] PRK45 DISPOSABLE BITMAP SKIPPED', {
                     roundTripVerified,
