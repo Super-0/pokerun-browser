@@ -217,11 +217,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk48-hold-ab-overlay-until-emulator-reset',
+      mode: 'prk49-long-line-on-held-native-bg2-window',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK48 retains the PRK40 AB BG2 graphics after PRK44/45/46 validation, intentionally skipping PRK47 teardown. Visual hold for screenshot only; one X per fresh emulated session, do not change maps, reset emulator after test.',
+      researchNote: 'PRK49 retains PRK48 AB BG2 graphics, then replaces it with verified offline-composed Hello, P2! text using 32-byte Thumb4 CPU transfers. No native text printer or PRK47 close, one X per session, reset emulator after screenshot.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -1978,6 +1978,7 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
 
       try {
         let prk38GlyphRomOffset: number | null = null
+        let prk49FontLayout: { memberStart: number; memberLength: number; glyphsOffset: number } | null = null
         let prk43Before: Prk43Bg2MapSnapshot | null = null
         let prk40VisualComplete = false
         const scan = await probe.scanHeap()
@@ -2002,6 +2003,14 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           try {
             const verified = await verifyBrowserHeldFontRom(WHITE2_KNOWN_FIELD_MSGBG)
             prk38GlyphRomOffset = verified?.glyphAbsoluteRomOffset ?? null
+            if (verified?.glyphIndex === 33 && verified.glyphCellSize === 48) {
+              const memberStart = verified.fatEntryStart + verified.narcMemberOffset
+              const glyphsOffset = verified.glyphAbsoluteRomOffset - memberStart -
+                verified.glyphIndex * verified.glyphCellSize
+              if (glyphsOffset >= 0 && glyphsOffset < verified.narcMemberLength) {
+                prk49FontLayout = { memberStart, memberLength: verified.narcMemberLength, glyphsOffset }
+              }
+            }
           } catch (reason) {
             console.info('[PokéRun interaction] PRK35 ROM FAT NARC VERIFICATION REJECTED', {
               reason: reason instanceof Error ? reason.message : String(reason),
@@ -2473,6 +2482,122 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
                           furtherXBlocked: Boolean(stateRef.current),
                           note: 'BG2 overlay will remain mapped for visual inspection; PRK47 deliberately NOT called. Do not change maps or press X again. Reset the emulator after the screenshot to release the test allocation.',
                         })
+                        // PRK49: PRK42 has already proven a complete variable-width
+                        // line from the same ROM. Only the live AB pixels are now
+                        // replaced; all BG2 screen-map entries remain untouched.
+                        // Every upload is exactly one 32-byte CPU-path char tile.
+                        if (romBytes && prk49FontLayout &&
+                            matchingEntries === expectedHeldMap.length &&
+                            heldMap.vramMap !== null) {
+                          let tilesPrepared = 0
+                          let tilesUploaded = 0
+                          let totalInstructions = 0
+                          try {
+                            const { memberStart, memberLength, glyphsOffset } = prk49FontLayout
+                            const existing = simulateWhite2AsciiLine(
+                              romBytes, memberStart, memberLength, glyphsOffset, 'AB',
+                            )
+                            const desired = simulateWhite2AsciiLine(
+                              romBytes, memberStart, memberLength, glyphsOffset, 'Hello, P2!',
+                            )
+                            if (existing.outputFnv1a32 !== '0xc1731ff6' ||
+                                desired.outputFnv1a32 !== '0xc359a40c' ||
+                                desired.penAdvancePx > WINDOW_WIDTH * 8 - 16 ||
+                                desired.clippedPixels !== 0 ||
+                                desired.overlappingPixels !== 0 ||
+                                existing.tiles.length !== 1920 || desired.tiles.length !== 1920 ||
+                                stateRef.current?.window !== directBitmap ||
+                                runtimeBridge.status !== 'running') {
+                              throw new Error('PRK49 offline text, bitmap ownership, or bounds preflight failed.')
+                            }
+                            const actualBefore = await runtimeBridge.readBytes(directPixels, 1920)
+                            const sameAbPixels = actualBefore.length === existing.tiles.length &&
+                              actualBefore.every((value, i) => value === existing.tiles[i])
+                            const liveActor = await probe.scanHeap()
+                            if (!sameAbPixels ||
+                                liveActor.playerActor?.address !== playerActor ||
+                                liveActor.playerActor?.modelId !== EXPECTED_STABLE_PLAYER_MODEL ||
+                                !validNativeStack(await runtimeBridge.getArm9Sp())) {
+                              throw new Error('PRK49 live AB bitmap, field actor, or safe native stack changed.')
+                            }
+                            const tileIndices = Array.from(
+                              new Set([...existing.dirtyTileIndices, ...desired.dirtyTileIndices]),
+                            ).sort((a, b) => a - b)
+                            if (tileIndices.length < 4 || tileIndices.length > 20 ||
+                                tileIndices.some(i => i < 0 || i >= 60)) {
+                              throw new Error('PRK49 unexpected dirty character tile footprint.')
+                            }
+                            console.info('[PokéRun interaction] PRK49 LONG TEXT PREFLIGHT PASSED', {
+                              from: 'AB', to: 'Hello, P2!', bitmap: hex(directBitmap),
+                              tileIndices, bytesToUpload: tileIndices.length * 32,
+                              textWidthPx: desired.penAdvancePx,
+                              offlineHash: desired.outputFnv1a32,
+                              note: 'All 60 live bitmap tiles matched PRK42 AB exactly. No map writes, native text printer, or >4-arg calls.',
+                            })
+                            // Fully stage and read back the new line in owned
+                            // bitmap RAM before any guest VRAM transfer.
+                            for (const tileIndex of tileIndices) {
+                              const address = directPixels + tileIndex * 32
+                              const tile = desired.tiles.slice(tileIndex * 32, (tileIndex + 1) * 32)
+                              await runtimeBridge.writeBytes(address, tile)
+                              const check = await runtimeBridge.readBytes(address, 32)
+                              if (check.length !== 32 ||
+                                  check.some((value, i) => value !== tile[i])) {
+                                throw new Error('PRK49 RAM readback disagreed at tile ' + tileIndex)
+                              }
+                              tilesPrepared += 1
+                            }
+                            const staged = await runtimeBridge.readBytes(directPixels, 1920)
+                            if (staged.length !== desired.tiles.length ||
+                                staged.some((value, i) => value !== desired.tiles[i])) {
+                              throw new Error('PRK49 full bitmap staging differs from verified ROM composition.')
+                            }
+                            for (const tileIndex of tileIndices) {
+                              const call = await atomicCall(
+                                GFL_BGSYS_LOAD_CHAR, bg2,
+                                directPixels + tileIndex * 32, 32, directCharPos + tileIndex,
+                              )
+                              tilesUploaded += 1
+                              totalInstructions += call.instructions
+                            }
+                            const finalMap = await inspectBg2MapReadOnly()
+                            const mapStillHeld = finalMap.vramMap !== null &&
+                              finalMap.vramMap.length === expectedHeldMap.length &&
+                              finalMap.vramMap.every((value, i) => value === expectedHeldMap[i])
+                            if (!mapStillHeld) {
+                              throw new Error('PRK49 BG2 overlay map changed after text upload.')
+                            }
+                            console.info('[PokéRun interaction] PRK49 HELLO P2 VISIBLE HOLD READY', {
+                              text: 'Hello, P2!',
+                              textWidthPx: desired.penAdvancePx,
+                              textPixelPositionOnScreen: { x: WINDOW_X * 8 + 8, y: WINDOW_Y * 8 + 8 },
+                              tileIndices,
+                              tilesPrepared, tilesUploaded,
+                              bytesTransferred: tilesUploaded * 32,
+                              totalInstructions,
+                              heldMapEntries: expectedHeldMap.length,
+                              heldMapVerified: mapStillHeld,
+                              bitmapPixelsHash: desired.outputFnv1a32,
+                              furtherXBlocked: Boolean(stateRef.current),
+                              nativeResourcesFreed: false,
+                              note: 'Long text is in owned native bitmap RAM and BG2 character VRAM, with the 98-entry window map still held. Visually inspect; reset emulator after test. PRK47 was not called.',
+                            })
+                          } catch (reason) {
+                            console.info('[PokéRun interaction] PRK49 LONG TEXT UPLOAD REJECTED', {
+                              tilesPrepared, tilesUploaded, totalInstructions,
+                              reason: reason instanceof Error ? reason.message : String(reason),
+                              note: 'No speculative rollback or retry. After partial tile changes, restart the emulator before any new test. PRK48 map ownership stays allocated.',
+                            })
+                          }
+                        } else {
+                          console.info('[PokéRun interaction] PRK49 LONG TEXT SKIPPED', {
+                            hasRom: Boolean(romBytes),
+                            verifiedFontLayout: Boolean(prk49FontLayout),
+                            matchingEntries,
+                            expectedEntries: expectedHeldMap.length,
+                            note: 'Preserve the PRK48 AB visual rather than guessing font or map ownership.',
+                          })
+                        }
                       } else {
                         await tryPrk47OneWayNativeWindowClose(
                           playerActor, prk43Before, bg2,
