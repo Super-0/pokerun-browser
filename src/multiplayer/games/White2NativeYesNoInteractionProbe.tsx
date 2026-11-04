@@ -109,6 +109,11 @@ type Prk50CloseContext = {
   pixels: number
   heapId: number
 }
+type Prk51ClosedBaseline = {
+  playerActor: number
+  baseline: Prk43Bg2MapSnapshot
+  areaMan: number
+}
 type Prk43Bg2MapSnapshot = {
   bgSys: number
   screenPtr: number
@@ -138,6 +143,12 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
   const metadataCompleteRef = useRef(false)
   const prk50CloseContextRef = useRef<Prk50CloseContext | null>(null)
   const prk50CloseAttemptedRef = useRef(false)
+  // One guarded reuse experiment only: X1 open, X2 close, X3 reopen,
+  // X4 close, then permanent lock until emulator reset.
+  const prk51VerifiedClosesRef = useRef(0)
+  const prk51ReopenAttemptedRef = useRef(false)
+  const prk51ReopenVerifiedRef = useRef(false)
+  const prk51ClosedBaselineRef = useRef<Prk51ClosedBaseline | null>(null)
 
   useEffect(() => {
     const supported = White2ActorSystemProbe.supportsRom(rom)
@@ -228,11 +239,11 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       strBufFreeAddress: hex(GFL_STRBUF_FREE),
       getCharWidthAddress: hex(GFL_FONT_GET_CHAR_WIDTH),
       getCharIndexAddress: hex(GFL_FONT_GET_CHAR_INDEX),
-      mode: 'prk50-second-x-one-way-close-after-prk49-visible-hold',
+      mode: 'prk51-single-guarded-reopen-and-second-close',
       stackPolicy: 'Only 0x02FE2800..0x02FE3FFF 8-byte-aligned DTCM, sampled before every guest call',
       nativeBridge: 'callArm9Thumb4 only; callArm9Thumb8Atomic forbidden',
       browserRomAvailable: Boolean(romBytes),
-      researchNote: 'PRK50 retains verified PRK49 Hello P2 rendering. First X opens, next distinct X attempts one-way guarded PRK47 map restoration and native bitmap/char free. Reopen disabled until close verified. No ListMenuUI polling or BmpWin_CreateDynamic.',
+      researchNote: 'PRK51 tests exactly two fully verified window lifetimes in one live White 2 session: X1 open, X2 guarded PRK47 close, X3 guarded reopen only if unchanged BG2/AreaMan/field baseline, X4 guarded PRK47 close; further X permanently blocked. No native list menu, Thumb8, or speculative rollback.',
       nativeStackRuntimeStamp: '0x50524B3C',
       note: 'PRK34 bypasses callArm9Thumb8Atomic entirely because its relocated SP (0x0214C270) intersects OSi_ThreadInfo (0x0214C26C). All native field/BG calls use the proven separate callArm9Thumb4 scheduler-aware bridge. No BmpWin_CreateDynamic, streamed glyph I/O, or menu lifecycle.',
     })
@@ -3350,7 +3361,8 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
 
     async function tryPrk50SecondXClose() {
       if (openingRef.current || prk50CloseAttemptedRef.current ||
-          !prk50CloseContextRef.current || runtimeBridge.status !== 'running') {
+          !prk50CloseContextRef.current || runtimeBridge.status !== 'running' ||
+          prk51VerifiedClosesRef.current >= 2) {
         console.info('[PokéRun interaction] PRK50 SECOND X CLOSE HELD', {
           opening: openingRef.current,
           closeAttempted: prk50CloseAttemptedRef.current,
@@ -3360,12 +3372,15 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         return
       }
       const owned = prk50CloseContextRef.current
+      const isSecondLifetime = prk51ReopenVerifiedRef.current
       // A single one-way attempt per guest session, including preflight
       // rejection: never retry after a partial native graphics operation.
       prk50CloseAttemptedRef.current = true
       prk50CloseContextRef.current = null
       openingRef.current = true
-      console.info('[PokéRun interaction] PRK50 SECOND X CLOSE REQUESTED', {
+      console.info(isSecondLifetime
+        ? '[PokéRun interaction] PRK51 SECOND LIFETIME CLOSE REQUESTED'
+        : '[PokéRun interaction] PRK50 SECOND X CLOSE REQUESTED', {
         bitmap: hex(owned.bitmap),
         bg: owned.bg,
         charPos: owned.charPos,
@@ -3378,12 +3393,31 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
           owned.charPos, owned.bitmap, owned.pixels, owned.heapId,
         )
         if (closed) {
-          console.info('[PokéRun interaction] PRK50 SECOND X CLOSE VERIFIED', {
+          prk51VerifiedClosesRef.current += 1
+          if (prk51VerifiedClosesRef.current === 1 && !isSecondLifetime) {
+            // Record ONLY field/BG2/AreaMan baseline: never retain the freed
+            // GFLBitmap structure or its pixel pointer across lifetimes.
+            const areaMan = await runtimeBridge.read32(
+              owned.baseline.bgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
+            )
+            prk51ClosedBaselineRef.current = {
+              playerActor: owned.playerActor,
+              baseline: owned.baseline,
+              areaMan,
+            }
+          }
+          console.info(isSecondLifetime
+            ? '[PokéRun interaction] PRK51 SECOND LIFETIME CLOSE VERIFIED'
+            : '[PokéRun interaction] PRK50 SECOND X CLOSE VERIFIED', {
             resourcesReleased: true,
             mapRestored: true,
-            reopenAllowed: false,
+            verifiedCloses: prk51VerifiedClosesRef.current,
+            oneReopenAvailable: prk51VerifiedClosesRef.current === 1 &&
+              prk51ClosedBaselineRef.current !== null,
             furtherInteractionLocked: metadataCompleteRef.current,
-            note: 'PRK47 completed the one-way resource teardown on a distinct X press. Visually verify that the Hello P2 window disappeared while P2 remains healthy. Restart emulator to repeat.',
+            note: isSecondLifetime
+              ? 'Second native allocation/map lifetime released. PRK51 permanently locks additional X presses. Verify no ghost window; restart to test again.'
+              : 'First native allocation/map lifetime released. Next X may attempt exactly one independently guarded re-open. Do not change maps before X3.',
           })
         } else {
           console.info('[PokéRun interaction] PRK50 SECOND X CLOSE REJECTED', {
@@ -3402,6 +3436,132 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       }
     }
 
+    async function tryPrk51SingleReopen() {
+      if (openingRef.current || prk51ReopenAttemptedRef.current ||
+          prk51VerifiedClosesRef.current !== 1 ||
+          !prk51ClosedBaselineRef.current ||
+          !prk50CloseAttemptedRef.current ||
+          prk50CloseContextRef.current !== null ||
+          stateRef.current !== null ||
+          !metadataCompleteRef.current ||
+          runtimeBridge.status !== 'running') {
+        console.info('[PokéRun interaction] PRK51 REOPEN HELD', {
+          opening: openingRef.current,
+          reopenAttempted: prk51ReopenAttemptedRef.current,
+          verifiedCloses: prk51VerifiedClosesRef.current,
+          closeAttempted: prk50CloseAttemptedRef.current,
+          nativeWindowPresent: stateRef.current !== null,
+          note: 'No reopen unless first lifetime fully freed and still in original field.',
+        })
+        return
+      }
+      // Even a failed preflight burns this one attempt. Never repeat a
+      // partial or uncertain operation against live guest allocations.
+      prk51ReopenAttemptedRef.current = true
+      openingRef.current = true
+      const closed = prk51ClosedBaselineRef.current
+      const { baseline, playerActor, areaMan } = closed
+      try {
+        const observed = await inspectBg2MapReadOnly()
+        const currentActor = await probe.scanHeap()
+        const currentAreaMan = await runtimeBridge.read32(
+          baseline.bgSys + PRK46_BGSYS_MAIN_AREA_PTR_OFFSET,
+        )
+        const charBase = await runtimeBridge.read32(
+          baseline.bgSys + PRK46_BGSYS_BG2_CHAR_BASE_OFFSET,
+        )
+        const charSize = await runtimeBridge.read32(
+          baseline.bgSys + PRK46_BGSYS_BG2_CHAR_SIZE_OFFSET,
+        )
+        const sameBaseline = !disposed &&
+          runtimeBridge.status === 'running' &&
+          observed.bgSys === baseline.bgSys &&
+          observed.screenPtr === baseline.screenPtr &&
+          observed.screenSize === baseline.screenSize &&
+          observed.screenOffset === baseline.screenOffset &&
+          observed.screenBase === baseline.screenBase &&
+          observed.controlScreenBase === baseline.controlScreenBase &&
+          observed.mode === baseline.mode &&
+          observed.colorMode === baseline.colorMode &&
+          observed.tileSize === baseline.tileSize &&
+          currentAreaMan === areaMan &&
+          charBase === 65536 && charSize === 32768 &&
+          baseline.vramMap !== null && baseline.vramMap.length === 98 &&
+          baseline.ramMap !== null && baseline.ramMap.length === 98 &&
+          observed.vramMap !== null && observed.vramMap.length === 98 &&
+          observed.ramMap !== null && observed.ramMap.length === 98 &&
+          observed.vramMap.every((value, i) => value === baseline.vramMap![i]) &&
+          observed.ramMap.every((value, i) => value === baseline.ramMap![i]) &&
+          currentActor.playerActor?.address === playerActor &&
+          currentActor.playerActor.modelId === EXPECTED_STABLE_PLAYER_MODEL &&
+          stateRef.current === null && prk50CloseContextRef.current === null &&
+          metadataCompleteRef.current && prk50CloseAttemptedRef.current
+        if (!sameBaseline || !(await waitForActiveNativeStack())) {
+          console.info('[PokéRun interaction] PRK51 REOPEN PREFLIGHT REJECTED', {
+            sameBaseline, currentAreaMan: hex(currentAreaMan),
+            expectedAreaMan: hex(areaMan),
+            currentActor: hex(currentActor.playerActor?.address ?? 0),
+            expectedActor: hex(playerActor),
+            currentMapHash: prk43SnapshotHash(observed.vramMap),
+            expectedMapHash: prk43SnapshotHash(baseline.vramMap),
+            note: 'No native allocation was attempted. One-shot reopen stays locked; restart emulator to try again.',
+          })
+          return
+        }
+        console.info('[PokéRun interaction] PRK51 REOPEN PREFLIGHT PASSED', {
+          originalMapHash: prk43SnapshotHash(observed.vramMap),
+          actor: hex(playerActor),
+          bgSys: hex(baseline.bgSys),
+          areaMan: hex(areaMan),
+          verifiedCloses: prk51VerifiedClosesRef.current,
+          note: 'First lifetime freed, original 98-entry map unchanged, same field and AreaMan; exactly one new PRK34-49 creation pass is permitted.',
+        })
+        // Drop the locked one-way PRK47 state ONLY after the independently
+        // verified original-field baseline. The normal runProbe guards and
+        // allocation verification execute from scratch.
+        metadataCompleteRef.current = false
+        prk50CloseAttemptedRef.current = false
+        prk51ClosedBaselineRef.current = null
+        openingRef.current = false
+        await runProbe()
+        const newWindow = prk50CloseContextRef.current
+        const reopened = newWindow !== null &&
+          stateRef.current?.window === newWindow.bitmap &&
+          newWindow.playerActor === playerActor &&
+          newWindow.baseline.bgSys === baseline.bgSys
+        if (!reopened) {
+          // Creation may have partially allocated even if it did not finish.
+          // Never retry or invoke guessed teardown in this session.
+          metadataCompleteRef.current = true
+          prk50CloseAttemptedRef.current = true
+          console.info('[PokéRun interaction] PRK51 REOPEN INCOMPLETE - LOCKED', {
+            stateWindow: stateRef.current ? hex(stateRef.current.window) : null,
+            closeContextArmed: Boolean(newWindow),
+            note: 'No second attempt or speculative native cleanup. Restart emulator and preserve diagnostics.',
+          })
+          return
+        }
+        prk51ReopenVerifiedRef.current = true
+        console.info('[PokéRun interaction] PRK51 SECOND WINDOW VISIBLE HOLD READY', {
+          bitmap: hex(newWindow.bitmap),
+          charPos: newWindow.charPos,
+          oldBitmapPointerReused: false,
+          text: 'Hello, P2!',
+          secondCloseArmed: true,
+          note: 'A new verified lifetime is visible; next distinct X performs guarded PRK47 cleanup again. Do not move maps. Pointer reuse by the native allocator is permitted.',
+        })
+      } catch (reason) {
+        metadataCompleteRef.current = true
+        prk50CloseAttemptedRef.current = true
+        console.info('[PokéRun interaction] PRK51 REOPEN FAILED - LOCKED', {
+          reason: reason instanceof Error ? reason.message : String(reason),
+          note: 'No retry or speculative native calls in this guest; restart emulator.',
+        })
+      } finally {
+        openingRef.current = false
+      }
+    }
+
     const onInteract = (event: Event) => {
       const detail = event instanceof CustomEvent ? event.detail : undefined
       console.info('[PokéRun interaction] INTERACT EVENT RECEIVED', {
@@ -3411,11 +3571,18 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
         opening: openingRef.current,
         closeArmed: Boolean(prk50CloseContextRef.current),
         closeAttempted: prk50CloseAttemptedRef.current,
+        prk51VerifiedCloses: prk51VerifiedClosesRef.current,
+        prk51ReopenAttempted: prk51ReopenAttemptedRef.current,
+        prk51ReopenVerified: prk51ReopenVerifiedRef.current,
       })
-      if (prk50CloseAttemptedRef.current) return
+      if (openingRef.current || prk51VerifiedClosesRef.current >= 2) return
       if (prk50CloseContextRef.current) {
         void tryPrk50SecondXClose()
-      } else {
+      } else if (prk50CloseAttemptedRef.current &&
+                 prk51VerifiedClosesRef.current === 1 &&
+                 !prk51ReopenAttemptedRef.current) {
+        void tryPrk51SingleReopen()
+      } else if (!prk50CloseAttemptedRef.current) {
         void runProbe()
       }
     }
@@ -3429,6 +3596,10 @@ export function White2NativeYesNoInteractionProbe({ bridge, rom, romBytes }: { b
       // interaction has a pending context. Restart the guest instead.
       prk50CloseContextRef.current = null
       prk50CloseAttemptedRef.current = false
+      prk51VerifiedClosesRef.current = 0
+      prk51ReopenAttemptedRef.current = false
+      prk51ReopenVerifiedRef.current = false
+      prk51ClosedBaselineRef.current = null
       stateRef.current = null
       metadataCompleteRef.current = false
     }
