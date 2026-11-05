@@ -116,6 +116,15 @@ export class MelonDsBridge implements EmulatorBridge {
       // PRK69: only aggregate per-channel counts, never MACs or payloads.
       radioCurrentChannel: emu.prk69CurrentChannel() >>> 0,
       radioChannelChanges: emu.prk69ChannelChanges() >>> 0,
+      // PRK70: receiver hardware paths; only counts, never MAC addresses.
+      rxBeaconSameLocalMac: emu.prk70BeaconSameMac() >>> 0,
+      rxBeaconDifferentLocalMac: emu.prk70BeaconDifferentMac() >>> 0,
+      rxNativeCompleted: emu.prk70NativeRxFinished() >>> 0,
+      rxDestinationRejected: emu.prk70DestFiltered() >>> 0,
+      rxWepRejected: emu.prk70WepFiltered() >>> 0,
+      rxBeaconBssidMatched: emu.prk70BeaconBssidMatched() >>> 0,
+      rxBeaconHardwareFiltered: emu.prk70BeaconFilterDropped() >>> 0,
+      rxNativeRingIrq: emu.prk70RxRingIrq() >>> 0,
       radioChannels: Array.from({ length: 15 }, (_, channel) => ({
         channel,
         tx: emu.prk69TxChannel(channel) >>> 0,
