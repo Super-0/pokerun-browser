@@ -18,7 +18,8 @@ function mountLauncherButton() {
   if (player || fakeEnabled) return
   const button = document.createElement('button')
   button.type = 'button'
-  button.textContent = 'LAUNCH PLAYER 1 + FAKE REMOTE'
+  button.textContent = 'LEGACY FAKE P2 (NO DS RADIO)'
+  button.title = 'Old one-emulator simulation. For PRK66 use LAUNCH PLAYER 1 + PLAYER 2 in the launcher instead.'
   button.className = 'pixel-button'
   Object.assign(button.style, {
     position: 'fixed',
