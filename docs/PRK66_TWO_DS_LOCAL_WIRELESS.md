@@ -232,9 +232,9 @@ Two independently running games, cumulative counters:
 | TX channels | ch7:36, ch13:35 | ch1:19, ch7:15, ch13:12 |
 | Accepted RX | ch7:15 | none in this capture |
 | Wrong-channel RX | ch1:14 | ch7:33, ch13:1 |
-| RF tuned to | ch?:193, ch1:62, ch7:67, ch13:65 | ch?:209, ch1:67, ch7:73, ch13:70 |
+| RF tuned to | ch?:209, ch1:67, ch7:73, ch13:70 | ch?:193, ch1:62, ch7:67, ch13:65 |
 
-The RF hardware cycles repeatedly through channels **1, 7, 13**.
+RF-tuning rows are attributed by their sum (419 for Player 1 and 387 for Player 2), since the pasted snippets interleaved the two blocks. The RF hardware cycles repeatedly through channels **1, 7, 13**.
 The large channel-0 / invalid entries likely reflect intermediate tuning
 register writes; do not assume the radios are permanently misconfigured.
 The captures are from different points in time and must not be treated
