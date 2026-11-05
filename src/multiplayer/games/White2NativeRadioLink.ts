@@ -3,7 +3,7 @@ import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 // PRK66: ephemeral BroadcastChannel-only experiment. It connects two real
 // melonDS instances in separate tabs of the same browser origin. It is NOT
 // production networking, an Internet relay, or the simulated second trainer.
-const PROTOCOL = 'pokerun-prk66-radio-v1'
+const PROTOCOL = 'pokerun-prk79-radio-v2'
 const HELLO_INTERVAL_MS = 750
 const PEER_EXPIRY_MS = 2500
 const RADIO_POLL_MS = 50
@@ -49,6 +49,7 @@ type Frame = Omit<Hello, 'kind'> & {
   sequence: number
   bytes: Uint8Array
   timestamp: number
+  replyAid: number
 }
 type Message = Hello | Frame
 
@@ -187,16 +188,22 @@ export class White2NativeRadioLink {
       return
     }
     if (!Number.isSafeInteger(value.sequence) || value.sequence <= this.lastSequence ||
+        !Number.isInteger(value.replyAid) || value.replyAid < 0 || value.replyAid > 15 ||
         !(value.bytes instanceof Uint8Array) ||
-        value.bytes.byteLength < MIN_FRAME_BYTES ||
-        value.bytes.byteLength > MAX_FRAME_BYTES ||
+        (value.replyAid === 0 && value.bytes.byteLength < MIN_FRAME_BYTES) ||
+        (value.replyAid !== 0 && value.bytes.byteLength !== 0 &&
+          value.bytes.byteLength < MIN_FRAME_BYTES) ||
+        value.bytes.byteLength > (value.replyAid ? 1024 : MAX_FRAME_BYTES) ||
         !Number.isSafeInteger(value.timestamp) || value.timestamp < 0) {
       this.framesRejected++
       return
     }
     // Native receiver performs its own frame length and fixed-buffer checks.
     try {
-      if (this.bridge.receiveNativeWirelessDevFrame(value.bytes, value.timestamp)) {
+      const received = value.replyAid
+        ? this.bridge.receiveNativeWirelessDevReply(value.bytes, value.timestamp, value.replyAid)
+        : this.bridge.receiveNativeWirelessDevFrame(value.bytes, value.timestamp)
+      if (received) {
         this.lastSequence = value.sequence
         this.framesReceived++
       } else {
@@ -224,8 +231,13 @@ export class White2NativeRadioLink {
           const outgoing = this.bridge.takeNativeWirelessOutgoingFrame()
           if (!outgoing) break
           const bytes = outgoing.bytes
-          if (!(bytes instanceof Uint8Array) || bytes.byteLength < MIN_FRAME_BYTES ||
-              bytes.byteLength > MAX_FRAME_BYTES ||
+          const replyAid = outgoing.replyAid ?? 0
+          if (!(bytes instanceof Uint8Array) ||
+              !Number.isInteger(replyAid) || replyAid < 0 || replyAid > 15 ||
+              (replyAid === 0 && bytes.byteLength < MIN_FRAME_BYTES) ||
+              (replyAid !== 0 && bytes.byteLength !== 0 &&
+                bytes.byteLength < MIN_FRAME_BYTES) ||
+              bytes.byteLength > (replyAid ? 1024 : MAX_FRAME_BYTES) ||
               !Number.isSafeInteger(outgoing.timestamp) || outgoing.timestamp < 0) {
             this.framesRejected++
             continue
@@ -236,6 +248,7 @@ export class White2NativeRadioLink {
             sequence: ++this.sequence,
             bytes,
             timestamp: outgoing.timestamp,
+            replyAid,
           }
           this.channel.postMessage(frame)
           this.framesSent++

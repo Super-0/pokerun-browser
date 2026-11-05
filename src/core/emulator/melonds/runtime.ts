@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v20-prk72-handshake-stage'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v21-prk79-native-replies'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B44
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B45
 export const POKERUN_ARM9_CALL_BUDGET = 1000000
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
@@ -54,8 +54,15 @@ type WasmEmulator = {
   prk65TxAck(): number
   // PRK66 native transport, opt-in only. Frames never enter IndexedDB.
   prk66SetEnabled(enabled: boolean): void
-  prk66TakeOutgoing(): { bytes: Uint8Array; timestamp: number } | null
+  prk66TakeOutgoing(): { bytes: Uint8Array; timestamp: number; replyAid: number } | null
   prk66InjectIncoming(bytes: Uint8Array, timestamp: number): boolean
+  prk79InjectReply(bytes: Uint8Array, timestamp: number, aid: number): boolean
+  prk79ReplyTx(): number
+  prk79ReplyRx(): number
+  prk79HostPoll(): number
+  prk79HostMatch(): number
+  prk79Stale(): number
+  prk79Empty(): number
   prk66TxQueued(): number
   prk66RxQueued(): number
   prk66RxConsumed(): number
@@ -152,6 +159,7 @@ export function loadMelonDsRuntime() {
             'prk70BeaconFilterDropped', 'prk70RxRingIrq',
             'prk71SetFirmwareMacRole', 'prk71AppliedFirmwareMacRole',
             'prk72TxKind', 'prk72RxKind',
+             'prk79InjectReply', 'prk79ReplyTx', 'prk79ReplyRx', 'prk79HostPoll', 'prk79HostMatch', 'prk79Stale', 'prk79Empty',
           ].every(key => typeof (probe as unknown as Record<string, unknown>)[key] === 'function')
           if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET || !hasAtomicStackArgs || !hasPrk63WirelessCounters) {
             reject(new Error(

@@ -102,6 +102,10 @@ export class MelonDsBridge implements EmulatorBridge {
     if (!import.meta.env.DEV) throw new Error('PRK66 radio bridge is development-only.')
     this.assertEmulator().prk66SetEnabled(enabled)
   }
+  receiveNativeWirelessDevReply(bytes: Uint8Array, timestamp: number, aid: number) {
+    if (!import.meta.env.DEV) throw new Error('PRK79 radio replies are development-only.')
+    return this.assertEmulator().prk79InjectReply(bytes, timestamp, aid)
+  }
   takeNativeWirelessOutgoingFrame() {
     if (!import.meta.env.DEV) throw new Error('PRK66 radio bridge is development-only.')
     return this.assertEmulator().prk66TakeOutgoing()
@@ -117,6 +121,12 @@ export class MelonDsBridge implements EmulatorBridge {
       incomingEnqueued: emu.prk66RxQueued() >>> 0,
       incomingConsumed: emu.prk66RxConsumed() >>> 0,
       dropped: emu.prk66FramesDropped() >>> 0,
+      mpRepliesTx: emu.prk79ReplyTx() >>> 0,
+      mpRepliesQueued: emu.prk79ReplyRx() >>> 0,
+      mpReplyHostPolls: emu.prk79HostPoll() >>> 0,
+      mpReplyHostMatched: emu.prk79HostMatch() >>> 0,
+      mpReplyStale: emu.prk79Stale() >>> 0,
+      mpReplyEmpty: emu.prk79Empty() >>> 0,
       firmwareRoleApplied: emu.prk71AppliedFirmwareMacRole() >>> 0,
       // PRK72: TX raw-radio callbacks vs native RX-ring/IRQ deliveries.
       // One counter per frame type, no packet data exposed.

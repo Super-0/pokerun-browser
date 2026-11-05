@@ -7,6 +7,7 @@ import { applyPrk69ChannelAudit } from './prk69-native-channel-audit.mjs'
 import { applyPrk70ReceiveDeliveryAudit } from './prk70-native-delivery-audit.mjs'
 import { applyPrk71FirmwareMacIdentity } from './prk71-firmware-mac-identity.mjs'
 import { applyPrk72HandshakeStageAudit } from './prk72-handshake-stage-audit.mjs'
+import { applyPrk79NativeMpReplies } from './prk79-native-mp-replies.mjs'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
 const source = resolve(root, 'third_party/ds-anywhere')
@@ -41,6 +42,8 @@ const requiredRuntimeSymbols = [
   'prk70BeaconFilterDropped', 'prk70RxRingIrq',
   'prk71SetFirmwareMacRole', 'prk71AppliedFirmwareMacRole',
   'prk72TxKind', 'prk72RxKind',
+  'prk79InjectReply', 'prk79ReplyTx', 'prk79ReplyRx', 'prk79HostPoll',
+  'prk79HostMatch', 'prk79Stale', 'prk79Empty',
 ]
 
 function run(command, args, cwd = root) { execFileSync(command, args, { cwd, stdio: 'inherit' }) }
@@ -190,6 +193,7 @@ try {
   applyPrk70ReceiveDeliveryAudit(source)
   applyPrk71FirmwareMacIdentity(source)
   applyPrk72HandshakeStageAudit(source)
+  applyPrk79NativeMpReplies(source)
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')
@@ -216,7 +220,7 @@ try {
       !patchedCpp.includes('arm.R[13] = injectedSp;')) {
     throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
   }
-  if (!patchedCpp.includes('return 0x50524B44;')) {
+  if (!patchedCpp.includes('return 0x50524B45;')) {
     throw new Error('PokéRun melonDS patch did not install the PRK72 runtime stamp.')
   }
 
