@@ -286,3 +286,69 @@ Test with two *different disposable* battery save slots and a verified
 matching White 2 ROM. Stop radio before leaving the page, rebuild WASM,
 restart dev server, and enable PRK66 on both tabs. Compare PRK70 counters
 with PRK67 and PRK69, and **do not invoke overlay 194 or trade**.
+
+
+## PRK70 live result — duplicate firmware wireless identities found
+
+Two independently running genuine White 2 emulator tabs, in the same
+PRK66 browser-local room:
+
+| PRK70 counter | Player 1 | Player 2 |
+|---|---:|---:|
+| Incoming beacon sender = own MAC | 34 | 76 |
+| Incoming beacon sender differs | 0 | 0 |
+| Native Wi-Fi RX completed | 24 | 25 |
+| Native RX ring interrupt | 24 | 25 |
+| Destination filtered | 0 | 0 |
+| WEP filtered | 0 | 0 |
+| Beacon BSSID matched | 0 | 24 |
+| Beacon RX-filter rejected | 0 | 0 |
+
+Both native receive paths delivered frames through IRQ 0, but **every**
+incoming beacon compared equal to the receiver's own MAC. This strongly
+indicates both emulator instances generated the same DS wireless identity,
+rather than behaving like two independent consoles. BSSID matches alone
+do not imply peer association.
+
+The upstream default firmware includes a static
+`Firmware::FirmwareHeader::MacAddr` (its default constant is in
+`SPI_Firmware.h`). `WasmFirmwareSettings::toFirmware()` constructs that
+firmware separately for every `WasmEmulator`, but did not distinguish
+players. `WasmEmulator::loadFreeBIOS()` installs it before ROM boot.
+
+## PRK71 — per-DS firmware identity fix (next live test)
+
+PRK71 changes the **in-memory generated firmware only**. The new
+`WasmEmulator::prk71SetFirmwareMacRole(role)` is called **before**
+`loadFreeBIOS()`, and its `genFirmware()` assigns two distinct
+unicast locally administered MAC addresses for roles 1 and 2, updating
+the Wi-Fi firmware checksum via `Firmware::UpdateChecksums()`.
+
+- Applied only by the real P1/P2 dev launcher with the verified White 2
+  ROM. Never applied to the simulated fake player or normal single-player
+  browsing.
+- Never writes back a firmware file, battery save, game ROM or Pokémon.
+- Immutable once the current emulator generated its firmware.
+- The radio bridge refuses to start unless the local applied firmware
+  role matches its actual P1/P2 tab, and its peer advertises the opposite
+  role. MAC bytes are not logged or sent via the protocol.
+- The PRK71 UI shows **firmware role applied** plus the existing PRK70
+  *actual wireless frame MAC-equality* diagnostic. The role is an
+  initialization acknowledgement, not proof of on-air correctness.
+- Existing RF channel and receive instrumentation remains in place.
+
+**Expected test:** after a fresh native WASM rebuild and full restart,
+launch two independent disposable saves, then start PRK66 on both game
+tabs and activate C-Gear Wireless. Both should show PRK71 role P1/P2.
+The PRK70 readings should switch toward **same MAC = 0** and
+**different MAC > 0** as each receives the other console's beacons.
+An unchanged same-MAC result would indicate firmware identities did not
+reach the in-game Wi-Fi transmitter correctly; stop and investigate.
+Check PRK67 accepted beacons, PRK70 downstream IRQ and association
+responses as before. **Do not attempt a native trade yet**.
+
+Pinned source patch-chain rewrite for PRK63 → PRK65 → PRK66 → PRK67
+→ PRK69 → PRK70 → PRK71 passes all exact-source context guards.
+The resulting firmware identity build stamp is `0x50524B43`.
+The C++ compile and in-game PRK71 behavior remain **unverified**
+until tested in the user's Codespace.
