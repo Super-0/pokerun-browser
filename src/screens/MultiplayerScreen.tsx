@@ -390,7 +390,8 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
         </section>
         <White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/><White2NativeWirelessResearchPanel bridge={bridge} rom={localRomIdentity}
           roomCode={room.code} startId={room.gameStart!.startId}
-          localPlayerId={session.localPlayerId} remotePlayerId={remote?.id ?? null}/><section className="multiplayer-debug multiplayer-session-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></>}
+          localPlayerId={session.localPlayerId} remotePlayerId={remote?.id ?? null}
+          saveProfileId={saveProfileId ?? null}/><section className="multiplayer-debug multiplayer-session-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></>}
     </div>
   </main>
 }
