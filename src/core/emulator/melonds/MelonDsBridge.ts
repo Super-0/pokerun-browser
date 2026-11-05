@@ -71,6 +71,16 @@ export class MelonDsBridge implements EmulatorBridge {
       mpRxPolls: emu.prk63MpRxPolls() >>> 0,
       mpHostRxPolls: emu.prk63MpHostRxPolls() >>> 0,
       netTxAttempts: emu.prk63NetTxCalls() >>> 0,
+      // PRK65: Frame-control classifications, not packet payloads.
+      txManagement: emu.prk65TxMgmt() >>> 0,
+      txControl: emu.prk65TxControl() >>> 0,
+      txData: emu.prk65TxData() >>> 0,
+      txEmptyOrInvalid: emu.prk65TxInvalid() >>> 0,
+      txBeacons: emu.prk65TxBeacon() >>> 0,
+      txProbes: emu.prk65TxProbe() >>> 0,
+      txMpCommands: emu.prk65TxCommand() >>> 0,
+      txMpReplies: emu.prk65TxReply() >>> 0,
+      txMpAcks: emu.prk65TxAck() >>> 0,
     }
   }
   subscribeEmulatedFrame(listener: () => void) {
