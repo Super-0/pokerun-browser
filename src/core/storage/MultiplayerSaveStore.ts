@@ -118,7 +118,7 @@ class MultiplayerSaveStore {
   /**
    * PRK63: a test save is independent of the source battery save, but it
    * references the source cartridge ROM rather than copying ROM bytes.
-   * Resolving the chain to its oldest available root avoids alias chains.
+   * Restore follows a bounded, cycle-guarded alias chain as necessary.
    */
   createDerived(sourceProfileId: string, rom: LoadedRom, identity: MultiplayerRomIdentity) {
     const profiles = readProfiles()
@@ -127,16 +127,10 @@ class MultiplayerSaveStore {
         source.gameId !== identity.gameId || identity.status !== 'verified') {
       throw new Error('Cannot create a test save: the source ROM profile does not match.')
     }
-    let root = source
-    const visited = new Set<string>([root.id])
-    while (root.romSourceProfileId) {
-      const parent = profiles.find(profile => profile.id === root.romSourceProfileId)
-      if (!parent || parent.romSha256 !== rom.sha256 || parent.gameId !== source.gameId ||
-          visited.has(parent.id)) break
-      root = parent
-      visited.add(root.id)
-    }
-    return this.createProfile(source.gameId, rom, identity, root.id)
+    // Refer to the immediate source, not its oldest ancestor: if an old
+    // ancestor's IndexedDB ROM was lost during a reload, but the source was
+    // later repaired by reattaching an .nds, the child can still resolve it.
+    return this.createProfile(source.gameId, rom, identity, source.id)
   }
 
   /** Restore a missing local cartridge without touching this profile's
