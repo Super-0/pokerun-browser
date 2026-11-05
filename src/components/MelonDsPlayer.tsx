@@ -201,6 +201,15 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
     let cancelled = false
     const bridge = new MelonDsBridge()
     bridgeRef.current = bridge
+    // PRK71: only two genuine, pinned White 2 DEV player tabs receive
+    // distinct in-memory firmware identities. The fake peer is not a DS.
+    const devArgs = new URLSearchParams(window.location.search)
+    const realPlayerRole = devArgs.get('fake') !== '1'
+      ? devArgs.get('player') : null
+    if (import.meta.env.DEV && isNativeWhite2 &&
+        (realPlayerRole === '1' || realPlayerRole === '2')) {
+      bridge.setDevWirelessFirmwareRole(realPlayerRole === '1' ? 1 : 2)
+    }
     bridge.setSpeedMultiplier(speedRef.current)
     if (saveKey) bridge.setSaveKey(saveKey)
     bridge.setBatterySaveListener(onBatterySave ?? null)
