@@ -93,7 +93,7 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
       if (identity.status !== 'verified' || identity.sha256 !== sourceProfile.romSha256) {
         throw new Error('Cannot import into a save slot with a different ROM fingerprint.')
       }
-      created = multiplayerSaveStore.create(roomGame.id, rom, identity)
+      created = multiplayerSaveStore.createDerived(sourceProfile.id, rom, identity)
       await multiplayerSaveStore.saveBatterySave(created.id, bytes)
       refreshSavedGames()
       console.info('[PokéRun save] PRK63 EDITED SAVE IMPORTED AS NEW PROFILE', {
@@ -214,12 +214,13 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
       if (identity.status !== 'verified' || identity.sha256 !== localRomIdentity.sha256) {
         throw new Error('The currently running White 2 ROM is not the verified source.')
       }
-      created = multiplayerSaveStore.create(roomGame.id, loadedRom, identity)
+      created = multiplayerSaveStore.createDerived(saveProfileId, loadedRom, identity)
       await multiplayerSaveStore.saveBatterySave(created.id, bytes)
 
       // The original save keeps its own profile ID and stored battery file.
       // Only the chosen automatic launch slot is updated, after creation
-      // and save-storage commit both succeed.
+      // and save-storage commit both succeed. ROM bytes remain in the
+      // original profile's existing IndexedDB record.
       const selectionKey = `pokerun-multiplayer-dev-save-player-${player}-v1`
       localStorage.setItem(selectionKey, created.id)
       console.info('[PokéRun save] PRK63 AUTO TEST SLOT PREPARED', {
