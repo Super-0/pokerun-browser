@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
 import { White2PartyStructureProbe } from '../multiplayer/games/White2PartyStructureProbe'
+import { White2NativeRadioLink, type NativeRadioLinkStatus } from '../multiplayer/games/White2NativeRadioLink'
 
 // PRK63: one-emulator feasibility experiment. These are counters in the
 // pinned WASM Wi-Fi callbacks, NOT evidence of a connected second DS.
@@ -29,22 +30,56 @@ const rows: { key: keyof Counters; label: string; note: string }[] = [
   { key: 'txEmptyOrInvalid', label: 'EMPTY/INVALID TX BUFFERS', note: 'Includes zero-length reply requests; not necessarily an error' },
 ]
 
-export function White2NativeWirelessResearchPanel({ bridge, rom }: {
+export function White2NativeWirelessResearchPanel({
+  bridge, rom, roomCode, startId, localPlayerId, remotePlayerId,
+}: {
   bridge: MelonDsBridge | null
   rom: MultiplayerRomIdentity
+  roomCode: string
+  startId: string
+  localPlayerId: string
+  remotePlayerId: string | null
 }) {
   const [baseline, setBaseline] = useState<Capture | null>(null)
   const [after, setAfter] = useState<Capture | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [radioStatus, setRadioStatus] = useState<NativeRadioLinkStatus | null>(null)
+  const [radioError, setRadioError] = useState<string | null>(null)
+  const radioLink = useRef<White2NativeRadioLink | null>(null)
   useEffect(() => {
     setBaseline(null)
     setAfter(null)
     setError(null)
   }, [bridge, rom.sha256])
 
+  useEffect(() => () => {
+    radioLink.current?.stop()
+    radioLink.current = null
+  }, [bridge, rom.sha256, roomCode, startId, localPlayerId, remotePlayerId])
+
   if (!import.meta.env.DEV) return null
 
   const eligible = bridge?.status === 'running' && White2PartyStructureProbe.supportsRom(rom)
+
+  function startRadioLink() {
+    if (!bridge || !eligible || !remotePlayerId || !rom.sha256 || radioLink.current) return
+    try {
+      setRadioError(null)
+      const link = new White2NativeRadioLink(bridge, {
+        roomCode, startId, localPlayerId, remotePlayerId, romSha256: rom.sha256,
+      }, setRadioStatus)
+      radioLink.current = link
+      link.start()
+    } catch (error) {
+      radioLink.current?.stop()
+      radioLink.current = null
+      setRadioError(error instanceof Error ? error.message : String(error))
+    }
+  }
+  function stopRadioLink() {
+    radioLink.current?.stop()
+    radioLink.current = null
+  }
 
   function capture(kind: 'baseline' | 'after') {
     if (!eligible || !bridge) return
@@ -144,10 +179,49 @@ export function White2NativeWirelessResearchPanel({ bridge, rom }: {
         </p>
       </div>}
       <p style={{ fontSize: 11, opacity: 0.75 }}>
-        PRK63/65 transports zero packets and never exports wireless payloads,
-        Pokémon records or save bytes. No actual trade is possible in this
-        experiment. This is the prerequisite to a future virtual DS-to-DS link.
+        PRK63/65 counters work independently of PRK66. With PRK66 stopped,
+        no wireless packets are transported. No native trade is possible yet.
       </p>
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #9bacb9' }}>
+        <h3 style={{ fontSize: 14 }}>PRK66 • EXPERIMENTAL TWO-DS LOCAL RADIO</h3>
+        <p style={{ fontSize: 12 }}>
+          Requires <strong>two actual running melonDS game tabs</strong> in the
+          same PokeRun room, on the same browser origin, using the same White 2 ROM.
+          The fake P2 trainer cannot connect. Start this on both real player tabs.
+          Raw emulated Wi-Fi frames stay in this browser's BroadcastChannel.
+          This is a risky research experiment: use backed-up disposable saves.
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button type="button" disabled={!eligible || !remotePlayerId || Boolean(radioLink.current)}
+            onClick={startRadioLink}>START LOCAL DS RADIO</button>
+          <button type="button" disabled={!radioLink.current} onClick={stopRadioLink}>
+            STOP & CLEAR RADIO QUEUES
+          </button>
+        </div>
+        {radioError && <p className="form-error" role="alert">{radioError}</p>}
+        {radioStatus && <div role="status" style={{ fontSize: 12, marginTop: 8 }}>
+          <strong>{radioStatus.phase.toUpperCase()}</strong>
+          {' '}— {radioStatus.peerPresent
+            ? 'A matching real emulator tab responded. Radio frames can now be exchanged.'
+            : 'Awaiting an opted-in, verified real DS peer.'}
+          <p>Browser TX {radioStatus.framesSent} • Browser RX accepted {radioStatus.framesReceived}
+            {' '}• Browser RX rejected {radioStatus.framesRejected}</p>
+          {radioStatus.native && <p>
+            Native TX queued {radioStatus.native.outgoingEnqueued}
+            {' '}• Native RX queued {radioStatus.native.incomingEnqueued}
+            {' '}• Native RX consumed {radioStatus.native.incomingConsumed}
+            {' '}• Native queue drops {radioStatus.native.dropped}
+          </p>}
+          {radioStatus.reason && <p className="form-error">{radioStatus.reason}</p>}
+        </div>}
+        <p style={{ fontSize: 11, opacity: 0.75 }}>
+          Linked means only that two browser tabs exchanged control messages.
+          Native RX consumed is stronger evidence that an actual emulator read
+          incoming bytes. Neither means White 2 discovered the other trainer,
+          entered the Union Room, or completed a trade. Stop the link before
+          closing a game tab.
+        </p>
+      </div>
     </details>
   </section>
 }
