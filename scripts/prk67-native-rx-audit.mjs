@@ -37,7 +37,7 @@ export function applyPrk67NativeRxAudit(source) {
     melonDS::u32 prk67RxBeacon() const { return prk67RxBeaconCount.load(std::memory_order_relaxed); }
     melonDS::u32 prk67RxAssocAccepted() const { return prk67RxAssocAcceptedCount.load(std::memory_order_relaxed); }`)
 
-  replaceUnique(platform, '  // NetPlay interface (going to likely remain unimplemented)',
+  replaceUnique(platform, '  int Net_SendPacket(u8*, int, void* userdata) {',
     `  // PRK67 observations are called from the native Wifi::CheckRX path,
   // ONLY for a successfully dequeued PRK66 host-radio frame.
   void PokerunPrk67RecordRx(void* userdata, int kind) {
@@ -53,7 +53,7 @@ export function applyPrk67NativeRxAudit(source) {
     }
   }
 
-  // NetPlay interface (going to likely remain unimplemented)`)
+  int Net_SendPacket(u8*, int, void* userdata) {`)
 
   replaceUnique(wifi, '#include "Platform.h"\n\nnamespace melonDS',
     `#include "Platform.h"
