@@ -36,6 +36,7 @@ type Hello = {
   startId: string
   romSha256: string
   saveProfileId: string
+  firmwareRole: 1 | 2
   fromId: string
   toId: string
   sessionNonce: string
@@ -56,6 +57,7 @@ type Message = Hello | Frame
 export class White2NativeRadioLink {
   private readonly channel: BroadcastChannel
   private readonly localNonce = crypto.randomUUID()
+  private readonly firmwareRole: 1 | 2
   private readonly options: NativeRadioLinkOptions
   private readonly bridge: MelonDsBridge
   private readonly onStatus: (status: NativeRadioLinkStatus) => void
@@ -82,6 +84,14 @@ export class White2NativeRadioLink {
         !options.saveProfileId || !/^[0-9a-f]{64}$/i.test(options.romSha256)) {
       throw new Error('PRK66 requires a valid room, two distinct player IDs, and a verified ROM.')
     }
+    // PRK71: prevent claiming an actual two-DS link when either instance
+    // booted with the duplicate stock firmware MAC. Never expose MAC bytes.
+    const pageRole = new URLSearchParams(window.location.search).get('player')
+    const applied = bridge.getNativeWirelessDevLinkCounters().firmwareRoleApplied
+    if (!((pageRole === '1' && applied === 1) || (pageRole === '2' && applied === 2))) {
+      throw new Error('PRK71 requires a real Player 1/2 tab with distinct firmware identity. Relaunch both players after rebuilding melonDS.')
+    }
+    this.firmwareRole = applied as 1 | 2
     this.bridge = bridge
     this.options = options
     this.onStatus = onStatus
@@ -121,6 +131,7 @@ export class White2NativeRadioLink {
       startId: this.options.startId,
       romSha256: this.options.romSha256,
       saveProfileId: this.options.saveProfileId,
+      firmwareRole: this.firmwareRole,
       fromId: this.options.localPlayerId,
       toId: this.options.remotePlayerId,
       sessionNonce: this.localNonce,
@@ -139,6 +150,7 @@ export class White2NativeRadioLink {
       v.romSha256 === this.options.romSha256 &&
       typeof v.saveProfileId === 'string' &&
       v.saveProfileId.length > 0 && v.saveProfileId !== this.options.saveProfileId &&
+      v.firmwareRole === (this.firmwareRole === 1 ? 2 : 1) &&
       v.fromId === this.options.remotePlayerId &&
       v.toId === this.options.localPlayerId &&
       typeof v.sessionNonce === 'string' && v.sessionNonce.length >= 12
