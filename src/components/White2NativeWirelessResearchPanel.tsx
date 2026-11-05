@@ -63,7 +63,12 @@ export function White2NativeWirelessResearchPanel({
   const eligible = bridge?.status === 'running' && White2PartyStructureProbe.supportsRom(rom)
 
   function startRadioLink() {
-    if (!bridge || !eligible || !remotePlayerId || !rom.sha256 || !saveProfileId || radioLink.current) return
+    if (!bridge || !eligible || !remotePlayerId || !rom.sha256 || !saveProfileId) return
+    if (radioLink.current) {
+      if (radioStatus?.phase !== 'stopped' && radioStatus?.phase !== 'error') return
+      radioLink.current.stop()
+      radioLink.current = null
+    }
     try {
       setRadioError(null)
       const link = new White2NativeRadioLink(bridge, {
@@ -195,7 +200,8 @@ export function White2NativeWirelessResearchPanel({
           This is a risky research experiment: use backed-up disposable saves.
         </p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button type="button" disabled={!eligible || !remotePlayerId || !saveProfileId || Boolean(radioLink.current)}
+          <button type="button" disabled={!eligible || !remotePlayerId || !saveProfileId ||
+              Boolean(radioLink.current && radioStatus?.phase !== 'stopped' && radioStatus?.phase !== 'error')}
             onClick={startRadioLink}>START LOCAL DS RADIO</button>
           <button type="button" disabled={!radioLink.current} onClick={stopRadioLink}>
             STOP & CLEAR RADIO QUEUES
