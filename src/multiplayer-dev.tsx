@@ -32,13 +32,6 @@ function buttonByText(...labels: string[]) {
   }) ?? null
 }
 
-function setControlledInput(input: HTMLInputElement, value: string) {
-  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
-  setter?.call(input, value)
-  input.dispatchEvent(new Event('input', { bubbles: true }))
-  input.dispatchEvent(new Event('change', { bubbles: true }))
-}
-
 function savedProfileForPlayer(player: 1 | 2) {
   const profileId = localStorage.getItem(DEV_SAVE_KEYS[player])
   if (!profileId) return null
@@ -82,6 +75,15 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
       setAutoStatus(next)
     }
 
+    function retryJoin(code: string) {
+      const now = Date.now()
+      if (now - lastJoinAt < AUTO_RETRY_MS) return
+      lastJoinAt = now
+      // The dev-only listener in MultiplayerScreen calls session.join(code).
+      // Repeating this message is safe until the host confirms the guest.
+      window.dispatchEvent(new CustomEvent('pokerun:dev-join-room', { detail: { code } }))
+    }
+
     function retryReady(button: HTMLButtonElement) {
       const now = Date.now()
       if (button.disabled || now - lastReadyAt < AUTO_RETRY_MS) return
@@ -113,6 +115,16 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
           activeRoomCode = ''
           lastSaveAt = 0
           return
+        }
+
+        if (player === 2) {
+          const confirmed = document.querySelector<HTMLElement>('.multiplayer-lobby')
+            ?.dataset.pokerunRealPeerConfirmed === 'true'
+          if (!confirmed) {
+            status('WAITING FOR HOST ROOM ACK • RETRYING JOIN')
+            retryJoin(visibleRoomCode)
+            return
+          }
         }
 
         const playerCards = [...document.querySelectorAll<HTMLElement>('.lobby-player')]
@@ -190,6 +202,12 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
 
         const ready = buttonByText('READY')
         if (ready) {
+          if (ready.disabled) {
+            status(player === 1
+              ? 'WAITING FOR REAL P2 TO JOIN / VERIFY ROM'
+              : 'WAITING FOR ROOM COMPATIBILITY')
+            return
+          }
           status('READYING')
           retryReady(ready)
           return
@@ -253,24 +271,11 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
         return
       }
 
-      const input = document.querySelector<HTMLInputElement>('input[aria-label="Room code"]')
-      if (!input) {
-        status('WAITING FOR JOIN ROOM UI')
-        return
-      }
-
-      if (input.value.trim().toUpperCase() !== sharedRoomCode) setControlledInput(input, sharedRoomCode)
-      status(`JOINING ${sharedRoomCode}`)
-      if (now - lastJoinAt < AUTO_RETRY_MS) return
-      lastJoinAt = now
-
-      window.setTimeout(() => {
-        if (cancelled) return
-        const currentInput = document.querySelector<HTMLInputElement>('input[aria-label="Room code"]')
-        if (!currentInput || currentInput.value.trim().toUpperCase() !== sharedRoomCode) return
-        const join = buttonByText('JOIN')
-        if (join && !join.disabled) join.click()
-      }, 80)
+      // PRK68: join directly through the already-connected session, rather
+      // than synthesize keypresses in a controlled React input and hope
+      // state has settled by the time the JOIN button is clicked.
+      status(`JOINING REAL HOST ROOM ${sharedRoomCode}`)
+      retryJoin(sharedRoomCode)
     }
 
     const timer = window.setInterval(tick, 100)
