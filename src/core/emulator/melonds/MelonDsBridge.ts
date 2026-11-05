@@ -113,6 +113,16 @@ export class MelonDsBridge implements EmulatorBridge {
       wifiMpFiltered: emu.prk67RxMpFiltered() >>> 0,
       wifiBeaconsAccepted: emu.prk67RxBeacon() >>> 0,
       wifiAssociationAccepted: emu.prk67RxAssocAccepted() >>> 0,
+      // PRK69: only aggregate per-channel counts, never MACs or payloads.
+      radioCurrentChannel: emu.prk69CurrentChannel() >>> 0,
+      radioChannelChanges: emu.prk69ChannelChanges() >>> 0,
+      radioChannels: Array.from({ length: 15 }, (_, channel) => ({
+        channel,
+        tx: emu.prk69TxChannel(channel) >>> 0,
+        accepted: emu.prk69AcceptedChannel(channel) >>> 0,
+        rejected: emu.prk69WrongChannel(channel) >>> 0,
+        tuned: emu.prk69TunedChannel(channel) >>> 0,
+      })),
     }
   }
 
