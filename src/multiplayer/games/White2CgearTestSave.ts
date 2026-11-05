@@ -9,6 +9,15 @@ const CGEAR_LENGTH = 0x94
 const CGEAR_ON_OFFSET = CGEAR_START + 0x2f
 const CGEAR_CRC_OFFSET = 0x1c096
 const CGEAR_MIRROR_OFFSET = 0x25f40
+// White 2's save footer also authenticates the entire per-block CRC table.
+// Earlier PRK63 builds checked only the C-Gear block and mistakenly accepted
+// a corrupt table footer. See src/gfl/backup_system.c in pokebw2 decomp.
+const CRC_TABLE_OFFSET = 0x25f00
+const CRC_TABLE_LENGTH = 0x94 // 74 16-bit block CRC entries
+const MAIN_FOOTER_OFFSET = 0x25f94
+const MAIN_FOOTER_CRC_OFFSET = 0x25fa2
+const MAIN_FOOTER_SIZE = 0x25fa4
+const MAIN_FOOTER_MAGIC = 0x31053527
 
 function crc16Ccitt(data: Uint8Array) {
   let crc = 0xffff
@@ -40,6 +49,17 @@ export function validateWhite2CgearTestSave(bytes: Uint8Array) {
     const mirror = view.getUint16(region + CGEAR_MIRROR_OFFSET, true)
     if (crc !== expected || crc !== mirror) {
       throw new Error('C-Gear block checksum mismatch. Refusing to import the test save.')
+    }
+    if (view.getUint32(region + MAIN_FOOTER_OFFSET + 4, true) !== MAIN_FOOTER_SIZE ||
+        view.getUint32(region + MAIN_FOOTER_OFFSET + 8, true) !== MAIN_FOOTER_MAGIC) {
+      throw new Error('White 2 main save footer size/magic mismatch. The edited test save cannot be imported.')
+    }
+    const tableCrc = crc16Ccitt(bytes.subarray(
+      region + CRC_TABLE_OFFSET,
+      region + CRC_TABLE_OFFSET + CRC_TABLE_LENGTH,
+    ))
+    if (tableCrc !== view.getUint16(region + MAIN_FOOTER_CRC_OFFSET, true)) {
+      throw new Error('White 2 main save footer checksum mismatch. The old PRK63 edited file is corrupt; download the repaired test save instead.')
     }
   }
 }
