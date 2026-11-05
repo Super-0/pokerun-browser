@@ -63,6 +63,14 @@ class RomSessionStore {
     })
   }
 
+  /** Explicit repair/reattachment path. Unlike set(), this does not return
+   * until the browser has committed the ROM to IndexedDB. Never reload early.
+   */
+  async setAndPersist(runId: string, rom: LoadedRom) {
+    await this.persist(runId, rom)
+    this.roms.set(runId, rom)
+  }
+
   get(runId: string) {
     return this.roms.get(runId) ?? null
   }
