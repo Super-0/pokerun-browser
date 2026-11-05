@@ -14,6 +14,8 @@ export type MultiplayerSaveProfile = {
   gameId: GameId
   fileName: string
   romSha256: string
+  /** Optional shared ROM source. Derived saves keep independent battery bytes. */
+  romSourceProfileId?: string
   title?: string
   gameCode?: string
   createdAt: string
@@ -72,7 +74,7 @@ class MultiplayerSaveStore {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
-  create(gameId: GameId, rom: LoadedRom, identity: MultiplayerRomIdentity) {
+  private createProfile(gameId: GameId, rom: LoadedRom, identity: MultiplayerRomIdentity, romSourceProfileId?: string) {
     const profiles = readProfiles()
     const now = new Date().toISOString()
     const slotNumber = Math.max(0, ...profiles.filter(profile => profile.gameId === gameId).map(profile => profile.slotNumber)) + 1
@@ -82,18 +84,95 @@ class MultiplayerSaveStore {
       gameId,
       fileName: rom.fileName,
       romSha256: rom.sha256,
+      ...(romSourceProfileId ? { romSourceProfileId } : {}),
       title: identity.title,
       gameCode: identity.gameCode,
       createdAt: now,
       updatedAt: now,
     }
     writeProfiles([...profiles, profile])
-    romSessionStore.set(romKey(profile.id), rom)
+    // Only an independent ROM slot owns separate ROM bytes in IndexedDB.
+    // Derived .sav profiles reuse an existing ROM and must never start a
+    // second, unawaited 500 MB storage write just before a page reload.
+    if (!romSourceProfileId) romSessionStore.set(romKey(profile.id), rom)
     return profile
   }
 
+  create(gameId: GameId, rom: LoadedRom, identity: MultiplayerRomIdentity) {
+    return this.createProfile(gameId, rom, identity)
+  }
+
+  /**
+   * PRK63: a test save is independent of the source battery save, but it
+   * references the source cartridge ROM rather than copying ROM bytes.
+   * Resolving the chain to its oldest available root avoids alias chains.
+   */
+  createDerived(sourceProfileId: string, rom: LoadedRom, identity: MultiplayerRomIdentity) {
+    const profiles = readProfiles()
+    const source = profiles.find(profile => profile.id === sourceProfileId)
+    if (!source || source.romSha256 !== rom.sha256 ||
+        source.gameId !== identity.gameId || identity.status !== 'verified') {
+      throw new Error('Cannot create a test save: the source ROM profile does not match.')
+    }
+    let root = source
+    const visited = new Set<string>([root.id])
+    while (root.romSourceProfileId) {
+      const parent = profiles.find(profile => profile.id === root.romSourceProfileId)
+      if (!parent || parent.romSha256 !== rom.sha256 || parent.gameId !== source.gameId ||
+          visited.has(parent.id)) break
+      root = parent
+      visited.add(root.id)
+    }
+    return this.createProfile(source.gameId, rom, identity, root.id)
+  }
+
   async restoreRom(profileId: string) {
-    return romSessionStore.restore(romKey(profileId))
+    const profiles = readProfiles()
+    const selected = profiles.find(profile => profile.id === profileId)
+    if (!selected) return null
+    const visited = new Set<string>()
+    const resolve = async (id: string): Promise<LoadedRom | null> => {
+      if (visited.has(id)) return null
+      visited.add(id)
+      const candidate = profiles.find(profile => profile.id === id)
+      if (!candidate || candidate.gameId !== selected.gameId ||
+          candidate.romSha256 !== selected.romSha256) return null
+      if (candidate.romSourceProfileId) {
+        const sourced = await resolve(candidate.romSourceProfileId)
+        if (sourced) return sourced
+      }
+      const found = await romSessionStore.restore(romKey(id))
+      return found?.sha256 === selected.romSha256 ? found : null
+    }
+
+    const existing = await resolve(profileId)
+    if (existing) return existing
+
+    // Recovery for test profiles created before PRK63's shared-ROM fix:
+    // their local profile and .sav persisted, but the second ROM write could
+    // be interrupted by reload. Find an older verified same-game ROM already
+    // stored in this browser and remember it as the shared source.
+    const candidates = profiles
+      .filter(profile => profile.gameId === selected.gameId &&
+        profile.romSha256 === selected.romSha256 && profile.id !== profileId)
+      .sort((a, b) => a.slotNumber - b.slotNumber)
+    for (const candidate of candidates) {
+      const recovered = await resolve(candidate.id)
+      if (!recovered) continue
+      writeProfiles(readProfiles().map(profile =>
+        profile.id === profileId
+          ? { ...profile, romSourceProfileId: candidate.id }
+          : profile,
+      ))
+      console.info('[PokéRun save] PRK63 RECOVERED SHARED ROM SOURCE', {
+        repairedSlot: selected.slotNumber,
+        sourceSlot: candidate.slotNumber,
+        fingerprintMatched: true,
+        batterySaveUnchanged: true,
+      })
+      return recovered
+    }
+    return null
   }
 
   async loadBatterySave(profileId: string) {
