@@ -421,3 +421,73 @@ capture packet bytes, MACs, trainer data, or save bytes. It requires a
 fresh native WASM build; source-patch context validation passed against
 the pinned upstream revision. Native C++ compilation and actual in-game
 PRK72 results are not yet verified.
+
+
+## PRK72 actual results and PRK73 active Union Room test
+
+Two actual White 2 DS instances using distinct PRK71 radio identities
+successfully sent and accepted each other's **802.11 beacons**:
+
+| PRK72 frame category | Player 1 (TX / hardware RX) | Player 2 (TX / hardware RX) |
+|---|---:|---:|
+| Beacons | 188 / 56 | 333 / 67 |
+| Probe request/response | 0 / 0 | 0 / 0 |
+| Authentication | 0 / 0 | 0 / 0 |
+| Association (request/response) | 0 / 0 | 0 / 0 |
+| Data, control, other | 0 / 0 | 0 / 0 |
+| Incoming beacon uses local MAC | 0 | 0 |
+| Incoming beacon uses different MAC | 237 | 140 |
+
+The counters demonstrate correct network-level radio frame delivery to
+the emulated receive ring. **No explicit connection handshake was
+attempted in the tested C-Gear state.** This does not prove the game
+networking stack is defective: an idle C-Gear scans and sends beacons,
+while actual native wireless gameplay starts when the user enters a
+wireless activity. A beacon passing RX IRQ does not prove the game
+recognizes the sender as a nearby trainer.
+
+Evidence from White 2's own original text
+(`fuddlesworth/pokebw2/res/text/system/title_8.txt`):
+- `Title8_Text_ThroughUnionRoomWhen`: local trades through the Union Room
+  on Pokémon Center 2F.
+- `Title8_Text_UnionRoomCanTrade`: enter the room on the left, and talk
+  to trainers inside.
+- `Title8_Text_WhenCGearTurned`: C-Gear ON keeps wireless
+  communications enabled, which is not itself entering a Union Room.
+
+### PRK73 experiment: normal in-game Union Room entry, **no new WASM**
+
+Use *two distinct authentic test playthroughs* with different trainer
+identities. Both need the Basic Badge, C-Gear obtained from Bianca, and
+legitimate access to Pokémon Center 2F. A cloned P2 save will initially
+retain the same trainer identity as P1, so is not a conclusive test.
+Some PRK63 research saves had C-Gear manually enabled before the Basic
+Badge—such test copies may not qualify. Do not change event flags or
+copy Pokémon / party / trainer blocks to "fix" progression.
+
+1. Back up both independently progressed saves first.
+2. Launch two real emulator tabs, confirming PRK71 applied roles 1/2.
+3. On both tabs, START LOCAL DS RADIO (PRK66) before entering the native
+   wireless interaction. Keep the game at normal 1x if possible and
+   avoid background-tab throttling when interpreting timing.
+4. Enter the actual **in-game** Union Room on Pokémon Center **2F**
+   (left desk) in both games; follow any normal game instructions about
+   C-Gear state. This is **not** the PokeRun browser multiplayer lobby.
+5. Compare PRK72 TX and native RX rows again after entering/waiting in
+   the Union Room. Note exact in-game status/messages, whether a second
+   trainer appears, and whether the game's union-room population changes.
+6. If the game refuses to enter, record that prerequisite/blocker rather
+   than editing the save. If no non-beacon frames appear inside the real
+   Union Room, then examine White 2's Union Room network initialization
+   path, Wi-Fi discovery transport timing and host/MP reply implementation.
+7. STOP & CLEAR RADIO QUEUES on both tabs before closing them.
+
+**Interpretation:** PRK72 non-beacon TX would be new evidence that the
+native game has actually initiated a connection procedure. Even a native
+association response is not sufficient to invoke overlay 194; trade
+requires a fully initialized peer, session coordination and saved-game
+safety validation.
+
+PRK73 adds guidance in the existing PRK72 panel only. The native WASM
+runtime remains PRK72 stamp `0x50524B44`, so **no native melonDS
+rebuild is needed** for the UI-only clarification.
