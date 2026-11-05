@@ -160,3 +160,62 @@ a trade or modify either save. If accepted beacon counts rise but there
 is no native association, investigate Wi-Fi MAC uniqueness, channel
 alignment, timestamp synchronization and background-tab throttling before
 queuing overlay 194.
+
+
+## PRK67 live receiver results — November 4, 2026
+
+Two real White 2 instances with PRK66 enabled:
+
+| Native Wi-Fi metric | Player 1 | Player 2 |
+|---|---:|---:|
+| Passed CheckRX validation | 11 | 13 |
+| Passed, beacon subtype | 11 | 13 |
+| Rejected: wrong channel | 39 | 67 |
+| Rejected: bad length | 0 | 0 |
+| Filtered: pre-MP destination | 0 | 0 |
+| Positive-AID association accepted | 0 | 0 |
+
+**Interpretation:** Both receive paths reached native CheckRX acceptance
+for beacon frames. Most received frames did not match the instantaneous
+RF receive channel. Because `Wifi::ChangeChannel` is controlled by the
+game's radio-register writes, this may represent normal channel scanning
+or unsynchronized radio dwell. A CheckRX-accepted beacon is **not** proof
+it was committed to the emulated hardware RX ring or that White 2's
+higher-level discovery/association observed a peer. No association
+responses were accepted, and no trade path is ready.
+
+## PRK69 channel research (next test)
+
+PRK69 adds source-matched, read-only per-DS channel histograms:
+- **TX:** the 12-byte native-radio-header channel of outgoing packets
+  successfully placed into the PRK66 transport queue.
+- **Accepted RX:** source channel of each PRK66 native frame that passed
+  CheckRX length, RF-channel and early MP filtering.
+- **Wrong-channel RX:** source channel of each PRK66 native frame rejected
+  because it differed from the emulator's instantaneous channel (or the
+  current channel was invalid).
+- **RF tuned to:** number of *actual channel changes* initiated by game
+  writes to RF tuning registers, as observed by `Wifi::ChangeChannel`.
+- **Current RF channel:** latest game-requested channel value.
+
+No channel is forced, no timestamps are rewritten, and no wireless
+payload, MAC address, trainer identity or save data is exposed.
+
+The pinned build patch sequence now ends at PRK69 stamp `0x50524B41`.
+The full source-rewrite chain PRK63 → PRK65 → PRK66 → PRK67 → PRK69
+has passed strict unique-anchor simulation on pinned melonDS files.
+A C++ compilation and game test are **not yet verified** here.
+
+Run the normal fresh-WASM build, then launch two different disposable
+save profiles, start PRK66 radio on both real tabs, and open the C-Gear
+WIRELESS screen. Read PRK69 channel lines on each DS. Stop both bridges
+before closing tabs. Do not attempt native trading or edit progress flags.
+
+What we will learn:
+- If RF tuned changes and both sides transmit over several channels,
+  channel mismatch may be expected scanning.
+- If both stay tuned to different fixed channels, investigate the game
+  state and RF configuration.
+- If channels overlap but White 2 cannot discover a peer, next inspect
+  the downstream receive-ring commit, BSSID/MAC filtering, and native
+  handshake prerequisites—not a forced channel override.
