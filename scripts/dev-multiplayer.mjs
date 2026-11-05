@@ -31,11 +31,32 @@ function openBrowser(url) {
 }
 
 const server = await createServer({
+  plugins: [
+    {
+      name: 'pokerun-multiplayer-dev-root-redirect',
+      configureServer(viteServer) {
+        // Codespaces' "Open in Browser" and port previews always open /.
+        // During dev:multiplayer, / should open the recovery/launch harness,
+        // not the unrelated standard PokeRun "Choose Your Game" home page.
+        // Keep an opt-out for the regular app and the network-transport tests.
+        viteServer.middlewares.use((req, res, next) => {
+          if (req.method !== 'GET' && req.method !== 'HEAD') return next()
+          const url = new URL(req.url ?? '/', 'http://localhost')
+          if (url.pathname !== '/' || url.searchParams.has('app') ||
+              url.searchParams.get('transport') === 'network') return next()
+          res.statusCode = 302
+          res.setHeader('Location', '/multiplayer-dev.html')
+          res.setHeader('Cache-Control', 'no-store')
+          res.end()
+        })
+      },
+    },
+  ],
   server: {
     host: '0.0.0.0',
     port: MULTIPLAYER_PORT,
     strictPort: true,
-    open: false,
+    open: '/multiplayer-dev.html',
   },
 })
 
@@ -50,5 +71,5 @@ server.printUrls()
 
 const harnessUrl = `http://localhost:${MULTIPLAYER_PORT}/multiplayer-dev.html`
 console.log(`\nPokéRun multiplayer harness:\n${harnessUrl}\n`)
-console.log(`Cross-device mode: append ?transport=network to a player URL served by this dev server.\n`)
+console.log(`Cross-device mode: append ?transport=network to a player URL served by this dev server.\n`)\nconsole.log('Opening the Codespaces port preview at / now redirects to the multiplayer launcher. For the normal app, use /?app=1.\n')
 openBrowser(harnessUrl)
