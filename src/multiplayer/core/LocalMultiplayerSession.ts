@@ -177,6 +177,18 @@ export class LocalMultiplayerSession {
   join(code: string) {
     const normalized = code.trim().toUpperCase()
     if (!/^[A-Z2-9]{6}$/.test(normalized)) return this.update({ error: 'ENTER THE 6-CHARACTER ROOM CODE.' })
+    // PRK68: room join is safe to retry while waiting for the host's first
+    // ROOM_STATE. BroadcastChannel can lose a one-shot JOIN when another tab
+    // is not subscribed yet. Do not reset restored ROM/save state on retries.
+    const existingRoom = this.snapshot.room
+    if (existingRoom?.code === normalized) {
+      if (!existingRoom.hostId) {
+        this.send({ type: 'ROOM_JOIN', roomCode: normalized,
+          player: existingRoom.players.find(player => player.id === this.localPlayerId)
+            ?? newPlayer(this.localPlayerId, this.label, 'white2') })
+      }
+      return
+    }
     multiplayerPresence.reset()
     this.resetGameStateTracking()
     this.update({ room: { code: normalized, gameId: 'white2', hostId: '', players: [newPlayer(this.localPlayerId, this.label, 'white2')] }, error: null, localRom: null, remoteStates: {} })
