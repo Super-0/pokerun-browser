@@ -103,3 +103,60 @@ handoff, trade-evolution and rollback-aware save verification.
 Source basis: pinned `brxxn/ds-anywhere` `Wifi.cpp`, `Wifi.h`,
 `WasmPlatform.cpp` and `WasmEmulator`; public `fuddlesworth/pokebw2`
 `src/ov028/union_subproc.c`, `src/ov194/pokemontrade_proc.c`.
+
+
+## Actual first PRK66 two-DS result (November 4, 2026)
+
+First successful same-browser real-DS link, with two distinct test slots:
+
+| Counter | Player 1 | Player 2 |
+|---|---:|---:|
+| Browser sent | 39 | 32 |
+| Browser accepted received | 14 | 37 |
+| Browser rejected received | 0 | 8 |
+| Native TX queued | 39 | 33 |
+| Native RX queued | 14 | 37 |
+| Native RX consumed | 14 | 37 |
+| Native drops | 0 | 6 |
+
+**Conclusion:** Two *actual* independent emulators transmitted frames
+bidirectionally over the development bridge and returned native receive
+callbacks with payload lengths above zero. No in-game wireless association,
+peer discovery, or trade was established. Snapshots were not synchronous;
+the counters are **not a packet-loss accounting identity**. Some rejected
+browser frames and dropped native frames require diagnosis.
+
+## PRK67 receiver audit (next milestone)
+
+Adds a strictly source-matched, read-only hook to the pinned
+`Wifi::CheckRX` execution path. Records only frames dequeued from PRK66
+(the emulator's `WifiAP` fallback is not included):
+
+- `Wi-Fi accepted`: passed length, channel and native pre-association
+  MP-frame filtering and reached the normal StartRX/MP-state path.
+- `Bad length`: too short or inconsistent radio frame length.
+- `Wrong channel`: channel didn't match the Wi-Fi hardware's current
+  channel, or hardware channel was zero.
+- `MP filtered`: multiplayer-only destination discarded before
+  establishing the native multiplayer session.
+- `Beacons accepted`: 802.11 beacon subtype among accepted frames.
+- `Association responses accepted`: the native Wi-Fi client received
+  a positive AID from a valid-timestamp, destination-accepted association
+  response and entered `IsMPClient` mode. This is **not** an end-to-end
+  game trade or completed NetSystem handshake.
+
+These are per-emulator counters only; no raw wireless contents, addresses,
+or trainer/party/save bytes are exposed. PRK67 changes the runtime build
+stamp to `0x50524B40` and **requires rebuilding melonDS** before
+using the new panel. The pinned-source patch sequence was dry-run against
+the exact DS Anywhere revision and verified to find each unique anchor.
+The native C++ and game runtime have **not** yet been compiled/live-tested
+with PRK67 in the user's Codespace.
+
+Expected next test: reload two *different disposable* saves after the
+rebuild; start PRK66 on both tabs, activate C-Gear on both, then compare
+`PRK67 NATIVE WI-FI` acceptance and rejection counters. Do not initiate
+a trade or modify either save. If accepted beacon counts rise but there
+is no native association, investigate Wi-Fi MAC uniqueness, channel
+alignment, timestamp synchronization and background-tab throttling before
+queuing overlay 194.
