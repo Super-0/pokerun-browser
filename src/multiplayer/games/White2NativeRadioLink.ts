@@ -1,0 +1,244 @@
+import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
+
+// PRK66: ephemeral BroadcastChannel-only experiment. It connects two real
+// melonDS instances in separate tabs of the same browser origin. It is NOT
+// production networking, an Internet relay, or the simulated second trainer.
+const PROTOCOL = 'pokerun-prk66-radio-v1'
+const HELLO_INTERVAL_MS = 750
+const PEER_EXPIRY_MS = 2500
+const RADIO_POLL_MS = 50
+const MAX_FRAMES_PER_TICK = 32
+const MIN_FRAME_BYTES = 36
+const MAX_FRAME_BYTES = 2048
+
+export type NativeRadioLinkStatus = {
+  phase: 'waiting' | 'linked' | 'stopped' | 'error'
+  peerPresent: boolean
+  framesSent: number
+  framesReceived: number
+  framesRejected: number
+  native: ReturnType<MelonDsBridge['getNativeWirelessDevLinkCounters']> | null
+  reason?: string
+}
+
+export type NativeRadioLinkOptions = {
+  roomCode: string
+  startId: string
+  localPlayerId: string
+  remotePlayerId: string
+  romSha256: string
+}
+
+type Hello = {
+  protocol: typeof PROTOCOL
+  kind: 'hello' | 'bye'
+  startId: string
+  romSha256: string
+  fromId: string
+  toId: string
+  sessionNonce: string
+}
+type Frame = Omit<Hello, 'kind'> & {
+  kind: 'frame'
+  sequence: number
+  bytes: Uint8Array
+  timestamp: number
+}
+type Message = Hello | Frame
+
+/**
+ * One active link owns one wasm radio endpoint. Enabling has no effect on a
+ * simulated P2; another actual browser tab must negotiate a matching hello.
+ * Packet content is deliberately not logged, displayed or persisted.
+ */
+export class White2NativeRadioLink {
+  private readonly channel: BroadcastChannel
+  private readonly localNonce = crypto.randomUUID()
+  private readonly options: NativeRadioLinkOptions
+  private readonly bridge: MelonDsBridge
+  private readonly onStatus: (status: NativeRadioLinkStatus) => void
+  private tickTimer: number | null = null
+  private lastHelloAt = 0
+  private lastHelloSentAt = 0
+  private peerNonce: string | null = null
+  private lastSequence = 0
+  private sequence = 0
+  private radioEnabled = false
+  private framesSent = 0
+  private framesReceived = 0
+  private framesRejected = 0
+  private stopped = false
+  private lastStatusAt = 0
+  private lastPhase: NativeRadioLinkStatus['phase'] | null = null
+
+  constructor(bridge: MelonDsBridge, options: NativeRadioLinkOptions,
+    onStatus: (status: NativeRadioLinkStatus) => void) {
+    if (!import.meta.env.DEV) throw new Error('PRK66 is development-only.')
+    if (!('BroadcastChannel' in window)) throw new Error('This browser does not support same-origin BroadcastChannel.')
+    if (!options.roomCode || !options.startId || !options.localPlayerId ||
+        !options.remotePlayerId || options.localPlayerId === options.remotePlayerId ||
+        !/^[0-9a-f]{64}$/i.test(options.romSha256)) {
+      throw new Error('PRK66 requires a valid room, two distinct player IDs, and a verified ROM.')
+    }
+    this.bridge = bridge
+    this.options = options
+    this.onStatus = onStatus
+    const key = [options.roomCode, options.startId].map(value =>
+      value.replace(/[^a-z0-9_-]/gi, '').slice(0, 64)).join('-')
+    this.channel = new BroadcastChannel(`${PROTOCOL}-${key}`)
+    this.channel.onmessage = event => this.handleMessage(event.data as unknown)
+    this.channel.onmessageerror = () => { this.framesRejected++; this.publish('error', 'Wireless channel could not decode an incoming message.') }
+  }
+
+  start() {
+    if (this.stopped || this.tickTimer !== null) return
+    if (this.bridge.status !== 'running') throw new Error('Native radio requires a running melonDS instance.')
+    this.publish('waiting')
+    this.sendHello()
+    this.tickTimer = window.setInterval(() => this.tick(), RADIO_POLL_MS)
+  }
+
+  stop() {
+    if (this.stopped) return
+    this.stopped = true
+    if (this.tickTimer !== null) window.clearInterval(this.tickTimer)
+    this.tickTimer = null
+    try { this.channel.postMessage(this.wrap({ kind: 'bye' })) } catch { /* page teardown */ }
+    this.channel.close()
+    if (this.radioEnabled) {
+      try { this.bridge.setNativeWirelessDevLinkEnabled(false) } catch { /* page teardown */ }
+      this.radioEnabled = false
+    }
+    this.publish('stopped')
+  }
+
+  private wrap(message: { kind: 'hello' | 'bye' }): Hello {
+    return {
+      protocol: PROTOCOL,
+      kind: message.kind,
+      startId: this.options.startId,
+      romSha256: this.options.romSha256,
+      fromId: this.options.localPlayerId,
+      toId: this.options.remotePlayerId,
+      sessionNonce: this.localNonce,
+    }
+  }
+
+  private sendHello() {
+    this.channel.postMessage(this.wrap({ kind: 'hello' }))
+    this.lastHelloSentAt = performance.now()
+  }
+
+  private isPeerMessage(value: unknown): value is Message {
+    if (!value || typeof value !== 'object') return false
+    const v = value as Partial<Message>
+    return v.protocol === PROTOCOL && v.startId === this.options.startId &&
+      v.romSha256 === this.options.romSha256 &&
+      v.fromId === this.options.remotePlayerId &&
+      v.toId === this.options.localPlayerId &&
+      typeof v.sessionNonce === 'string' && v.sessionNonce.length >= 12
+  }
+
+  private handleMessage(value: unknown) {
+    if (this.stopped || !this.isPeerMessage(value)) return
+    if (value.kind === 'hello') {
+      if (this.peerNonce !== value.sessionNonce) {
+        this.peerNonce = value.sessionNonce
+        this.lastSequence = 0
+      }
+      this.lastHelloAt = performance.now()
+      // A peer can attach after our initial hello; a periodic hello will
+      // return the handshake even if one initial message was missed.
+      return
+    }
+    if (value.kind === 'bye') {
+      if (this.peerNonce === value.sessionNonce) this.lastHelloAt = 0
+      return
+    }
+    if (value.kind !== 'frame' || !this.radioEnabled ||
+        this.peerNonce !== value.sessionNonce ||
+        performance.now() - this.lastHelloAt > PEER_EXPIRY_MS) {
+      this.framesRejected++
+      return
+    }
+    if (!Number.isSafeInteger(value.sequence) || value.sequence <= this.lastSequence ||
+        !(value.bytes instanceof Uint8Array) ||
+        value.bytes.byteLength < MIN_FRAME_BYTES ||
+        value.bytes.byteLength > MAX_FRAME_BYTES ||
+        !Number.isSafeInteger(value.timestamp) || value.timestamp < 0) {
+      this.framesRejected++
+      return
+    }
+    // Native receiver performs its own frame length and fixed-buffer checks.
+    try {
+      if (this.bridge.receiveNativeWirelessDevFrame(value.bytes, value.timestamp)) {
+        this.lastSequence = value.sequence
+        this.framesReceived++
+      } else {
+        this.framesRejected++
+      }
+    } catch {
+      this.framesRejected++
+    }
+  }
+
+  private tick() {
+    if (this.stopped) return
+    try {
+      if (this.bridge.status !== 'running') { this.stop(); return }
+      const now = performance.now()
+      if (now - this.lastHelloSentAt >= HELLO_INTERVAL_MS) this.sendHello()
+      const peerPresent = Boolean(this.peerNonce) &&
+        now - this.lastHelloAt < PEER_EXPIRY_MS
+      if (peerPresent !== this.radioEnabled) {
+        this.bridge.setNativeWirelessDevLinkEnabled(peerPresent)
+        this.radioEnabled = peerPresent
+      }
+      if (peerPresent) {
+        for (let i = 0; i < MAX_FRAMES_PER_TICK; i++) {
+          const outgoing = this.bridge.takeNativeWirelessOutgoingFrame()
+          if (!outgoing) break
+          const bytes = outgoing.bytes
+          if (!(bytes instanceof Uint8Array) || bytes.byteLength < MIN_FRAME_BYTES ||
+              bytes.byteLength > MAX_FRAME_BYTES ||
+              !Number.isSafeInteger(outgoing.timestamp) || outgoing.timestamp < 0) {
+            this.framesRejected++
+            continue
+          }
+          const frame: Frame = {
+            ...this.wrap({ kind: 'hello' }),
+            kind: 'frame',
+            sequence: ++this.sequence,
+            bytes,
+            timestamp: outgoing.timestamp,
+          }
+          this.channel.postMessage(frame)
+          this.framesSent++
+        }
+      }
+      const phase = peerPresent ? 'linked' : 'waiting'
+      if (this.lastPhase !== phase || now - this.lastStatusAt > 1000) {
+        this.publish(phase)
+        this.lastStatusAt = now
+      }
+    } catch (error) {
+      this.publish('error', error instanceof Error ? error.message : String(error))
+      this.stop()
+    }
+  }
+
+  private publish(phase: NativeRadioLinkStatus['phase'], reason?: string) {
+    this.lastPhase = phase
+    let native: NativeRadioLinkStatus['native'] = null
+    try { native = this.bridge.getNativeWirelessDevLinkCounters() } catch { /* teardown */ }
+    this.onStatus({
+      phase,
+      peerPresent: phase === 'linked',
+      framesSent: this.framesSent,
+      framesReceived: this.framesReceived,
+      framesRejected: this.framesRejected,
+      native,
+      reason,
+    })
+  }
+}
