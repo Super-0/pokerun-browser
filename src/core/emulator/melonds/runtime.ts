@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v16-prk67-rx-audit'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v17-prk69-channel-audit'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B40
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B41
 export const POKERUN_ARM9_CALL_BUDGET = 1000000
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
@@ -66,6 +66,12 @@ type WasmEmulator = {
   prk67RxMpFiltered(): number
   prk67RxBeacon(): number
   prk67RxAssocAccepted(): number
+  prk69TxChannel(channel: number): number
+  prk69AcceptedChannel(channel: number): number
+  prk69WrongChannel(channel: number): number
+  prk69TunedChannel(channel: number): number
+  prk69CurrentChannel(): number
+  prk69ChannelChanges(): number
   delete?: () => void
 }
 
@@ -127,6 +133,8 @@ export function loadMelonDsRuntime() {
             'prk66TxQueued', 'prk66RxQueued', 'prk66RxConsumed', 'prk66FramesDropped',
             'prk67RxAccepted', 'prk67RxBadLength', 'prk67RxBadChannel',
             'prk67RxMpFiltered', 'prk67RxBeacon', 'prk67RxAssocAccepted',
+            'prk69TxChannel', 'prk69AcceptedChannel', 'prk69WrongChannel',
+            'prk69TunedChannel', 'prk69CurrentChannel', 'prk69ChannelChanges',
           ].every(key => typeof (probe as unknown as Record<string, unknown>)[key] === 'function')
           if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET || !hasAtomicStackArgs || !hasPrk63WirelessCounters) {
             reject(new Error(
