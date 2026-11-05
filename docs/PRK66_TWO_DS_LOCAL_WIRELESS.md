@@ -491,3 +491,36 @@ safety validation.
 PRK73 adds guidance in the existing PRK72 panel only. The native WASM
 runtime remains PRK72 stamp `0x50524B44`, so **no native melonDS
 rebuild is needed** for the UI-only clarification.
+
+
+## PRK74 — import existing post-badge test saves without progression edits
+
+PRK73's active Union Room test was blocked because the early PRK63 test
+saves had C-Gear enabled but did not complete the Basic Badge / Bianca
+handoff. Those copies are unsuitable as proof of normal Union Room entry.
+
+The **DEV-only multiplayer lobby** now offers `IMPORT PROGRESSED .SAV AS NEW SLOT`
+next to the old PRK63-specific import. Each import creates a distinct local
+save profile referencing the same verified White 2 ROM. It never overwrites
+source saves or inserts bytes into a running emulator. Only raw, complete
+512 KB `.sav` images with at least one correctly formed save-region footer
+and matching CRC-table checksum are accepted. The importer reads these bytes
+for validation, but does not edit event flags, badges, trainer identities,
+Pokémon, ROM content or firmware. It does **not** infer genuine progression:
+verify the Basic Badge and Bianca-given C-Gear by starting the game normally.
+
+To bypass the lengthy opening, source **two independent already-progressed
+White 2 test saves** from trusted existing playthroughs. They must have
+different Trainer IDs; cloning the same save to two profiles is not a
+conclusive native trade test. Back them up; import them as new profiles on
+the DEV lobby; select each in `/multiplayer-dev.html`; and run PRK73 as
+written above. Do not put any ROMs or copyrighted games in the repository.
+
+**Interim native radio experiment without Union Room:** the C-Gear's
+`WIRELESS → Xtransceiver` is an actual local DS-wireless activity. If the
+option is accessible in the current PRK63 test saves, open it on both real
+instances with PRK66 running and compare PRK72 frame-stage counters. This
+can test active radio initialization without claiming to be Union Room
+connection or trade; the option may be story-gated or unavailable. Capture
+exact screen messages if it fails. No native WASM rebuild is required for
+this DEV-only import/UI change.

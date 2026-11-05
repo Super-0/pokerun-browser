@@ -13,6 +13,7 @@ import { LocalMultiplayerSession, type MultiplayerSessionSnapshot } from '../mul
 import type { MultiplayerPlayerState, MultiplayerTradeState } from '../multiplayer/core/protocol'
 import { identifyWhite2Rom } from '../multiplayer/games/white2Rom'
 import { validateWhite2CgearTestSave } from '../multiplayer/games/White2CgearTestSave'
+import { validateWhite2ProgressedTestSave } from '../multiplayer/games/White2ProgressedTestSave'
 import { White2LiveStateAdapter } from '../multiplayer/games/White2LiveStateAdapter'
 import { White2WorldPositionReader } from '../multiplayer/games/White2WorldPositionReader'
 import { multiplayerGames } from '../multiplayer/games/registry'
@@ -63,6 +64,7 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
   const picker = useRef<HTMLInputElement>(null)
   const saveImportPicker = useRef<HTMLInputElement>(null)
   const saveImportTarget = useRef<MultiplayerSaveProfile | null>(null)
+  const saveImportKind = useRef<'cgear' | 'progressed'>('cgear')
   const [loading, setLoading] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedGames, setSavedGames] = useState<MultiplayerSaveProfile[]>(() => multiplayerSaveStore.list(roomGame.id))
@@ -93,8 +95,9 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
 
   // Never import battery bytes into a live emulator. Create an entirely new
   // save profile in the lobby, retaining the original save and its associated
-  // ROM untouched. This is DEV-only and accepts the validated PRK63 test copy.
-  async function importCgearTestCopy(file: File | null) {
+  // ROM untouched. PRK74 also supports a previously progressed battery save.
+  // Neither option changes flags, trainer data, or party bytes.
+  async function importDiagnosticSaveCopy(file: File | null) {
     const sourceProfile = saveImportTarget.current
     if (!file || !sourceProfile || !import.meta.env.DEV) return
     let created: MultiplayerSaveProfile | null = null
@@ -102,7 +105,8 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
       setLoading(true)
       setSaveError(null)
       const bytes = new Uint8Array(await file.arrayBuffer())
-      validateWhite2CgearTestSave(bytes)
+      if (saveImportKind.current === 'progressed') validateWhite2ProgressedTestSave(bytes)
+      else validateWhite2CgearTestSave(bytes)
       const rom = await multiplayerSaveStore.restoreRom(sourceProfile.id)
       if (!rom) throw new Error('The source save slot no longer has a local ROM.')
       const identity = identifyWhite2Rom(rom)
@@ -112,7 +116,8 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
       created = multiplayerSaveStore.createDerived(sourceProfile.id, rom, identity)
       await multiplayerSaveStore.saveBatterySave(created.id, bytes)
       refreshSavedGames()
-      console.info('[PokéRun save] PRK63 EDITED SAVE IMPORTED AS NEW PROFILE', {
+      console.info('[PokéRun save] TEST SAVE IMPORTED AS NEW PROFILE', {
+        testKind: saveImportKind.current,
         sourceSlot: sourceProfile.slotNumber,
         testSlot: created.slotNumber,
         bytes: bytes.length,
@@ -121,7 +126,7 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
       })
     } catch (error) {
       if (created) await multiplayerSaveStore.delete(created.id).catch(() => undefined)
-      setSaveError(error instanceof Error ? error.message : 'Could not import the edited C-Gear test save.')
+      setSaveError(error instanceof Error ? error.message : 'Could not import this White 2 test save.')
     } finally {
       setLoading(false)
       saveImportTarget.current = null
@@ -156,16 +161,24 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
     <section className="page-title-row"><div><span className="eyebrow">LOCAL ONLY</span><h2>SAVED GAMES</h2><p>Continue a multiplayer cartridge save without re-selecting the ROM. In-game saves are stored locally in this browser.</p></div><span className="save-count">{savedGames.length} SAVED</span></section>
     {import.meta.env.DEV && <>
       <input ref={saveImportPicker} type="file" accept=".sav" hidden
-        onChange={event => void importCgearTestCopy(event.target.files?.[0] ?? null)}/>
+        onChange={event => void importDiagnosticSaveCopy(event.target.files?.[0] ?? null)}/>
       <p style={{ fontSize: 12, marginBottom: 12 }}>
         PRK63: Import an edited C-Gear .sav into a <strong>new test slot</strong>.
-        Your existing slot stays untouched. Select CONTINUE on the new slot afterward.
+        PRK74: Import a complete, normally progressed White 2 512 KB .sav with the Basic Badge
+        and C-Gear already obtained. PRK74 checks structure and checksums only; verify progress
+        and distinct trainer identities inside the game. Both imports create independent test
+        slots without overwriting the original.
       </p>
     </>}
     {savedGames.length === 0 ? <section className="runs-empty pixel-border"><h2>NO SAVED GAMES YET</h2><p>Select your White 2 ROM above. PokéRun will create a local save slot and persist the game's normal in-game save when you save from the Pokémon menu.</p></section> : <section className="runs-list">{savedGames.map(profile => <article className="run-card pixel-border" key={profile.id}><div className="run-card-main"><span className="eyebrow">{roomGame.title.toUpperCase()}</span><h2>SAVE {String(profile.slotNumber).padStart(3, '0')}</h2><div className="run-card-meta"><span>{profile.lastSavedAt ? `IN-GAME SAVE • ${new Date(profile.lastSavedAt).toLocaleString()}` : 'NO IN-GAME SAVE YET'}</span><span>{profile.fileName}</span><span>SHA {profile.romSha256.slice(0, 12)}…</span></div></div><div className="run-card-actions"><PixelButton disabled={loading} onClick={() => void continueSavedGame(profile)}>CONTINUE</PixelButton>{import.meta.env.DEV && <PixelButton tone="ghost" disabled={loading} onClick={() => {
       saveImportTarget.current = profile
+      saveImportKind.current = 'cgear'
       saveImportPicker.current?.click()
-    }}>IMPORT C-GEAR TEST .SAV AS NEW SLOT</PixelButton>}</div></article>)}</section>}
+    }}>IMPORT C-GEAR TEST .SAV AS NEW SLOT</PixelButton>}{import.meta.env.DEV && <PixelButton tone="ghost" disabled={loading} onClick={() => {
+      saveImportTarget.current = profile
+      saveImportKind.current = 'progressed'
+      saveImportPicker.current?.click()
+    }}>IMPORT PROGRESSED .SAV AS NEW SLOT</PixelButton>}</div></article>)}</section>}
   </div></main>
 }
 
