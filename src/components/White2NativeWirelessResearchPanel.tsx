@@ -83,6 +83,11 @@ export function White2NativeWirelessResearchPanel({ bridge, rom }: {
       delta: (after.counters[row.key] - baseline.counters[row.key]) >>> 0,
     }))
     : []
+  const byKey = Object.fromEntries(changes.map(item => [item.key, item.delta]))
+  const classified = (byKey.txManagement ?? 0) + (byKey.txControl ?? 0) +
+    (byKey.txData ?? 0) + (byKey.txEmptyOrInvalid ?? 0)
+  const attempted = byKey.mpTxAttempts ?? 0
+  const classesMatch = changes.length > 0 && classified === attempted
   return <section className="multiplayer-session-debug pixel-border" style={{ padding: 12 }}>
     <details>
       <summary style={{ cursor: 'pointer', fontWeight: 800 }}>
@@ -123,6 +128,10 @@ export function White2NativeWirelessResearchPanel({ bridge, rom }: {
           <span title={item.note}>{item.label}</span>
           <strong>+{item.delta} ({baseline!.counters[item.key]} → {after!.counters[item.key]})</strong>
         </div>)}
+        <p style={{ marginTop: 8, fontSize: 11 }}>
+          <strong>PRK65 frame accounting:</strong> {classified} classified / {attempted} outgoing attempts
+          {' '}• {classesMatch ? 'MATCH' : 'MISMATCH — DO NOT USE THESE CATEGORIES AS VERIFIED'}
+        </p>
         <p style={{ marginTop: 8, fontSize: 11 }}>
           {changes.some(item => item.key === 'wifiStarts' && item.delta > 0)
             ? 'The game switched on emulated Wi-Fi during the interval.'
