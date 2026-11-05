@@ -83,6 +83,32 @@ export class MelonDsBridge implements EmulatorBridge {
       txMpAcks: emu.prk65TxAck() >>> 0,
     }
   }
+  /** PRK66: development-only, explicitly opt-in, same-origin local radio.
+   * This exposes raw frames to the paired browser tab, but never stores them
+   * or sends them to a network service. Not a trade or a live save operation.
+   */
+  setNativeWirelessDevLinkEnabled(enabled: boolean) {
+    if (!import.meta.env.DEV) throw new Error('PRK66 radio bridge is development-only.')
+    this.assertEmulator().prk66SetEnabled(enabled)
+  }
+  takeNativeWirelessOutgoingFrame() {
+    if (!import.meta.env.DEV) throw new Error('PRK66 radio bridge is development-only.')
+    return this.assertEmulator().prk66TakeOutgoing()
+  }
+  receiveNativeWirelessDevFrame(bytes: Uint8Array, timestamp: number) {
+    if (!import.meta.env.DEV) throw new Error('PRK66 radio bridge is development-only.')
+    return this.assertEmulator().prk66InjectIncoming(bytes, timestamp)
+  }
+  getNativeWirelessDevLinkCounters() {
+    const emu = this.assertEmulator()
+    return {
+      outgoingEnqueued: emu.prk66TxQueued() >>> 0,
+      incomingEnqueued: emu.prk66RxQueued() >>> 0,
+      incomingConsumed: emu.prk66RxConsumed() >>> 0,
+      dropped: emu.prk66FramesDropped() >>> 0,
+    }
+  }
+
   subscribeEmulatedFrame(listener: () => void) {
     this.emulatedFrameListeners.add(listener)
     return () => this.emulatedFrameListeners.delete(listener)
