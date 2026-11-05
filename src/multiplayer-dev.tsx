@@ -122,7 +122,8 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
         if (!localRomReady) {
           const profile = savedProfileForPlayer(player)
           if (!profile) {
-            status(`WAITING FOR PLAYER ${player} SAVE`)
+            status(`NO SELECTED PLAYER ${player} SAVE — CHOOSE A SLOT`)
+            setRestoreBlocked('No saved profile is selected or the remembered slot no longer exists. Use CHANGE SAVE / REPAIR ROM.')
             return
           }
 
@@ -143,7 +144,7 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
                   setRestoreBlocked(null)
                 } else {
                   failedRomId = profile.id
-                  setRestoreBlocked(`SAVE ${String(profile.slotNumber).padStart(3, '0')} could not restore its ROM. Choose an earlier slot, or reattach your verified .nds on the launcher. No .sav was erased.`)
+                  setRestoreBlocked(`SAVE ${String(profile.slotNumber).padStart(3, '0')} could not restore its ROM. Choose an earlier slot, or reattach your verified .nds on the launcher. This check did not change the .sav.`)
                 }
               }).catch(error => {
                 if (cancelled || checkingRomId !== profile.id) return
@@ -352,10 +353,18 @@ function MultiplayerDevLauncher() {
     else localStorage.removeItem(DEV_SAVE_KEYS[2])
   }, [player2Save])
 
+  function persistPlayerSelections() {
+    // Persist synchronously before navigating. React effects may not run
+    // between selecting a new slot and pressing PLAYER 1.
+    for (const [player, id] of [[1, player1Save], [2, player2Save]] as const) {
+      if (id) localStorage.setItem(DEV_SAVE_KEYS[player], id)
+      else localStorage.removeItem(DEV_SAVE_KEYS[player])
+    }
+  }
+
   function launchBoth() {
     localStorage.removeItem(DEV_ROOM_KEY)
-    if (player1Save) localStorage.setItem(DEV_SAVE_KEYS[1], player1Save)
-    if (player2Save) localStorage.setItem(DEV_SAVE_KEYS[2], player2Save)
+    persistPlayerSelections()
 
     // Only one popup is required. The launcher itself becomes Player 1, which
     // avoids browsers blocking the second of two scripted window.open calls.
@@ -368,6 +377,7 @@ function MultiplayerDevLauncher() {
   }
 
   function openPlayer(player: 1 | 2) {
+    persistPlayerSelections()
     if (player === 1) localStorage.removeItem(DEV_ROOM_KEY)
     window.location.href = `/multiplayer-dev.html?player=${player}`
   }
