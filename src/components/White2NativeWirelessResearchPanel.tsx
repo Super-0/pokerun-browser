@@ -260,6 +260,19 @@ export function White2NativeWirelessResearchPanel({
             </p>
           </div>}
           {radioStatus.native && <div style={{ paddingTop: 8, borderTop: '1px solid #9bacb9' }}>
+            <strong>PRK71 • DISTINCT IN-MEMORY FIRMWARE IDENTITIES</strong>
+            <p>Verified test DS firmware role: {radioStatus.native.firmwareRoleApplied === 1
+              ? 'PLAYER 1' : radioStatus.native.firmwareRoleApplied === 2 ? 'PLAYER 2' : 'NOT APPLIED'}
+              {' '}• expected: {new URLSearchParams(window.location.search).get('player') === '1'
+                ? 'PLAYER 1' : 'PLAYER 2'}</p>
+            <p style={{ fontSize: 11, opacity: 0.75 }}>
+              Both players must have opposite applied roles before starting the
+              radio link. Only freshly generated, in-memory firmware is changed;
+              no ROM, stored firmware or battery-save data is rewritten.
+              PRK70 below verifies the *actual radio-frame addresses*.
+            </p>
+          </div>}
+          {radioStatus.native && <div style={{ paddingTop: 8, borderTop: '1px solid #9bacb9' }}>
             <strong>PRK70 • NATIVE BEACON DELIVERY + MAC COLLISION (READ ONLY)</strong>
             <p>Incoming beacons whose sender MAC matches this DS:
               {' '}{radioStatus.native.rxBeaconSameLocalMac}
