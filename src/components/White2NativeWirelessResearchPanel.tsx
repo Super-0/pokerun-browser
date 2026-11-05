@@ -31,7 +31,7 @@ const rows: { key: keyof Counters; label: string; note: string }[] = [
 ]
 
 export function White2NativeWirelessResearchPanel({
-  bridge, rom, roomCode, startId, localPlayerId, remotePlayerId,
+  bridge, rom, roomCode, startId, localPlayerId, remotePlayerId, saveProfileId,
 }: {
   bridge: MelonDsBridge | null
   rom: MultiplayerRomIdentity
@@ -39,6 +39,7 @@ export function White2NativeWirelessResearchPanel({
   startId: string
   localPlayerId: string
   remotePlayerId: string | null
+  saveProfileId: string | null
 }) {
   const [baseline, setBaseline] = useState<Capture | null>(null)
   const [after, setAfter] = useState<Capture | null>(null)
@@ -55,18 +56,19 @@ export function White2NativeWirelessResearchPanel({
   useEffect(() => () => {
     radioLink.current?.stop()
     radioLink.current = null
-  }, [bridge, rom.sha256, roomCode, startId, localPlayerId, remotePlayerId])
+  }, [bridge, rom.sha256, roomCode, startId, localPlayerId, remotePlayerId, saveProfileId])
 
   if (!import.meta.env.DEV) return null
 
   const eligible = bridge?.status === 'running' && White2PartyStructureProbe.supportsRom(rom)
 
   function startRadioLink() {
-    if (!bridge || !eligible || !remotePlayerId || !rom.sha256 || radioLink.current) return
+    if (!bridge || !eligible || !remotePlayerId || !rom.sha256 || !saveProfileId || radioLink.current) return
     try {
       setRadioError(null)
       const link = new White2NativeRadioLink(bridge, {
-        roomCode, startId, localPlayerId, remotePlayerId, romSha256: rom.sha256,
+        roomCode, startId, localPlayerId, remotePlayerId,
+        romSha256: rom.sha256, saveProfileId,
       }, setRadioStatus)
       radioLink.current = link
       link.start()
@@ -186,13 +188,14 @@ export function White2NativeWirelessResearchPanel({
         <h3 style={{ fontSize: 14 }}>PRK66 • EXPERIMENTAL TWO-DS LOCAL RADIO</h3>
         <p style={{ fontSize: 12 }}>
           Requires <strong>two actual running melonDS game tabs</strong> in the
-          same PokeRun room, on the same browser origin, using the same White 2 ROM.
+          same PokeRun room, on the same browser origin, using the same White 2 ROM
+          but <strong>two distinct save slots</strong>.
           The fake P2 trainer cannot connect. Start this on both real player tabs.
           Raw emulated Wi-Fi frames stay in this browser's BroadcastChannel.
           This is a risky research experiment: use backed-up disposable saves.
         </p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button type="button" disabled={!eligible || !remotePlayerId || Boolean(radioLink.current)}
+          <button type="button" disabled={!eligible || !remotePlayerId || !saveProfileId || Boolean(radioLink.current)}
             onClick={startRadioLink}>START LOCAL DS RADIO</button>
           <button type="button" disabled={!radioLink.current} onClick={stopRadioLink}>
             STOP & CLEAR RADIO QUEUES
