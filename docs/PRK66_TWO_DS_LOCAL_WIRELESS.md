@@ -561,3 +561,31 @@ radio/Union Room failure. If radio isolation eliminates the problem,
 **do not** infer that native Wi-Fi is fully functioning: it only removes
 one independent confounder. If a game had already logged CLEANUP UNSAFE,
 reload it rather than trying to repair live guest pointers.
+
+
+## PRK76 — controlled in-Union-Room frame deltas (UI-only)
+
+PRK73's first two genuine in-Union-Room captures still show **beacon-only**
+PRK72 transmission and hardware receipt (P1 531 TX / 55 hardware RX; P2
+440 TX / 14 hardware RX). Their received-beacon transmitter MACs remain
+other-than-local (P1 351, P2 89). The RF channels continue to scan 1/7/13;
+channel mismatches do not establish a root cause. Importantly the counters
+are **cumulative from emulator boot**: those totals alone cannot prove
+whether wireless activity changed on entering the room.
+
+PRK76 adds a read-only baseline/after comparison for every PRK72 frame stage,
+PRK63 Wi-Fi power and native MP send callbacks, PRK66 RX queue progress,
+PRK67 native accepted/wrong-channel counts, PRK70 hardware RX interrupts,
+and the number of emulated frames advanced. No WASM build, new packet
+transport behavior or save/ROM changes. A concise per-tab result is also
+logged under `[PokéRun wireless] PRK76 CONTROLLED RADIO DELTA`.
+
+Next experiment: with PRK75 isolation checked and two independently
+progressed trainers having *different* Trainer IDs, start PRK66 on both,
+capture PRK76 baselines on each, enter the Union Room or perform an actual
+Union Room waiting/discovery interval, then capture PRK76 AFTER on each.
+If non-beacon TX remains zero, inspect whether the game recognizes the
+received beacon data rather than forcing fixed RF channels. The game
+could also refuse to discover copied trainer identities. If emulated
+frames do not advance, resolve the stall/scheduling issue before using
+wireless count differences to infer game-level behavior.

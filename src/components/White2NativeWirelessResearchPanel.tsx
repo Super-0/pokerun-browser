@@ -17,6 +17,18 @@ const handshakeStageLabels = [
 // No emulated button presses, guest memory writes, packet payloads or sends.
 type Counters = ReturnType<MelonDsBridge['getNativeWirelessProbeCounters']>
 type Capture = { capturedAt: number; counters: Counters }
+// PRK76: compare radio activity during a precisely bounded game action.
+// This is entirely read-only and does not access packet contents or game saves.
+type RadioCounters = ReturnType<MelonDsBridge['getNativeWirelessDevLinkCounters']>
+type RadioSample = {
+  capturedAt: number
+  emulatedFrames: number
+  probe: Counters
+  radio: RadioCounters
+}
+function counterDelta(after: number, before: number) {
+  return (after - before) >>> 0
+}
 
 // PRK69: all counters are per-emulator aggregates. Channel 0 = unknown/invalid.
 type RadioChannel = {
@@ -69,11 +81,17 @@ export function White2NativeWirelessResearchPanel({
   const [error, setError] = useState<string | null>(null)
   const [radioStatus, setRadioStatus] = useState<NativeRadioLinkStatus | null>(null)
   const [radioError, setRadioError] = useState<string | null>(null)
+  const [radioBefore, setRadioBefore] = useState<RadioSample | null>(null)
+  const [radioAfter, setRadioAfter] = useState<RadioSample | null>(null)
+  const [radioCaptureError, setRadioCaptureError] = useState<string | null>(null)
   const radioLink = useRef<White2NativeRadioLink | null>(null)
   useEffect(() => {
     setBaseline(null)
     setAfter(null)
     setError(null)
+    setRadioBefore(null)
+    setRadioAfter(null)
+    setRadioCaptureError(null)
   }, [bridge, rom.sha256])
 
   useEffect(() => () => {
@@ -133,7 +151,7 @@ export function White2NativeWirelessResearchPanel({
         delta,
         guestWrites: 0,
         transportedPackets: 0,
-        note: 'WASM callback counters only. The original MP/Net stubs still do not deliver packets.',
+        note: 'WASM callback counters only; PRK66, if enabled separately, handles packet transport.',
       })
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : String(reason)
@@ -141,6 +159,72 @@ export function White2NativeWirelessResearchPanel({
       console.info('[PokéRun wireless] PRK63 TELEMETRY BLOCKED', { reason: message })
     }
   }
+
+  function captureRadio(kind: 'before' | 'after') {
+    if (!bridge || !eligible) return
+    try {
+      const sample: RadioSample = {
+        capturedAt: Date.now(),
+        emulatedFrames: bridge.getFrameStats().frames,
+        probe: bridge.getNativeWirelessProbeCounters(),
+        radio: bridge.getNativeWirelessDevLinkCounters(),
+      }
+      setRadioCaptureError(null)
+      if (kind === 'before') {
+        setRadioBefore(sample)
+        setRadioAfter(null)
+      } else {
+        setRadioAfter(sample)
+        if (radioBefore) {
+          const stages = sample.radio.handshakeStages.map((stage, i) => ({
+            kind: handshakeStageLabels[i] ?? 'Unknown',
+            tx: counterDelta(stage.sent, radioBefore.radio.handshakeStages[i].sent),
+            hardwareRx: counterDelta(stage.receivedByHardware, radioBefore.radio.handshakeStages[i].receivedByHardware),
+          }))
+          console.info('[PokéRun wireless] PRK76 CONTROLLED RADIO DELTA', {
+            elapsedMs: sample.capturedAt - radioBefore.capturedAt,
+            emulatedFrames: sample.emulatedFrames - radioBefore.emulatedFrames,
+            wifiPowerOns: counterDelta(sample.probe.wifiStarts, radioBefore.probe.wifiStarts),
+            wifiPowerOffs: counterDelta(sample.probe.wifiStops, radioBefore.probe.wifiStops),
+            mpTxAttempts: counterDelta(sample.probe.mpTxAttempts, radioBefore.probe.mpTxAttempts),
+            mpCommands: counterDelta(sample.probe.txMpCommands, radioBefore.probe.txMpCommands),
+            mpReplies: counterDelta(sample.probe.txMpReplies, radioBefore.probe.txMpReplies),
+            mpAcks: counterDelta(sample.probe.txMpAcks, radioBefore.probe.txMpAcks),
+            incomingEnqueued: counterDelta(sample.radio.incomingEnqueued, radioBefore.radio.incomingEnqueued),
+            incomingConsumed: counterDelta(sample.radio.incomingConsumed, radioBefore.radio.incomingConsumed),
+            wifiAccepted: counterDelta(sample.radio.wifiAccepted, radioBefore.radio.wifiAccepted),
+            wrongChannel: counterDelta(sample.radio.wifiBadChannel, radioBefore.radio.wifiBadChannel),
+            hardwareRxIrqs: counterDelta(sample.radio.rxNativeRingIrq, radioBefore.radio.rxNativeRingIrq),
+            stages,
+            note: 'Two snapshots from this DS only; no packet content, channel forcing, game memory writes or save edits.',
+          })
+        }
+      }
+    } catch (reason) {
+      setRadioCaptureError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }
+
+  const radioDelta = radioBefore && radioAfter ? {
+    elapsedMs: radioAfter.capturedAt - radioBefore.capturedAt,
+    emulatedFrames: radioAfter.emulatedFrames - radioBefore.emulatedFrames,
+    wifiStarts: counterDelta(radioAfter.probe.wifiStarts, radioBefore.probe.wifiStarts),
+    wifiStops: counterDelta(radioAfter.probe.wifiStops, radioBefore.probe.wifiStops),
+    mpTxAttempts: counterDelta(radioAfter.probe.mpTxAttempts, radioBefore.probe.mpTxAttempts),
+    mpCommands: counterDelta(radioAfter.probe.txMpCommands, radioBefore.probe.txMpCommands),
+    mpReplies: counterDelta(radioAfter.probe.txMpReplies, radioBefore.probe.txMpReplies),
+    mpAcks: counterDelta(radioAfter.probe.txMpAcks, radioBefore.probe.txMpAcks),
+    rxQueue: counterDelta(radioAfter.radio.incomingEnqueued, radioBefore.radio.incomingEnqueued),
+    rxConsumed: counterDelta(radioAfter.radio.incomingConsumed, radioBefore.radio.incomingConsumed),
+    rxAccepted: counterDelta(radioAfter.radio.wifiAccepted, radioBefore.radio.wifiAccepted),
+    wrongChannel: counterDelta(radioAfter.radio.wifiBadChannel, radioBefore.radio.wifiBadChannel),
+    rxIrq: counterDelta(radioAfter.radio.rxNativeRingIrq, radioBefore.radio.rxNativeRingIrq),
+    stages: radioAfter.radio.handshakeStages.map((stage, i) => ({
+      kind: stage.kind,
+      tx: counterDelta(stage.sent, radioBefore.radio.handshakeStages[i].sent),
+      rx: counterDelta(stage.receivedByHardware, radioBefore.radio.handshakeStages[i].receivedByHardware),
+    })),
+  } : null
 
   const changes = baseline && after
     ? rows.map(row => ({
@@ -339,6 +423,70 @@ export function White2NativeWirelessResearchPanel({
           trainer; positive association responses are a stronger, separate
           milestone. Stop the link before closing a game tab.
         </p>
+      </div>
+      <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid #9bacb9' }}>
+        <h3 style={{ fontSize: 14 }}>PRK76 • CONTROLLED UNION ROOM RADIO DELTA (READ ONLY)</h3>
+        <p style={{ fontSize: 12 }}>
+          PRK72 numbers above are cumulative since boot. Capture a baseline on
+          <strong> both real tabs</strong>, enter the native Union Room on both
+          games (or wait while already inside), then capture AFTER on both.
+          Compare changes, not lifetime totals. Keep PRK75 isolation enabled
+          and PRK66 linked for a live two-DS test. No game memory or saved data is changed.
+        </p>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button type="button" disabled={!eligible} onClick={() => captureRadio('before')}>
+            1. CAPTURE RADIO BASELINE
+          </button>
+          <button type="button" disabled={!eligible || !radioBefore}
+            onClick={() => captureRadio('after')}>
+            2. CAPTURE RADIO AFTER
+          </button>
+        </div>
+        {radioCaptureError && <p className="form-error" role="alert">{radioCaptureError}</p>}
+        {radioBefore && !radioAfter && <p role="status" style={{ fontSize: 12 }}>
+          Radio baseline captured. Now perform the in-game action on both DS systems.
+        </p>}
+        {radioDelta && <div role="status" style={{ fontSize: 12, display: 'grid', gap: 5, marginTop: 8 }}>
+          <strong>PRK76 • DELTA FROM BASELINE</strong>
+          <p>
+            Observation window: {(radioDelta.elapsedMs / 1000).toFixed(1)} s
+            {' '}• emulated DS frames advanced: {radioDelta.emulatedFrames}
+          </p>
+          <p>
+            Wi-Fi power on +{radioDelta.wifiStarts} / off +{radioDelta.wifiStops}
+            {' '}• MP TX callbacks +{radioDelta.mpTxAttempts}
+            {' '}• MP command +{radioDelta.mpCommands}
+            {' '}• reply +{radioDelta.mpReplies}
+            {' '}• ack +{radioDelta.mpAcks}
+          </p>
+          <p>
+            Transport RX queued +{radioDelta.rxQueue}
+            {' '}• consumed +{radioDelta.rxConsumed}
+            {' '}• accepted by receiver +{radioDelta.rxAccepted}
+            {' '}• rejected wrong channel +{radioDelta.wrongChannel}
+            {' '}• native RX IRQ +{radioDelta.rxIrq}
+          </p>
+          {radioDelta.stages.map(stage => <p key={stage.kind} style={{ margin: '2px 0' }}>
+            {handshakeStageLabels[stage.kind] ?? 'Unknown'}:
+            {' '}TX +{stage.tx} • hardware RX +{stage.rx}
+          </p>)}
+          {radioDelta.stages.slice(1).every(stage => stage.tx === 0 && stage.rx === 0)
+            && <p style={{ fontWeight: 700 }}>
+              BEACON-ONLY DURING THIS OBSERVATION WINDOW. Confirm whether
+              both trainers are visible and have distinct in-game Trainer IDs;
+              do not force RF channels or attempt a native trade.
+            </p>}
+          {radioDelta.emulatedFrames === 0 && radioDelta.elapsedMs > 1000 &&
+            <p className="form-error">
+              NO EMULATED FRAMES ADVANCED during this capture. Check if the game
+              is paused, stalled or throttled before interpreting the Wi-Fi results.
+            </p>}
+          <p style={{ opacity: 0.8 }}>
+            These are counts from one emulator tab; collect both players.
+            A hardware IRQ does not prove the game parsed the frame. PRK76
+            also logs its aggregate delta to the DEV console.
+          </p>
+        </div>}
       </div>
     </details>
   </section>
