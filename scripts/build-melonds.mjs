@@ -23,6 +23,7 @@ const requiredRuntimeSymbols = [
   'arm9CallBudget', 'pokerunRuntimeVersion',
   'prk63WifiStarts', 'prk63WifiStops', 'prk63MpTxCalls',
   'prk63MpRxPolls', 'prk63MpHostRxPolls', 'prk63NetTxCalls',
+  'prk65TxMgmt', 'prk65TxControl', 'prk65TxData', 'prk65TxInvalid', 'prk65TxBeacon', 'prk65TxProbe', 'prk65TxCommand', 'prk65TxReply', 'prk65TxAck',
 ]
 
 function run(command, args, cwd = root) { execFileSync(command, args, { cwd, stdio: 'inherit' }) }
@@ -104,6 +105,41 @@ function applyPrk63WirelessTelemetry() {
   console.log('[PokéRun] PRK63 counters installed on pinned native Wi-Fi stubs; packet routing disabled.')
 }
 
+
+// PRK65 classification is applied AFTER the existing PRK63 counter patch so
+// packet kind stats never modify the behavior that has already been verified.
+function applyPrk65WifiFrameClasses() {
+  const platform = resolve(source, 'wasmelonDS/src/frontend/wasm/WasmPlatform.cpp')
+  const header = resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.h')
+  const cpp = resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.cpp')
+  function replaceUnique(path, before, after) {
+    const contents = readFileSync(path, 'utf8')
+    const parts = contents.split(before)
+    if (parts.length !== 2) {
+      throw new Error('PRK65 pinned source mismatch in ' + path + ': ' + (parts.length - 1) + ' matches.')
+    }
+    writeFileSync(path, parts.join(after))
+  }
+  replaceUnique(header,
+    "    std::atomic<melonDS::u32> prk63NetTxCallsCount{0};",
+    "    std::atomic<melonDS::u32> prk63NetTxCallsCount{0};\n    std::atomic<melonDS::u32> prk65TxMgmtCount{0};\n    std::atomic<melonDS::u32> prk65TxControlCount{0};\n    std::atomic<melonDS::u32> prk65TxDataCount{0};\n    std::atomic<melonDS::u32> prk65TxInvalidCount{0};\n    std::atomic<melonDS::u32> prk65TxBeaconCount{0};\n    std::atomic<melonDS::u32> prk65TxProbeCount{0};\n    std::atomic<melonDS::u32> prk65TxCommandCount{0};\n    std::atomic<melonDS::u32> prk65TxReplyCount{0};\n    std::atomic<melonDS::u32> prk65TxAckCount{0};")
+  replaceUnique(header,
+    "    melonDS::u32 prk63NetTxCalls() const { return prk63NetTxCallsCount.load(std::memory_order_relaxed); }",
+    "    melonDS::u32 prk63NetTxCalls() const { return prk63NetTxCallsCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk65TxMgmt() const { return prk65TxMgmtCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk65TxControl() const { return prk65TxControlCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk65TxData() const { return prk65TxDataCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk65TxInvalid() const { return prk65TxInvalidCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk65TxBeacon() const { return prk65TxBeaconCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk65TxProbe() const { return prk65TxProbeCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk65TxCommand() const { return prk65TxCommandCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk65TxReply() const { return prk65TxReplyCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk65TxAck() const { return prk65TxAckCount.load(std::memory_order_relaxed); }")
+  replaceUnique(platform,
+    "  int MP_SendPacket(u8*, int, u64, void* userdata) {",
+    "  // PRK65: read only the 802.11 frame-control bytes at host-TX offset 12.\n  // No frame bytes leave WASM; no MAC, payload, Pokémon or trainer IDs logged.\n  // The 12-byte melonDS radio header precedes the 802.11 frame. Guard both.\n  static void Prk65ObserveTx(u8* data, int len, void* userdata, int kind) {\n    auto* emulator = Prk63Emulator(userdata);\n    if (!emulator) return;\n    if (kind == 1) emulator->prk65TxCommandCount.fetch_add(1, std::memory_order_relaxed);\n    if (kind == 2) emulator->prk65TxReplyCount.fetch_add(1, std::memory_order_relaxed);\n    if (kind == 3) emulator->prk65TxAckCount.fetch_add(1, std::memory_order_relaxed);\n    if (!data || len < 14 || len > 0x2000) {\n      emulator->prk65TxInvalidCount.fetch_add(1, std::memory_order_relaxed);\n      return;\n    }\n    const u8 frameControl = data[12];\n    const u8 frameType = (frameControl >> 2) & 3;\n    const u8 subtype = (frameControl >> 4) & 15;\n    switch (frameType) {\n      case 0:\n        emulator->prk65TxMgmtCount.fetch_add(1, std::memory_order_relaxed);\n        if (subtype == 8) emulator->prk65TxBeaconCount.fetch_add(1, std::memory_order_relaxed);\n        if (subtype == 4 || subtype == 5)\n          emulator->prk65TxProbeCount.fetch_add(1, std::memory_order_relaxed);\n        break;\n      case 1:\n        emulator->prk65TxControlCount.fetch_add(1, std::memory_order_relaxed);\n        break;\n      case 2:\n        emulator->prk65TxDataCount.fetch_add(1, std::memory_order_relaxed);\n        break;\n      default:\n        emulator->prk65TxInvalidCount.fetch_add(1, std::memory_order_relaxed);\n        break;\n    }\n  }\n  int MP_SendPacket(u8*, int, u64, void* userdata) {")
+  replaceUnique(platform, "  int MP_SendPacket(u8*, int, u64, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }", "  int MP_SendPacket(u8* data, int len, u64, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    Prk65ObserveTx(data, len, userdata, 0);\n    return 0;\n  }")
+  replaceUnique(platform, "  int MP_SendCmd(u8*, int, u64, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }", "  int MP_SendCmd(u8* data, int len, u64, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    Prk65ObserveTx(data, len, userdata, 1);\n    return 0;\n  }")
+  replaceUnique(platform, "  int MP_SendReply(u8*, int, u64, u16, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }", "  int MP_SendReply(u8* data, int len, u64, u16, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    Prk65ObserveTx(data, len, userdata, 2);\n    return 0;\n  }")
+  replaceUnique(platform, "  int MP_SendAck(u8*, int, u64, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    return 0;\n  }", "  int MP_SendAck(u8* data, int len, u64, void* userdata) {\n    if (auto* emulator = Prk63Emulator(userdata))\n      emulator->prk63MpTxCallsCount.fetch_add(1, std::memory_order_relaxed);\n    Prk65ObserveTx(data, len, userdata, 3);\n    return 0;\n  }")
+  replaceUnique(cpp,
+    "    .function(\"prk63NetTxCalls\", &wasmelon::WasmEmulator::prk63NetTxCalls)",
+    "    .function(\"prk63NetTxCalls\", &wasmelon::WasmEmulator::prk63NetTxCalls)\n    .function(\"prk65TxMgmt\", &wasmelon::WasmEmulator::prk65TxMgmt)\n    .function(\"prk65TxControl\", &wasmelon::WasmEmulator::prk65TxControl)\n    .function(\"prk65TxData\", &wasmelon::WasmEmulator::prk65TxData)\n    .function(\"prk65TxInvalid\", &wasmelon::WasmEmulator::prk65TxInvalid)\n    .function(\"prk65TxBeacon\", &wasmelon::WasmEmulator::prk65TxBeacon)\n    .function(\"prk65TxProbe\", &wasmelon::WasmEmulator::prk65TxProbe)\n    .function(\"prk65TxCommand\", &wasmelon::WasmEmulator::prk65TxCommand)\n    .function(\"prk65TxReply\", &wasmelon::WasmEmulator::prk65TxReply)\n    .function(\"prk65TxAck\", &wasmelon::WasmEmulator::prk65TxAck)")
+  replaceUnique(cpp, 'return 0x50524B3D;', 'return 0x50524B3E;')
+  console.log('[PokéRun] PRK65 privacy-safe 802.11 frame-class telemetry installed (packet routing still disabled).')
+}
+
 function restorePinnedSource() {
   try {
     execFileSync('git', ['reset', '--hard', expectedRevision], { cwd: source, stdio: 'inherit' })
@@ -130,6 +166,7 @@ try {
   }
   for (const patch of patches.slice(5)) applyExactWasmCppPatch(patch)
   applyPrk63WirelessTelemetry()
+  applyPrk65WifiFrameClasses()
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')
@@ -156,8 +193,8 @@ try {
       !patchedCpp.includes('arm.R[13] = injectedSp;')) {
     throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
   }
-  if (!patchedCpp.includes('return 0x50524B3D;')) {
-    throw new Error('PokéRun melonDS patch did not install the PRK32 runtime stamp.')
+  if (!patchedCpp.includes('return 0x50524B3E;')) {
+    throw new Error('PokéRun melonDS patch did not install the PRK65 runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new
