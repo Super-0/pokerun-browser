@@ -352,3 +352,72 @@ Pinned source patch-chain rewrite for PRK63 → PRK65 → PRK66 → PRK67
 The resulting firmware identity build stamp is `0x50524B43`.
 The C++ compile and in-game PRK71 behavior remain **unverified**
 until tested in the user's Codespace.
+
+
+## PRK71 verified in two real DS instances (Nov 4, 2026)
+
+| Metric | Player 1 | Player 2 |
+|---|---:|---:|
+| In-memory firmware role | 1 (expected 1) | 2 (expected 2) |
+| Incoming beacons with same transmitter MAC | **0** | **0** |
+| Incoming beacons with different transmitter MAC | **195** | **140** |
+| Native hardware RX completions | 29 | 38 |
+| Native RX-ring interrupts | 29 | 38 |
+| BSSID matched | 0 | 0 |
+| Native game association confirmed | **No** | **No** |
+
+PRK71 successfully eliminated the original equal-MAC collision. Distinct
+emulated DS Wi-Fi transmitters are present and hardware RX interrupts fire.
+Zero BSSID matches while scanning is not necessarily abnormal: BSSID is
+an association context, whereas pre-association scan beacons can come from
+other BSSIDs. Do **not** patch BSSID registers or force channel lock.
+
+PRK69 still shows scanning: P1 RF channel changes 795, P2 1357,
+mostly channels 1/7/13 with intermediate invalid-channel tuning. P1 TX
+ch1:12, ch7:34, ch13:70; accepted RX ch7:44. P2 TX ch1:99,
+ch7:66, ch13:74; accepted RX ch1:12/ch7:27. Snapshots are
+asynchronous and don't define packet loss.
+
+## PRK72: outbound connection stages and delivered frame types
+
+A new isolated, read-only pinned melonDS patch classifies each real
+outgoing 802.11 host-radio frame and each incoming **native RX-ring IRQ**
+by frame control type/subtype. 11 mutually exclusive categories:
+beacon, probe request, probe response, authentication,
+association/reassociation request, association/reassociation response,
+disassociation/deauthentication, other management, data, control,
+reserved/unknown.
+
+**What we're testing:** whether the game sends an actual handshake after
+hearing beacons. Evidence order:
+
+1. Beacon TX/RX only = two DS radios advertising and receiving, not
+   a pairing or discovery acknowledgment.
+2. Probe/authentication/association request TX = at least one emulator
+   is actively attempting to discover/join the other.
+3. Probe/authentication/association response TX/RX = progress in the
+   protocol, not yet full session establishment.
+4. Native positive-AID association acceptance / valid multiplayer state
+   remains the next major gate; a trade requires more than a successful
+   management frame and must not be launched yet.
+
+For this test, start PRK66 on both real P1/P2 tabs using two independent
+disposable saves and matching verified White 2 ROM. Toggle C-Gear
+Wireless through normal gameplay. Compare the full PRK72 TX and
+hardware RX category rows on both tabs and note whether White 2's
+in-game nearby-player indicator changed.
+
+**Caution: two save slots do not imply different trainer IDs.**
+The automatic dual-player launcher can clone Player 1's battery save
+into a distinct Player 2 storage profile. Both copies initially contain
+the same trainer identity and progress, even though PRK71 assigns
+different *console* MACs. That is sufficient for these radio tests,
+but may confound in-game peer-discovery or trading behavior. A future
+conclusive game-level test should use two independently created and
+progressed test saves, not edited save flags or a duplicate trainer.
+
+PRK72 retains all existing radio/channel/firmware behavior and does not
+capture packet bytes, MACs, trainer data, or save bytes. It requires a
+fresh native WASM build; source-patch context validation passed against
+the pinned upstream revision. Native C++ compilation and actual in-game
+PRK72 results are not yet verified.
