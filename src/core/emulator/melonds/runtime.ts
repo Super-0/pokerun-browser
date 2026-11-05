@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v13-prk63-wireless-audit'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v14-prk65-frame-classes'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B3D
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B3E
 export const POKERUN_ARM9_CALL_BUDGET = 1000000
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
@@ -43,6 +43,15 @@ type WasmEmulator = {
   prk63MpRxPolls(): number
   prk63MpHostRxPolls(): number
   prk63NetTxCalls(): number
+  prk65TxMgmt(): number
+  prk65TxControl(): number
+  prk65TxData(): number
+  prk65TxInvalid(): number
+  prk65TxBeacon(): number
+  prk65TxProbe(): number
+  prk65TxCommand(): number
+  prk65TxReply(): number
+  prk65TxAck(): number
   delete?: () => void
 }
 
@@ -99,6 +108,7 @@ export function loadMelonDsRuntime() {
           const hasPrk63WirelessCounters = [
             'prk63WifiStarts', 'prk63WifiStops', 'prk63MpTxCalls',
             'prk63MpRxPolls', 'prk63MpHostRxPolls', 'prk63NetTxCalls',
+            'prk65TxMgmt', 'prk65TxControl', 'prk65TxData', 'prk65TxInvalid', 'prk65TxBeacon', 'prk65TxProbe', 'prk65TxCommand', 'prk65TxReply', 'prk65TxAck',
           ].every(key => typeof (probe as unknown as Record<string, unknown>)[key] === 'function')
           if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET || !hasAtomicStackArgs || !hasPrk63WirelessCounters) {
             reject(new Error(
