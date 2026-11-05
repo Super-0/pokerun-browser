@@ -139,6 +139,25 @@ class MultiplayerSaveStore {
     return this.createProfile(source.gameId, rom, identity, root.id)
   }
 
+  /** Restore a missing local cartridge without touching this profile's
+   * battery save or the player selection. Always fingerprint-match first.
+   */
+  async attachRomToProfile(profileId: string, rom: LoadedRom, identity: MultiplayerRomIdentity) {
+    const profile = readProfiles().find(item => item.id === profileId)
+    if (!profile || profile.gameId !== identity.gameId ||
+        identity.status !== 'verified' || profile.romSha256 !== rom.sha256 ||
+        identity.sha256 !== rom.sha256) {
+      throw new Error('ROM fingerprint mismatch: refusing to change this save slot.')
+    }
+    // Await full IndexedDB commit before the dev launcher can restart.
+    await romSessionStore.setAndPersist(romKey(profileId), rom)
+    console.info('[PokéRun save] PRK64 ROM REATTACHED WITHOUT SAVE MODIFICATION', {
+      slot: profile.slotNumber,
+      romVerified: true,
+      batterySaveUnchanged: true,
+    })
+  }
+
   async restoreRom(profileId: string) {
     const profiles = readProfiles()
     const selected = profiles.find(profile => profile.id === profileId)
