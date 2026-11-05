@@ -174,6 +174,9 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
   const [saveStatus, setSaveStatus] = useState('WAITING FOR IN-GAME SAVE')
   const [exportingSave, setExportingSave] = useState(false)
   const [exportSaveError, setExportSaveError] = useState<string | null>(null)
+  const cgearImportPicker = useRef<HTMLInputElement>(null)
+  const [importingCgear, setImportingCgear] = useState(false)
+  const [cgearImportError, setCgearImportError] = useState<string | null>(null)
   const localRomIdentity = state.localRom!.identity
   const saveProfileId = state.localRom!.saveProfileId
   useEffect(() => {
@@ -189,6 +192,54 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
     })
     return () => { cancelled = true }
   }, [saveProfileId])
+
+  // PRK63 import from the running game's DEVELOPMENT UI: only a new storage
+  // profile is created. Never inject an edited save into a live emulator.
+  // The separate test profile is selected for the next auto-start.
+  const importCgearTestDuringGame = useCallback(async (file: File | null) => {
+    if (!import.meta.env.DEV || !file || importingCgear) return
+    let created: MultiplayerSaveProfile | null = null
+    setImportingCgear(true)
+    setCgearImportError(null)
+    try {
+      if (!saveProfileId) throw new Error('No saved White 2 profile is active.')
+      const player = new URLSearchParams(window.location.search).get('player')
+      if (player !== '1' && player !== '2') {
+        throw new Error('Auto-import requires the dev launcher ?player=1 or ?player=2 address.')
+      }
+      const bytes = new Uint8Array(await file.arrayBuffer())
+      validateWhite2CgearTestSave(bytes)
+      const loadedRom = state.localRom!.rom
+      const identity = identifyWhite2Rom(loadedRom)
+      if (identity.status !== 'verified' || identity.sha256 !== localRomIdentity.sha256) {
+        throw new Error('The currently running White 2 ROM is not the verified source.')
+      }
+      created = multiplayerSaveStore.create(roomGame.id, loadedRom, identity)
+      await multiplayerSaveStore.saveBatterySave(created.id, bytes)
+
+      // The original save keeps its own profile ID and stored battery file.
+      // Only the chosen automatic launch slot is updated, after creation
+      // and save-storage commit both succeed.
+      const selectionKey = `pokerun-multiplayer-dev-save-player-${player}-v1`
+      localStorage.setItem(selectionKey, created.id)
+      console.info('[PokéRun save] PRK63 AUTO TEST SLOT PREPARED', {
+        player,
+        sourceSlot: saveProfileId,
+        testSlot: created.slotNumber,
+        bytes: bytes.length,
+        originalSlotOverwritten: false,
+        liveEmulatorMemoryTouched: false,
+        nextAction: 'Reload dev harness and auto-start the new test slot',
+      })
+      window.location.reload()
+    } catch (error) {
+      if (created) await multiplayerSaveStore.delete(created.id).catch(() => undefined)
+      setCgearImportError(error instanceof Error ? error.message : 'Could not import C-Gear test save.')
+    } finally {
+      setImportingCgear(false)
+      if (cgearImportPicker.current) cgearImportPicker.current.value = ''
+    }
+  }, [importingCgear, localRomIdentity.sha256, roomGame.id, saveProfileId, state.localRom])
 
   // Export a standalone copy of the *actual* melonDS battery-save file,
   // without touching the game, save profile, or emulated memory. The browser
@@ -321,6 +372,20 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
             {exportingSave ? 'PREPARING BACKUP...' : 'DOWNLOAD SAVE BACKUP (.SAV)'}
           </PixelButton>
           {exportSaveError && <p className="form-error" role="alert">{exportSaveError}</p>}
+          <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid #9bacb9' }}>
+            <p style={{ fontSize: 12 }}>
+              PRK63 C-Gear test: import the edited .sav as a <strong>new local profile</strong>.
+              The current emulator is not modified. The dev harness will reload
+              and auto-start using the new profile; your original save stays intact.
+            </p>
+            <input ref={cgearImportPicker} hidden type="file" accept=".sav"
+              onChange={event => void importCgearTestDuringGame(event.target.files?.[0] ?? null)}/>
+            <PixelButton tone="ghost" disabled={importingCgear || !bridge || !saveProfileId}
+              onClick={() => cgearImportPicker.current?.click()}>
+              {importingCgear ? 'IMPORTING TEST SAVE...' : 'IMPORT C-GEAR TEST .SAV AND RESTART'}
+            </PixelButton>
+            {cgearImportError && <p className="form-error" role="alert">{cgearImportError}</p>}
+          </div>
         </section>
         <White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/><White2NativeWirelessResearchPanel bridge={bridge} rom={localRomIdentity}/><section className="multiplayer-debug multiplayer-session-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></>}
     </div>
