@@ -122,8 +122,15 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
         if (!localRomReady) {
           const profile = savedProfileForPlayer(player)
           if (!profile) {
-            status(`NO SELECTED PLAYER ${player} SAVE — CHOOSE A SLOT`)
-            setRestoreBlocked('No saved profile is selected or the remembered slot no longer exists. Use CHANGE SAVE / REPAIR ROM.')
+            // Manual selection is intentional and must remain usable for the
+            // first cartridge import or when the user wants to pick a ROM.
+            if (!localStorage.getItem(DEV_SAVE_KEYS[player])) {
+              status(`MANUAL PLAYER ${player} SAVE SELECTION`)
+              setRestoreBlocked(null)
+            } else {
+              status(`PLAYER ${player} SAVED SLOT NO LONGER EXISTS`)
+              setRestoreBlocked('The remembered save slot no longer exists. Use CHANGE SAVE / REPAIR ROM to select a different one.')
+            }
             return
           }
 
