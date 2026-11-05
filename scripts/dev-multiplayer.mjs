@@ -56,7 +56,7 @@ const server = await createServer({
     host: '0.0.0.0',
     port: MULTIPLAYER_PORT,
     strictPort: true,
-    open: '/multiplayer-dev.html',
+    open: false, // openBrowser() below handles the launcher; avoid duplicate tabs
   },
 })
 
