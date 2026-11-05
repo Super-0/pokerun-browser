@@ -5,6 +5,7 @@ import type { LoadedRom } from '../core/rom/RomLoader'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../multiplayer/core/MultiplayerPresence'
 import { TESTED_WHITE2_SHA256 } from '../multiplayer/games/White2LiveStateAdapter'
 import { White2RemoteTrainerRuntime } from '../multiplayer/games/White2RemoteTrainerRuntime'
+import { DevConsolePanel } from '../multiplayer/debug/DevConsolePanel'
 import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
@@ -102,6 +103,14 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   const [runtimeSpeedStats, setRuntimeSpeedStats] = useState<RuntimeSpeedStats>({ bridgeSpeed: speed, processFramesPerSecond: 0 })
   const speedRef = useRef<DsSpeedMultiplier>(speed)
   const isNativeWhite2 = game.id === 'white2' && suppliedRom?.sha256.toLowerCase() === TESTED_WHITE2_SHA256
+  // PRK75: real P1/P2 radio research must not run the older injected trainer,
+  // native interaction menu, field transition guards, or emote writes. They are
+  // independent of melonDS Wi-Fi and can leave live field tasks on map changes.
+  // Explicit per-tab opt-in preserves older renderer research when absent.
+  const radioIsolation = import.meta.env.DEV && isNativeWhite2 &&
+    (new URLSearchParams(window.location.search).get('player') === '1' ||
+      new URLSearchParams(window.location.search).get('player') === '2') &&
+    new URLSearchParams(window.location.search).get('radioIsolation') === '1'
 
   useEffect(() => multiplayerPresence.subscribe(snapshot => {
     presenceRef.current = snapshot
@@ -123,6 +132,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
 
   useEffect(() => {
     const onInteractionKey = (event: KeyboardEvent) => {
+      if (radioIsolation) return
       if (event.repeat || (event.code !== 'KeyX' && event.code !== 'KeyS')) return
       if (nativeMenuOpenRef.current) return
 
@@ -156,7 +166,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
 
     window.addEventListener('keydown', onInteractionKey, { capture: true, passive: false })
     return () => window.removeEventListener('keydown', onInteractionKey, true)
-  }, [isNativeWhite2])
+  }, [isNativeWhite2, radioIsolation])
 
   useEffect(() => {
     if (!import.meta.env.DEV) return
@@ -308,7 +318,16 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
 
   return (
     <div className="melonds-player">
-      {multiplayerRomIdentity && <White2RemoteTrainerRuntime bridge={ready ? bridgeRef.current : null} rom={multiplayerRomIdentity} romBytes={suppliedRom?.bytes}/>} 
+      {multiplayerRomIdentity && !radioIsolation &&
+        <White2RemoteTrainerRuntime bridge={ready ? bridgeRef.current : null} rom={multiplayerRomIdentity} romBytes={suppliedRom?.bytes}/>}
+      {radioIsolation && <>
+        <div className="melonds-debug pixel-border" role="status">
+          PRK75 RADIO ISOLATION ACTIVE — no PokeRun injected remote actor,
+          custom interaction menu, or native field transition runtime.
+          PRK66/PRK72 Wi-Fi testing and normal game input remain available.
+        </div>
+        <DevConsolePanel/>
+      </>}
       <div className="emulator-toolbar pixel-border">
         <strong>melonDS</strong>
         <div className="emulator-speed-controls" aria-label="Emulation speed">

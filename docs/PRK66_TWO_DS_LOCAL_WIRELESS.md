@@ -524,3 +524,40 @@ can test active radio initialization without claiming to be Union Room
 connection or trade; the option may be story-gated or unavailable. Capture
 exact screen messages if it fails. No native WASM rebuild is required for
 this DEV-only import/UI change.
+
+
+## PRK75 — isolated real-radio session (diagnostic against actor cleanup stall)
+
+Live PRK73/P2 log captured a legitimate map transition (435 to 422) and
+`PROBE 11 NATIVE COMM WITHDRAW` during busyFlag 2. After the transition,
+`PROBE 11 NATIVE COMM RESTORE READY` was emitted, followed by
+`NATIVE COMM CUTOVER CLEANUP UNSAFE - RELOAD GAME`:
+`FldCommActSys_DeleteActor(Probe 10) did not finish; ... task may still be live`.
+Twenty repeated interaction attempts were then blocked by a player model
+check (actual model 231, expected 240). These events indicate the **older
+injected field-actor stack can interfere with game transitions**, but do not
+prove melonDS froze or that native RF link association was attempted. The
+submitted log has no PRK72 or PRK66 frame-stage counters.
+
+For the next experiment, the real-player DEV launcher defaults to a checked
+`PRK75 RADIO ISOLATION (RECOMMENDED)` checkbox. It adds
+`radioIsolation=1` to both player URLs. In that mode MelonDsPlayer does not
+mount `White2RemoteTrainerRuntime` or capture custom interaction keys.
+That also omits its injected communication actor, shadow/emote writes, native
+Yes/No menu and remote transition/door guards. The normal native game,
+input, emulation frame scheduling, multiplayer lobby/position telemetry,
+PRK66 same-browser raw radio transport and PRK72 hardware counters remain.
+A DEV log panel stays available for collecting native Wi-Fi observations.
+No firmware, ROM, battery save, or melonDS WASM patch is changed.
+
+Stop radio in both old tabs, close them, pull, `npm run build` and
+`npm run dev:multiplayer`, keep the isolation checkbox checked, and launch
+both *disposable independently progressed* White 2 saves. Verify the PRK75
+banner in each game tab before enabling PRK66 and entering the Union Room.
+Compare the freeze with PRK66 **off** first, then with it **on** in a fresh
+session. Capturing PRK72 frame counts and whether native frames continue
+advancing distinguishes an injected-actor lifecycle problem from an emulator
+radio/Union Room failure. If radio isolation eliminates the problem,
+**do not** infer that native Wi-Fi is fully functioning: it only removes
+one independent confounder. If a game had already logged CLEANUP UNSAFE,
+reload it rather than trying to repair live guest pointers.

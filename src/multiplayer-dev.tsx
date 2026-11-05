@@ -326,6 +326,7 @@ function MultiplayerDevLauncher() {
   )
   const [player1Save, setPlayer1Save] = useState(() => storedSelection(1, profiles))
   const [player2Save, setPlayer2Save] = useState(() => storedSelection(2, profiles))
+  const [radioIsolation, setRadioIsolation] = useState(true)
   const reattachPicker = useRef<HTMLInputElement>(null)
   const reattachTarget = useRef<1 | 2>(1)
   const [reattaching, setReattaching] = useState(false)
@@ -444,8 +445,8 @@ function MultiplayerDevLauncher() {
       localStorage.setItem(DEV_SAVE_KEYS[2], secondId)
       localStorage.removeItem(DEV_ROOM_KEY)
       if (secondWindow && !secondWindow.closed) {
-        secondWindow.location.replace('/multiplayer-dev.html?player=2')
-        window.location.href = '/multiplayer-dev.html?player=1'
+        secondWindow.location.replace(`/multiplayer-dev.html?player=2${radioIsolation ? '&radioIsolation=1' : ''}`)
+        window.location.href = `/multiplayer-dev.html?player=1${radioIsolation ? '&radioIsolation=1' : ''}`
       } else {
         setManualLaunchReady(true)
         setLaunchStatus('THE BROWSER BLOCKED PLAYER 2. OPEN THE TWO PLAYER LINKS BELOW MANUALLY.')
@@ -466,7 +467,7 @@ function MultiplayerDevLauncher() {
   function openPlayer(player: 1 | 2) {
     persistPlayerSelections()
     if (player === 1) localStorage.removeItem(DEV_ROOM_KEY)
-    window.location.href = `/multiplayer-dev.html?player=${player}`
+    window.location.href = `/multiplayer-dev.html?player=${player}${radioIsolation ? '&radioIsolation=1' : ''}`
   }
 
   return <main className="screen home-screen">
@@ -537,6 +538,15 @@ function MultiplayerDevLauncher() {
             copied game initially has the same in-game trainer ID and progress
             as Player 1. That's fine for radio transport tests, but may
             prevent realistic game-level peer discovery or trading.</p>
+          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 12 }}>
+            <input type="checkbox" checked={radioIsolation}
+              onChange={event => setRadioIsolation(event.target.checked)} />
+            <span><strong>PRK75 RADIO ISOLATION (RECOMMENDED)</strong> — disables
+              PokeRun's older injected trainer, custom interaction menu, and
+              field-actor transition code in both real players. melonDS game,
+              native Wi-Fi bridge and PRK72 counters stay active. Uncheck
+              only when deliberately testing older native actor rendering.</span>
+          </label>
           <button className="pixel-button" disabled={launching || !player1Save}
             onClick={() => void launchBoth()}>
             {launching ? 'PREPARING TWO REAL DS PLAYERS...' : 'LAUNCH PLAYER 1 + PLAYER 2'}
@@ -550,10 +560,10 @@ function MultiplayerDevLauncher() {
           {launchStatus && <p role="status" style={{ fontSize: 12 }}>{launchStatus}</p>}
           {launchError && <p role="alert" className="form-error">{launchError}</p>}
           {manualLaunchReady && <div className="join-row">
-            <a className="pixel-button ghost" href="/multiplayer-dev.html?player=2" target="_blank" rel="noopener noreferrer">
+            <a className="pixel-button ghost" href={`/multiplayer-dev.html?player=2${radioIsolation ? '&radioIsolation=1' : ''}`} target="_blank" rel="noopener noreferrer">
               OPEN PLAYER 2 IN NEW TAB
             </a>
-            <a className="pixel-button ghost" href="/multiplayer-dev.html?player=1">
+            <a className="pixel-button ghost" href={`/multiplayer-dev.html?player=1${radioIsolation ? '&radioIsolation=1' : ''}`}>
               THEN OPEN PLAYER 1
             </a>
           </div>}
