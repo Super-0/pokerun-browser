@@ -370,6 +370,10 @@ function MultiplayerDevLauncher() {
   }
 
   function launchBoth() {
+    if (player1Save && player1Save === player2Save) {
+      window.alert('Choose two DIFFERENT White 2 save slots for the two real emulators. Sharing a save can overwrite your Pokémon progress.')
+      return
+    }
     localStorage.removeItem(DEV_ROOM_KEY)
     persistPlayerSelections()
 
@@ -411,7 +415,7 @@ function MultiplayerDevLauncher() {
         </article>
         <article>
           <h2>PLAYER 2 SAVE</h2>
-          <p>Remembered for future launches.</p>
+          <p>Remembered for future launches. Use a different slot than Player 1.</p>
           <select value={player2Save} onChange={event => setPlayer2Save(event.target.value)}>
             <option value="">MANUAL SELECTION</option>
             {profiles.map(profile => <option key={profile.id} value={profile.id}>SAVE {String(profile.slotNumber).padStart(3, '0')} • {profile.fileName}</option>)}
@@ -451,7 +455,11 @@ function MultiplayerDevLauncher() {
         <article>
           <h2>LAUNCH TEST SESSION</h2>
           <p>The current tab becomes Player 1 and one new tab opens for Player 2. No room-code copying is required.</p>
-          <button className="pixel-button" onClick={launchBoth}>LAUNCH PLAYER 1 + PLAYER 2</button>
+          <button className="pixel-button" disabled={Boolean(player1Save && player1Save === player2Save)}
+            onClick={launchBoth}>LAUNCH PLAYER 1 + PLAYER 2</button>
+          {player1Save && player1Save === player2Save && <p className="form-error" role="alert">
+            Both players are assigned the same save. Choose distinct slots to prevent concurrent writes.
+          </p>}
         </article>
         <article>
           <h2>RESTART ONE PLAYER</h2>
