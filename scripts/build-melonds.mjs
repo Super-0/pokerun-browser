@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { applyPrk66LocalRadioBridge } from './prk66-wireless-patch.mjs'
 import { applyPrk67NativeRxAudit } from './prk67-native-rx-audit.mjs'
+import { applyPrk69ChannelAudit } from './prk69-native-channel-audit.mjs'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
 const source = resolve(root, 'third_party/ds-anywhere')
@@ -30,6 +31,8 @@ const requiredRuntimeSymbols = [
   'prk66TxQueued', 'prk66RxQueued', 'prk66RxConsumed', 'prk66FramesDropped',
   'prk67RxAccepted', 'prk67RxBadLength', 'prk67RxBadChannel',
   'prk67RxMpFiltered', 'prk67RxBeacon', 'prk67RxAssocAccepted',
+  'prk69TxChannel', 'prk69AcceptedChannel', 'prk69WrongChannel',
+  'prk69TunedChannel', 'prk69CurrentChannel', 'prk69ChannelChanges',
 ]
 
 function run(command, args, cwd = root) { execFileSync(command, args, { cwd, stdio: 'inherit' }) }
@@ -175,6 +178,7 @@ try {
   applyPrk65WifiFrameClasses()
   applyPrk66LocalRadioBridge(source)
   applyPrk67NativeRxAudit(source)
+  applyPrk69ChannelAudit(source)
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')
@@ -201,8 +205,8 @@ try {
       !patchedCpp.includes('arm.R[13] = injectedSp;')) {
     throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
   }
-  if (!patchedCpp.includes('return 0x50524B40;')) {
-    throw new Error('PokéRun melonDS patch did not install the PRK67 runtime stamp.')
+  if (!patchedCpp.includes('return 0x50524B41;')) {
+    throw new Error('PokéRun melonDS patch did not install the PRK69 runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new
