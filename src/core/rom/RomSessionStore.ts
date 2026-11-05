@@ -39,9 +39,20 @@ async function withRomStore<T>(
   try {
     return await new Promise<T>((resolve, reject) => {
       const transaction = database.transaction(ROM_STORE, mode)
-      const store = transaction.objectStore(ROM_STORE)
-      action(store, resolve, reject)
+      let requestResolved = false
+      let value: T
+      // Request success is not transaction durability. A dev-page reload
+      // during the write can otherwise leave a save slot without its ROM.
+      transaction.oncomplete = () => {
+        if (requestResolved) resolve(value)
+        else reject(new Error('PokéRun ROM transaction completed without a result.'))
+      }
       transaction.onerror = () => reject(transaction.error ?? new Error('PokéRun local storage transaction failed.'))
+      transaction.onabort = () => reject(transaction.error ?? new Error('PokéRun local storage transaction aborted.'))
+      action(transaction.objectStore(ROM_STORE), result => {
+        value = result
+        requestResolved = true
+      }, reject)
     })
   } finally {
     database.close()
