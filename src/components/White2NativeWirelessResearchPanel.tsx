@@ -3,6 +3,7 @@ import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
 import { White2PartyStructureProbe } from '../multiplayer/games/White2PartyStructureProbe'
 import { White2NativeRadioLink, type NativeRadioLinkStatus } from '../multiplayer/games/White2NativeRadioLink'
+import { White2NativeFreezeWatch } from './White2NativeFreezeWatch'
 
 // PRK72 frame-control subtype labels. Matches native 11-kind classifier.
 const handshakeStageLabels = [
@@ -488,6 +489,7 @@ export function White2NativeWirelessResearchPanel({
           </p>
         </div>}
       </div>
+      <White2NativeFreezeWatch bridge={bridge}/>
     </details>
   </section>
 }

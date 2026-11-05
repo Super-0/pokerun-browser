@@ -589,3 +589,42 @@ received beacon data rather than forcing fixed RF channels. The game
 could also refuse to discover copied trainer identities. If emulated
 frames do not advance, resolve the stall/scheduling issue before using
 wireless count differences to infer game-level behavior.
+
+
+## PRK77 — freeze/liveness window evidence
+
+In a PRK76 test where Player 2 visually froze again, P2 advanced 2,096
+emulated frames in 118.2 seconds (17.7 fps mean), while P1 advanced
+4,885 in 115.3 seconds (42.4 fps mean). Both transmitted and received
+only beacons, with no probe/auth/assoc/data frames. These window means
+cannot prove at what moment P2 stopped or whether the game was internally
+waiting while emulation continued. The current P2 screenshot showed
+`BRIDGE 1× • PROCESS 60/s` at capture time, another reason not to
+confuse mean frame rate with a definitive emulator crash.
+
+PRK77 adds a **read-only** two-second frame-watch window showing elapsed
+browser time, emulated DS frames, requestAnimationFrame callbacks,
+processing duration, TX beacons and native beacon RX, current browser
+visibility, bridge status and emulation speed. It logs meaningful changes
+in degraded status once rather than spamming. When the in-game view looks
+frozen but the browser UI is responsive, press `CHECK FREEZE NOW (5 SECONDS)`
+on that player's tab; compare delta over actual elapsed time and copy the
+`[PokéRun wireless] PRK77 FIVE SECOND FREEZE CHECK` entry from the
+in-app console, which includes the previous six sample windows.
+
+Interpretation:
+- Visible tab + no RAF callbacks: host scheduling/busy page concern.
+- RAF running but zero DS frames: emulator scheduling/paused state concern.
+- Positive DS frames while gameplay unresponsive: possible native game wait,
+  internal deadlock or static screen; **not** proof of successful game logic.
+- Low FPS in a hidden tab: background browser throttling is plausible.
+- Delayed watchdog interval is measured as actual elapsed wall time;
+  if the browser's event loop is completely blocked, watchdog callbacks
+  themselves cannot execute.
+
+This does not change the native wireless bridge, force channels, identify
+MACs or trainer IDs, patch saves, or alter the emulator scheduler. No
+native WASM rebuild is needed. Confirm PRK75 radio isolation appears
+on both tabs, use 1× and two browser windows visibly side by side where
+possible, and distinguish existing identical trainer IDs from genuine
+independent trainers before interpreting Union Room discovery.
