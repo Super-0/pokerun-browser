@@ -326,6 +326,11 @@ function MultiplayerDevLauncher() {
   const [reattaching, setReattaching] = useState(false)
   const [reattachMessage, setReattachMessage] = useState<string | null>(null)
   const [reattachError, setReattachError] = useState<string | null>(null)
+  const [launching, setLaunching] = useState(false)
+  const [launchStatus, setLaunchStatus] = useState<string | null>(null)
+  const [launchError, setLaunchError] = useState<string | null>(null)
+  const [manualLaunchReady, setManualLaunchReady] = useState(false)
+  const launchInProgress = useRef(false)
 
   async function reattachSelectedRom(file: File | null) {
     if (!file || reattaching) return
@@ -369,22 +374,88 @@ function MultiplayerDevLauncher() {
     }
   }
 
-  function launchBoth() {
-    if (player1Save && player1Save === player2Save) {
-      window.alert('Choose two DIFFERENT White 2 save slots for the two real emulators. Sharing a save can overwrite your Pokémon progress.')
-      return
-    }
-    localStorage.removeItem(DEV_ROOM_KEY)
-    persistPlayerSelections()
+  /**
+   * PRK66: one-click setup with a non-destructive second battery-save slot.
+   * The browser opens a blank tab synchronously to preserve the click gesture,
+   * then navigates it only AFTER the copied save is durably committed.
+   */
+  async function launchBoth() {
+    if (launchInProgress.current) return
+    launchInProgress.current = true
+    setLaunching(true)
+    setLaunchError(null)
+    setLaunchStatus(null)
+    setManualLaunchReady(false)
+    let secondWindow: Window | null = null
+    let createdProfile: MultiplayerSaveProfile | null = null
+    let createdCommitted = false
+    try {
+      const source = profiles.find(profile => profile.id === player1Save)
+      if (!source) throw new Error('Select an existing White 2 save under PLAYER 1 SAVE first.')
 
-    // Only one popup is required. The launcher itself becomes Player 1, which
-    // avoids browsers blocking the second of two scripted window.open calls.
-    const player2 = window.open('/multiplayer-dev.html?player=2', '_blank')
-    if (!player2) {
-      window.alert('Player 2 was blocked by the browser. Allow popups for this localhost site, then launch again.')
-      return
+      // Open immediately, before the async IndexedDB operations. Browsers
+      // otherwise reject popup opening after the user gesture has expired.
+      secondWindow = window.open('about:blank', '_blank')
+
+      let secondId = player2Save
+      const shouldMakeCopy = !secondId || secondId === source.id
+      if (shouldMakeCopy) {
+        setLaunchStatus('PREPARING AN INDEPENDENT PLAYER 2 TEST SAVE...')
+        const battery = await multiplayerSaveStore.loadBatterySave(source.id)
+        if (!battery?.byteLength) {
+          throw new Error('Player 1 does not have a stored battery save to clone. Save in White 2 first, or select an existing independent Player 2 save.')
+        }
+        const rom = await multiplayerSaveStore.restoreRom(source.id)
+        if (!rom || rom.sha256 !== source.romSha256) {
+          throw new Error('Cannot restore the verified White 2 ROM for Player 1. Reattach it on this launcher before creating a Player 2 test copy.')
+        }
+        const identity = identifyWhite2Rom(rom)
+        if (identity.status !== 'verified' || identity.sha256 !== source.romSha256) {
+          throw new Error('Player 1 ROM failed the White 2 verification required for a safe test copy.')
+        }
+        createdProfile = multiplayerSaveStore.createDerived(source.id, rom, identity)
+        await multiplayerSaveStore.saveBatterySave(createdProfile.id, battery)
+        createdCommitted = true
+        secondId = createdProfile.id
+        setPlayer2Save(secondId)
+        setLaunchStatus(`CREATED INDEPENDENT P2 TEST SLOT ${String(createdProfile.slotNumber).padStart(3, '0')}.`)
+        console.info('[PokéRun PRK66] CREATED INDEPENDENT P2 SAVE COPY', {
+          sourceSlot: source.slotNumber, player2Slot: createdProfile.slotNumber,
+          originalSaveUnchanged: true,
+        })
+      } else {
+        const second = profiles.find(profile => profile.id === secondId)
+        if (!second) throw new Error('Selected Player 2 save is missing. Choose another save.')
+        if (second.romSha256 !== source.romSha256) {
+          throw new Error('The two players must use the same verified White 2 ROM. Select a matching save for Player 2.')
+        }
+      }
+      if (!secondId || secondId === source.id) {
+        throw new Error('Two independent save slots are required for the two real DS emulators.')
+      }
+      // Use resolved IDs instead of relying on React effects to run before
+      // navigation. Preserve the existing source profile and battery bytes.
+      localStorage.setItem(DEV_SAVE_KEYS[1], source.id)
+      localStorage.setItem(DEV_SAVE_KEYS[2], secondId)
+      localStorage.removeItem(DEV_ROOM_KEY)
+      if (secondWindow && !secondWindow.closed) {
+        secondWindow.location.replace('/multiplayer-dev.html?player=2')
+        window.location.href = '/multiplayer-dev.html?player=1'
+      } else {
+        setManualLaunchReady(true)
+        setLaunchStatus('THE BROWSER BLOCKED PLAYER 2. OPEN THE TWO PLAYER LINKS BELOW MANUALLY.')
+      }
+    } catch (error) {
+      try { secondWindow?.close() } catch { /* popup unavailable */ }
+      if (createdProfile && !createdCommitted) {
+        // Roll back an incomplete derived profile, but never the source slot.
+        try { await multiplayerSaveStore.delete(createdProfile.id) } catch { /* present diagnostic below */ }
+      }
+      setLaunchError(error instanceof Error ? error.message : 'Could not prepare a two-player session.')
+    } finally {
+      launchInProgress.current = false
+      setLaunching(false)
     }
-    window.location.href = '/multiplayer-dev.html?player=1'
   }
 
   function openPlayer(player: 1 | 2) {
@@ -454,12 +525,30 @@ function MultiplayerDevLauncher() {
       <section className="multiplayer-setup pixel-border">
         <article>
           <h2>LAUNCH TEST SESSION</h2>
-          <p>The current tab becomes Player 1 and one new tab opens for Player 2. No room-code copying is required.</p>
-          <button className="pixel-button" disabled={Boolean(player1Save && player1Save === player2Save)}
-            onClick={launchBoth}>LAUNCH PLAYER 1 + PLAYER 2</button>
-          {player1Save && player1Save === player2Save && <p className="form-error" role="alert">
-            Both players are assigned the same save. Choose distinct slots to prevent concurrent writes.
+          <p>The current tab becomes Player 1 and a new tab opens for Player 2.
+            If Player 2 is empty or points to Player 1's save, the launcher creates
+            an <strong>independent test copy</strong> of Player 1's stored battery save first.
+            The original save remains unchanged.</p>
+          <button className="pixel-button" disabled={launching || !player1Save}
+            onClick={() => void launchBoth()}>
+            {launching ? 'PREPARING TWO REAL DS PLAYERS...' : 'LAUNCH PLAYER 1 + PLAYER 2'}
+          </button>
+          {!player1Save && <p className="form-error" role="alert">
+            Select a Player 1 save to enable two-player launch.
           </p>}
+          {player1Save && (!player2Save || player1Save === player2Save) && <p style={{ fontSize: 12 }}>
+            A separate Player 2 test save will be cloned automatically and saved under its own slot.
+          </p>}
+          {launchStatus && <p role="status" style={{ fontSize: 12 }}>{launchStatus}</p>}
+          {launchError && <p role="alert" className="form-error">{launchError}</p>}
+          {manualLaunchReady && <div className="join-row">
+            <a className="pixel-button ghost" href="/multiplayer-dev.html?player=2" target="_blank" rel="noopener noreferrer">
+              OPEN PLAYER 2 IN NEW TAB
+            </a>
+            <a className="pixel-button ghost" href="/multiplayer-dev.html?player=1">
+              THEN OPEN PLAYER 1
+            </a>
+          </div>}
         </article>
         <article>
           <h2>RESTART ONE PLAYER</h2>
