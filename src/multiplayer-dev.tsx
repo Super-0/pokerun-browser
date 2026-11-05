@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactDOM from 'react-dom/client'
 import { multiplayerSaveStore, type MultiplayerSaveProfile } from './core/storage/MultiplayerSaveStore'
+import { loadRomFile } from './core/rom/RomLoader'
+import { gameById } from './data/games'
+import { identifyWhite2Rom } from './multiplayer/games/white2Rom'
 import { MultiplayerScreen } from './screens/MultiplayerScreen'
 import './styles/app.css'
 import './styles/emulator.css'
@@ -57,6 +60,7 @@ function profileCard(profile: MultiplayerSaveProfile) {
  */
 function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
   const [autoStatus, setAutoStatus] = useState('BOOTING')
+  const [restoreBlocked, setRestoreBlocked] = useState<string | null>(null)
 
   useEffect(() => {
     document.title = `PokéRun Multiplayer Dev • Player ${player}`
@@ -68,6 +72,9 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
     let lastReadyAt = 0
     let lastStartAt = 0
     let lastStatus = ''
+    let checkedRomId = ''
+    let checkingRomId = ''
+    let failedRomId = ''
 
     function status(next: string) {
       if (next === lastStatus) return
@@ -119,6 +126,42 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
             return
           }
 
+          // One read-only preflight check per selected slot. The old driver
+          // repeatedly clicked CONTINUE on a missing-ROM slot forever, leaving
+          // the user stuck in the lobby after a test-save import.
+          if (failedRomId === profile.id) {
+            status('ROM NOT AVAILABLE — CHANGE SAVE OR REPAIR ROM')
+            return
+          }
+          if (checkedRomId !== profile.id) {
+            if (checkingRomId !== profile.id) {
+              checkingRomId = profile.id
+              void multiplayerSaveStore.restoreRom(profile.id).then(rom => {
+                if (cancelled || checkingRomId !== profile.id) return
+                if (rom && rom.sha256 === profile.romSha256) {
+                  checkedRomId = profile.id
+                  setRestoreBlocked(null)
+                } else {
+                  failedRomId = profile.id
+                  setRestoreBlocked(`SAVE ${String(profile.slotNumber).padStart(3, '0')} could not restore its ROM. Choose an earlier slot, or reattach your verified .nds on the launcher. No .sav was erased.`)
+                }
+              }).catch(error => {
+                if (cancelled || checkingRomId !== profile.id) return
+                failedRomId = profile.id
+                setRestoreBlocked(error instanceof Error ? error.message : 'ROM restore failed. Change save or reattach the .nds.')
+              })
+            }
+            status('CHECKING SELECTED SAVE ROM')
+            return
+          }
+          const visibleError = document.querySelector<HTMLElement>('.multiplayer-lobby .form-error')?.textContent?.toUpperCase() ?? ''
+          if (visibleError.includes('SAVED ROM DATA IS UNAVAILABLE') ||
+              visibleError.includes('FINGERPRINT NO LONGER MATCHES')) {
+            failedRomId = profile.id
+            setRestoreBlocked(visibleError)
+            status('ROM RESTORE FAILED — CHANGE SAVE')
+            return
+          }
           const card = profileCard(profile)
           const continueButton = card
             ? [...card.querySelectorAll<HTMLButtonElement>('button')].find(button => button.textContent?.trim().toUpperCase() === 'CONTINUE')
@@ -241,7 +284,17 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
       border: '2px solid #35546b',
       fontSize: 11,
       color: '#243f54',
-    }}><b>AUTO P{player}</b> • {autoStatus}</div>
+    }}><b>AUTO P{player}</b> • {autoStatus}
+      <div style={{ marginTop: 6 }}>
+        <button type="button" style={{ fontSize: 11, padding: '4px 6px', cursor: 'pointer' }}
+          onClick={() => { window.location.href = '/multiplayer-dev.html' }}>
+          CHANGE SAVE / REPAIR ROM
+        </button>
+      </div>
+      {restoreBlocked && <p role="alert" style={{ marginTop: 6, fontSize: 11, maxWidth: 280 }}>
+        {restoreBlocked}
+      </p>}
+    </div>
     <MultiplayerScreen onHome={goToMainApp} onMyRuns={goToMainApp} onSettings={goToMainApp} />
   </>
 }
@@ -260,6 +313,34 @@ function MultiplayerDevLauncher() {
   )
   const [player1Save, setPlayer1Save] = useState(() => storedSelection(1, profiles))
   const [player2Save, setPlayer2Save] = useState(() => storedSelection(2, profiles))
+  const reattachPicker = useRef<HTMLInputElement>(null)
+  const reattachTarget = useRef<1 | 2>(1)
+  const [reattaching, setReattaching] = useState(false)
+  const [reattachMessage, setReattachMessage] = useState<string | null>(null)
+  const [reattachError, setReattachError] = useState<string | null>(null)
+
+  async function reattachSelectedRom(file: File | null) {
+    if (!file || reattaching) return
+    setReattaching(true)
+    setReattachMessage(null)
+    setReattachError(null)
+    try {
+      const player = reattachTarget.current
+      const targetId = player === 1 ? player1Save : player2Save
+      if (!targetId) throw new Error('Select a saved slot before reattaching the ROM.')
+      const profile = profiles.find(item => item.id === targetId)
+      if (!profile) throw new Error('The selected save slot could not be found.')
+      const rom = await loadRomFile(file, gameById.white2)
+      const identity = identifyWhite2Rom(rom)
+      await multiplayerSaveStore.attachRomToProfile(profile.id, rom, identity)
+      setReattachMessage(`ROM verified and restored for SAVE ${String(profile.slotNumber).padStart(3, '0')}. Your battery save was not changed. Click PLAYER ${player} to auto-launch.`)
+    } catch (error) {
+      setReattachError(error instanceof Error ? error.message : 'Could not reattach the ROM.')
+    } finally {
+      setReattaching(false)
+      if (reattachPicker.current) reattachPicker.current.value = ''
+    }
+  }
 
   useEffect(() => {
     if (player1Save) localStorage.setItem(DEV_SAVE_KEYS[1], player1Save)
@@ -318,6 +399,34 @@ function MultiplayerDevLauncher() {
             <option value="">MANUAL SELECTION</option>
             {profiles.map(profile => <option key={profile.id} value={profile.id}>SAVE {String(profile.slotNumber).padStart(3, '0')} • {profile.fileName}</option>)}
           </select>
+        </article>
+      </section>
+
+      <section className="multiplayer-setup pixel-border">
+        <article>
+          <h2>RECOVER A SAVE'S ROM</h2>
+          <p>If auto-launch reports that the ROM is missing, reattach your own
+            matching White 2 .nds file to the selected slot. This does not
+            overwrite the Pokémon save or create another slot.</p>
+          <input type="file" accept=".nds" hidden ref={reattachPicker}
+            onChange={event => void reattachSelectedRom(event.target.files?.[0] ?? null)}/>
+          <div className="join-row">
+            <button className="pixel-button ghost" disabled={reattaching || !player1Save}
+              onClick={() => { reattachTarget.current = 1; reattachPicker.current?.click() }}>
+              {reattaching ? 'VERIFYING...' : 'REATTACH PLAYER 1 ROM'}
+            </button>
+            <button className="pixel-button ghost" disabled={reattaching || !player2Save}
+              onClick={() => { reattachTarget.current = 2; reattachPicker.current?.click() }}>
+              REATTACH PLAYER 2 ROM
+            </button>
+          </div>
+          {reattachMessage && <p role="status">{reattachMessage}</p>}
+          {reattachError && <p role="alert" className="form-error">{reattachError}</p>}
+        </article>
+        <article>
+          <h2>RETURN TO A WORKING SAVE</h2>
+          <p>Choose the earlier save above, then click PLAYER 1 below.
+            Existing save slots are preserved, including test imports.</p>
         </article>
       </section>
 
