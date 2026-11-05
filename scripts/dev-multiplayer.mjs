@@ -71,5 +71,6 @@ server.printUrls()
 
 const harnessUrl = `http://localhost:${MULTIPLAYER_PORT}/multiplayer-dev.html`
 console.log(`\nPokéRun multiplayer harness:\n${harnessUrl}\n`)
-console.log(`Cross-device mode: append ?transport=network to a player URL served by this dev server.\n`)\nconsole.log('Opening the Codespaces port preview at / now redirects to the multiplayer launcher. For the normal app, use /?app=1.\n')
+console.log(`Cross-device mode: append ?transport=network to a player URL served by this dev server.\n`)
+console.log('Opening the Codespaces port preview at / now redirects to the multiplayer launcher. For the normal app, use /?app=1.\n')
 openBrowser(harnessUrl)
