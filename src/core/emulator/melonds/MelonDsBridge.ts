@@ -127,6 +127,12 @@ export class MelonDsBridge implements EmulatorBridge {
       mpReplyHostMatched: emu.prk79HostMatch() >>> 0,
       mpReplyStale: emu.prk79Stale() >>> 0,
       mpReplyEmpty: emu.prk79Empty() >>> 0,
+      mpHostEmptyPoll: emu.prk80EmptyPoll() >>> 0,
+      mpHostMissPoll: emu.prk80MissPoll() >>> 0,
+      mpHostPendingMiss: emu.prk80PendingMiss() >>> 0,
+      mpHostFutureMatch: emu.prk80FutureMatch() >>> 0,
+      mpHostAckFail: emu.prk80AckFail() >>> 0,
+      mpHostAckOk: emu.prk80AckOk() >>> 0,
       firmwareRoleApplied: emu.prk71AppliedFirmwareMacRole() >>> 0,
       // PRK72: TX raw-radio callbacks vs native RX-ring/IRQ deliveries.
       // One counter per frame type, no packet data exposed.

@@ -116,7 +116,7 @@ export function White2NativeWirelessResearchPanel({
         hardwareRx: delta(current.radio.handshakeStages[id].receivedByHardware,
           before.radio.handshakeStages[id].receivedByHardware),
       }))
-      console.info('[PokéRun wireless] PRK79 INVITATION TEST DELTA', {
+      console.info('[PokéRun wireless] PRK80 INTERACTION TIMING DELTA', {
         elapsedMs: current.at - before.at,
         emulatedFrames: current.emulatedFrames - before.emulatedFrames,
         mpReplyHostPolls: r('mpReplyHostPolls'),
@@ -125,6 +125,12 @@ export function White2NativeWirelessResearchPanel({
         mpReplyHostMatched: r('mpReplyHostMatched'),
         mpReplyStale: r('mpReplyStale'),
         mpReplyEmpty: r('mpReplyEmpty'),
+        mpHostEmptyPoll: r('mpHostEmptyPoll'),
+        mpHostMissPoll: r('mpHostMissPoll'),
+        mpHostPendingMiss: r('mpHostPendingMiss'),
+        mpHostFutureMatch: r('mpHostFutureMatch'),
+        mpHostAckFail: r('mpHostAckFail'),
+        mpHostAckOk: r('mpHostAckOk'),
         acceptedFrames: r('wifiAccepted'),
         badChannelFrames: r('wifiBadChannel'),
         nativeRxIrq: r('rxNativeRingIrq'),
@@ -145,6 +151,12 @@ export function White2NativeWirelessResearchPanel({
     matchedReplies: delta(after.radio.mpReplyHostMatched, before.radio.mpReplyHostMatched),
     staleReplies: delta(after.radio.mpReplyStale, before.radio.mpReplyStale),
     emptyReplies: delta(after.radio.mpReplyEmpty, before.radio.mpReplyEmpty),
+    mpHostEmptyPoll: delta(after.radio.mpHostEmptyPoll, before.radio.mpHostEmptyPoll),
+    mpHostMissPoll: delta(after.radio.mpHostMissPoll, before.radio.mpHostMissPoll),
+    mpHostPendingMiss: delta(after.radio.mpHostPendingMiss, before.radio.mpHostPendingMiss),
+    mpHostFutureMatch: delta(after.radio.mpHostFutureMatch, before.radio.mpHostFutureMatch),
+    mpHostAckFail: delta(after.radio.mpHostAckFail, before.radio.mpHostAckFail),
+    mpHostAckOk: delta(after.radio.mpHostAckOk, before.radio.mpHostAckOk),
     badChannel: delta(after.radio.wifiBadChannel, before.radio.wifiBadChannel),
     stages: trackedKinds.map(({ id, label }) => ({
       label,
@@ -191,6 +203,13 @@ export function White2NativeWirelessResearchPanel({
           {' '}• stale {native.mpReplyStale}
           {' '}• empty {native.mpReplyEmpty}
         </p>
+        <p><strong>PRK80 host timing:</strong> empty queue {native.mpHostEmptyPoll}
+          {' '}• unmatched polls {native.mpHostMissPoll}
+          {' '}• queued but unmatched {native.mpHostPendingMiss}
+          {' '}• future timestamp matches {native.mpHostFutureMatch}
+        </p>
+        <p>Native ACKs: client failed {native.mpHostAckFail}
+          {' '}• no client failure {native.mpHostAckOk}</p>
         <p style={{ opacity: 0.75 }}>
           A sent reply is not necessarily received by the host in time.
           Compare these values during invitation acceptance.
@@ -199,10 +218,12 @@ export function White2NativeWirelessResearchPanel({
     </div>}
 
     <div style={{ marginTop: 12, borderTop: '1px solid #9bacb9', paddingTop: 10 }}>
-      <h3 style={{ fontSize: 14 }}>INVITATION TEST • BEFORE / AFTER</h3>
-      <p style={{ fontSize: 12 }}>On both tabs, capture BEFORE, invite and accept
-        through the normal Union Room menus, then capture AFTER. The result
-        is a read-only diagnostic and is logged to the development console.</p>
+      <h3 style={{ fontSize: 14 }}>PRK80 • INTERACTION TIMING BEFORE / AFTER</h3>
+      <p style={{ fontSize: 12 }}>
+        Reach the native Union Room interaction menu, capture BEFORE on both
+        tabs, choose Trade and press the first normal game confirmation.
+        Capture AFTER if the game dialogue stalls. No guest memory changes.
+      </p>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <button type="button" disabled={!eligible} onClick={() => capture('before')}>
           1. CAPTURE BEFORE
@@ -216,12 +237,18 @@ export function White2NativeWirelessResearchPanel({
         Baseline ready. Attempt one invitation, then capture AFTER.
       </p>}
       {d && <div role="status" style={{ marginTop: 8, fontSize: 12 }}>
-        <strong>PRK79 • INVITATION TEST RESULT</strong>
+        <strong>PRK80 • INTERACTION TIMING RESULT</strong>
         <p>Window {(d.ms / 1000).toFixed(1)} s • DS frames +{d.frames}</p>
         <p>Reply TX +{d.txReplies} • host RX queued +{d.queuedReplies}
           {' '}• host polls +{d.replyPolls} • matched +{d.matchedReplies}
           {' '}• stale +{d.staleReplies} • empty +{d.emptyReplies}
           {' '}• wrong-channel +{d.badChannel}</p>
+        <p>PRK80 host: empty queue +{d.mpHostEmptyPoll}
+          {' '}• no reply match +{d.mpHostMissPoll}
+          {' '}• queued but unmatched +{d.mpHostPendingMiss}
+          {' '}• future timestamps +{d.mpHostFutureMatch}</p>
+        <p>Native ACKs: client failed +{d.mpHostAckFail}
+          {' '}• no client failure +{d.mpHostAckOk}</p>
         {d.stages.map(stage => <p key={stage.label} style={{ margin: '2px 0' }}>
           {stage.label}: TX +{stage.tx} • hardware RX +{stage.rx}
         </p>)}

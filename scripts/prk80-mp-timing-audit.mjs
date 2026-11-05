@@ -1,0 +1,27 @@
+import { readFileSync, writeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
+// PRK80: read-only native MP timing breakdown, applied after PRK79.
+export function applyPrk80MpTimingAudit(source) {
+  const header = resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.h')
+  const cpp = resolve(source, 'wasmelonDS/src/frontend/wasm/WasmEmulator.cpp')
+  const platform = resolve(source, 'wasmelonDS/src/frontend/wasm/WasmPlatform.cpp')
+  const wifi = resolve(source, 'wasmelonDS/src/Wifi.cpp')
+  const replaceUnique = (path, before, after) => {
+    const data = readFileSync(path, 'utf8')
+    const count = data.split(before).length - 1
+    if (count !== 1) throw new Error('PRK80 pinned source mismatch in ' + path + ': ' + count)
+    writeFileSync(path, data.replace(before, after))
+  }
+  replaceUnique(header, "    std::atomic<melonDS::u32> prk79EmptyCount{0};", "    std::atomic<melonDS::u32> prk79EmptyCount{0};\n    // PRK80 read-only: actual native host command/ack failure accounting.\n    std::atomic<melonDS::u32> prk80EmptyPollCount{0};\n    std::atomic<melonDS::u32> prk80MissPollCount{0};\n    std::atomic<melonDS::u32> prk80PendingMissCount{0};\n    std::atomic<melonDS::u32> prk80FutureMatchCount{0};\n    std::atomic<melonDS::u32> prk80AckFailCount{0};\n    std::atomic<melonDS::u32> prk80AckOkCount{0};\n    void prk80RecordAck(melonDS::u16 clientFail) {\n      if (!prk66Enabled.load(std::memory_order_acquire)) return;\n      (clientFail ? prk80AckFailCount : prk80AckOkCount).fetch_add(\n          1, std::memory_order_relaxed);\n    }")
+  replaceUnique(header, "      std::lock_guard<std::mutex> guard(prk66Mutex);\n      for (auto it = prk79RxReplies.begin(); it != prk79RxReplies.end();) {", "      std::lock_guard<std::mutex> guard(prk66Mutex);\n      const bool hadPending = !prk79RxReplies.empty();\n      if (!hadPending)\n        prk80EmptyPollCount.fetch_add(1, std::memory_order_relaxed);\n      for (auto it = prk79RxReplies.begin(); it != prk79RxReplies.end();) {")
+  replaceUnique(header, "          found |= static_cast<melonDS::u16>(1u << it->aid);\n          prk79HostMatchCount.fetch_add(1, std::memory_order_relaxed);", "          found |= static_cast<melonDS::u16>(1u << it->aid);\n          prk79HostMatchCount.fetch_add(1, std::memory_order_relaxed);\n          // Independent DS clocks may differ; diagnostic only, no filtering.\n          if (it->timestamp > cmdTimestamp &&\n              it->timestamp - cmdTimestamp > 1024)\n            prk80FutureMatchCount.fetch_add(1, std::memory_order_relaxed);")
+  replaceUnique(header, "        it = prk79RxReplies.erase(it);\n      }\n      return found;\n    }\n    bool prk79InjectReply", "        it = prk79RxReplies.erase(it);\n      }\n      if (!found) {\n        prk80MissPollCount.fetch_add(1, std::memory_order_relaxed);\n        if (hadPending)\n          prk80PendingMissCount.fetch_add(1, std::memory_order_relaxed);\n      }\n      return found;\n    }\n    bool prk79InjectReply")
+  replaceUnique(header, "    melonDS::u32 prk79Empty() const { return prk79EmptyCount.load(std::memory_order_relaxed); }", "    melonDS::u32 prk79Empty() const { return prk79EmptyCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk80EmptyPoll() const { return prk80EmptyPollCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk80MissPoll() const { return prk80MissPollCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk80PendingMiss() const { return prk80PendingMissCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk80FutureMatch() const { return prk80FutureMatchCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk80AckFail() const { return prk80AckFailCount.load(std::memory_order_relaxed); }\n    melonDS::u32 prk80AckOk() const { return prk80AckOkCount.load(std::memory_order_relaxed); }")
+  replaceUnique(platform, "  void PokerunPrk72RecordRxFrame(void* userdata, unsigned frameControl) {", "  void PokerunPrk80RecordAck(void* userdata, unsigned clientFail) {\n    auto* emulator = Prk63Emulator(userdata);\n    if (emulator)\n      emulator->prk80RecordAck(static_cast<melonDS::u16>(clientFail));\n  }\n  void PokerunPrk72RecordRxFrame(void* userdata, unsigned frameControl) {")
+  replaceUnique(wifi, "  void PokerunPrk72RecordRxFrame(void* userdata, unsigned frameControl);\n}", "  void PokerunPrk72RecordRxFrame(void* userdata, unsigned frameControl);\n  void PokerunPrk80RecordAck(void* userdata, unsigned clientFail);\n}")
+  replaceUnique(wifi, "void Wifi::SendMPAck(u16 cmdcount, u16 clientfail)\n{", "void Wifi::SendMPAck(u16 cmdcount, u16 clientfail)\n{\n    Platform::PokerunPrk80RecordAck(NDS.UserData, clientfail);")
+  replaceUnique(cpp, "    .function(\"prk79Empty\", &wasmelon::WasmEmulator::prk79Empty)", "    .function(\"prk79Empty\", &wasmelon::WasmEmulator::prk79Empty)\n    .function(\"prk80EmptyPoll\", &wasmelon::WasmEmulator::prk80EmptyPoll)\n    .function(\"prk80MissPoll\", &wasmelon::WasmEmulator::prk80MissPoll)\n    .function(\"prk80PendingMiss\", &wasmelon::WasmEmulator::prk80PendingMiss)\n    .function(\"prk80FutureMatch\", &wasmelon::WasmEmulator::prk80FutureMatch)\n    .function(\"prk80AckFail\", &wasmelon::WasmEmulator::prk80AckFail)\n    .function(\"prk80AckOk\", &wasmelon::WasmEmulator::prk80AckOk)")
+  replaceUnique(cpp, "return 0x50524B45;", "return 0x50524B46;")
+  console.log('[PokéRun] PRK80 read-only native MP timing audit installed.')
+}

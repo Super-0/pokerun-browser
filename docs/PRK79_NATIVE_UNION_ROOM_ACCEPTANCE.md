@@ -80,3 +80,39 @@ one-emulator beacon-baseline surveys, detailed RF histograms, and standalone
 PRK62 research are removed from the main workflow. Historical research and
 diagnostic exports remain available in source/docs. Backup, party inspection,
 and frame liveness are accessible only in expandable Advanced sections.
+
+## PRK80 — read-only native reply timing vs ACK failures
+
+The user's 38.5-second host capture showed 5,754 MP reply polls,
+5,754 incoming replies queued, 907 successfully matched, and 151
+discarded as stale. P2 sent one deauthentication frame. The emulators
+advanced at ~60 DS frames/s while the trade dialogue stalled.
+
+PRK80 adds native-only aggregate counters: host polls with an empty
+reply queue; host polls that matched no AID; polls with pending replies
+but no usable match; matches more than 1,024 emulated microseconds
+ahead of the host clock; and native ACKs reporting client failure
+versus no failure. These are observations, not proof of late browser
+delivery or proof of successful trading. Native timestamps can differ
+between two independently executing DS instances.
+
+New native stamp: `0x50524B46`. Rebuild WASM, and close old tabs.
+The UI retains the existing START/STOP controls and adds PRK80 numbers
+to the existing compact BEFORE / AFTER test. Do not enable fabricated
+client replies, force channels, or skip guest dialogue.
+
+```bash
+cd /workspaces/pokerun-browser
+git pull --ff-only origin mp/map-transition-recovery-v2
+git rev-parse --short HEAD
+git submodule update --init --recursive
+npm run build:melonds
+npm run build
+npm run dev:multiplayer
+```
+
+With the same P1/P2 disposable saves, PRK75 radio isolation and 5 ms
+polling, reach the normal Greet / Battle / Trade menu. Capture BEFORE
+in both visible windows, choose Trade and confirm normally, then capture
+AFTER when the dialogue stalls (or completes). Report the exact text
+and both PRK80 results. There is no new Union Room movement logic.
