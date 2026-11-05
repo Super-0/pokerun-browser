@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v19-prk71-firmware-identity'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v20-prk72-handshake-stage'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B43
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B44
 export const POKERUN_ARM9_CALL_BUDGET = 1000000
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
@@ -82,6 +82,8 @@ type WasmEmulator = {
   prk70RxRingIrq(): number
   prk71SetFirmwareMacRole(role: number): boolean
   prk71AppliedFirmwareMacRole(): number
+  prk72TxKind(kind: number): number
+  prk72RxKind(kind: number): number
   delete?: () => void
 }
 
@@ -149,6 +151,7 @@ export function loadMelonDsRuntime() {
             'prk70DestFiltered', 'prk70WepFiltered', 'prk70BeaconBssidMatched',
             'prk70BeaconFilterDropped', 'prk70RxRingIrq',
             'prk71SetFirmwareMacRole', 'prk71AppliedFirmwareMacRole',
+            'prk72TxKind', 'prk72RxKind',
           ].every(key => typeof (probe as unknown as Record<string, unknown>)[key] === 'function')
           if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET || !hasAtomicStackArgs || !hasPrk63WirelessCounters) {
             reject(new Error(
