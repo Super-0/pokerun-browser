@@ -292,10 +292,23 @@ export function White2NativeWirelessResearchPanel({
               {handshakeStageLabels[stage.kind] ?? 'Unknown'}:
               {' '}TX {stage.sent} • hardware RX {stage.receivedByHardware}
             </p>)}
+            {radioStatus.native.handshakeStages[0]?.sent > 0 &&
+              radioStatus.native.handshakeStages.slice(1).every(stage =>
+                stage.sent === 0 && stage.receivedByHardware === 0) && <p
+                  role="status" style={{ fontSize: 12, fontWeight: 600 }}>
+                BEACON-ONLY — NO CONNECTION FRAMES OBSERVED. PRK73 next test:
+                with two independently created, normally progressed White 2
+                trainer saves (Basic Badge and C-Gear acquired), enter the
+                actual in-game Union Room through the left desk on Pokémon
+                Center 2F in BOTH real emulator tabs. Keep PRK66 radio enabled
+                and compare these same counters again. A copied .sav has the
+                same trainer identity and is not a conclusive peer test.
+              </p>}
             <p style={{ fontSize: 11, opacity: 0.75 }}>
-              If probe/authentication/association/data remain zero, no actual
-              native connection handshake is visible. C-Gear beacons alone
-              do not establish a connected multiplayer peer.
+              C-Gear wireless being enabled is not the same as initiating
+              a local Union Room session. A raw DS beacon—even one delivered
+              through RX IRQ—does not prove player discovery or association.
+              Do not force BSSID, channel, connection state, or trade overlay.
             </p>
           </div>}
           {radioStatus.native && <div style={{ paddingTop: 8, borderTop: '1px solid #9bacb9' }}>
