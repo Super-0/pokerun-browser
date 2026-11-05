@@ -533,7 +533,10 @@ function MultiplayerDevLauncher() {
           <p>The current tab becomes Player 1 and a new tab opens for Player 2.
             If Player 2 is empty or points to Player 1's save, the launcher creates
             an <strong>independent test copy</strong> of Player 1's stored battery save first.
-            The original save remains unchanged.</p>
+            The original save remains unchanged. <strong>Important:</strong> the
+            copied game initially has the same in-game trainer ID and progress
+            as Player 1. That's fine for radio transport tests, but may
+            prevent realistic game-level peer discovery or trading.</p>
           <button className="pixel-button" disabled={launching || !player1Save}
             onClick={() => void launchBoth()}>
             {launching ? 'PREPARING TWO REAL DS PLAYERS...' : 'LAUNCH PLAYER 1 + PLAYER 2'}
