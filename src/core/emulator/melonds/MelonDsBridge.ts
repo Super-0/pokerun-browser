@@ -106,6 +106,13 @@ export class MelonDsBridge implements EmulatorBridge {
       incomingEnqueued: emu.prk66RxQueued() >>> 0,
       incomingConsumed: emu.prk66RxConsumed() >>> 0,
       dropped: emu.prk66FramesDropped() >>> 0,
+      // PRK67: exact native receiver acceptance checks, after PRK66 dequeue.
+      wifiAccepted: emu.prk67RxAccepted() >>> 0,
+      wifiBadLength: emu.prk67RxBadLength() >>> 0,
+      wifiBadChannel: emu.prk67RxBadChannel() >>> 0,
+      wifiMpFiltered: emu.prk67RxMpFiltered() >>> 0,
+      wifiBeaconsAccepted: emu.prk67RxBeacon() >>> 0,
+      wifiAssociationAccepted: emu.prk67RxAssocAccepted() >>> 0,
     }
   }
 
