@@ -221,14 +221,24 @@ export function White2NativeWirelessResearchPanel({
             {' '}• Native RX consumed {radioStatus.native.incomingConsumed}
             {' '}• Native queue drops {radioStatus.native.dropped}
           </p>}
+          {radioStatus.native && <p>
+            <strong>PRK67 NATIVE WI-FI:</strong>
+            {' '}accepted {radioStatus.native.wifiAccepted}
+            {' '}• bad-length {radioStatus.native.wifiBadLength}
+            {' '}• wrong-channel {radioStatus.native.wifiBadChannel}
+            {' '}• MP-filtered {radioStatus.native.wifiMpFiltered}
+            {' '}• beacons accepted {radioStatus.native.wifiBeaconsAccepted}
+            {' '}• association responses accepted {radioStatus.native.wifiAssociationAccepted}
+          </p>}
           {radioStatus.reason && <p className="form-error">{radioStatus.reason}</p>}
         </div>}
         <p style={{ fontSize: 11, opacity: 0.75 }}>
           Linked means only that two browser tabs exchanged control messages.
-          Native RX consumed is stronger evidence that an actual emulator read
-          incoming bytes. Neither means White 2 discovered the other trainer,
-          entered the Union Room, or completed a trade. Stop the link before
-          closing a game tab.
+          Native RX consumed means the emulator copied an incoming frame.
+          PRK67 Wi-Fi accepted means it passed the receiver's length, channel,
+          and MP filtering checks. An accepted beacon is not a discovered
+          trainer; positive association responses are a stronger, separate
+          milestone. Stop the link before closing a game tab.
         </p>
       </div>
     </details>
