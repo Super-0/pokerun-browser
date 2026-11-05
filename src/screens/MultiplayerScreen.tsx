@@ -350,7 +350,7 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
     <div className="screen-shell">
       <AppHeader onHome={onHome} right={right}/>
       <section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>{import.meta.env.DEV
-  ? 'Single-emulator test with a simulated remote trainer. Native dialogue and trade handshake are active; Pokémon exchange is disabled.'
+  ? 'Development multiplayer: P2 may be simulated or a second actual DS. PRK66 radio requires two actual emulators; native Pokémon trading remains disabled.'
   : 'Both players keep independent saves. Live position is shared between the two games; party and gym reads are the next adapter fields.'}</p><span className={saveStatus === 'LOCAL SAVE FAILED' ? 'form-error' : 'memory-ok'}>{saveStatus}</span></div><PixelButton tone="ghost" onClick={() => session.leave()}>LEAVE SESSION</PixelButton></section>
 
       {import.meta.env.DEV && state.trade && <TradeHandshakeBanner
