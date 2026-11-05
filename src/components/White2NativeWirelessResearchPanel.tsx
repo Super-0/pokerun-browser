@@ -4,6 +4,14 @@ import type { MultiplayerRomIdentity } from '../multiplayer/core/protocol'
 import { White2PartyStructureProbe } from '../multiplayer/games/White2PartyStructureProbe'
 import { White2NativeRadioLink, type NativeRadioLinkStatus } from '../multiplayer/games/White2NativeRadioLink'
 
+// PRK72 frame-control subtype labels. Matches native 11-kind classifier.
+const handshakeStageLabels = [
+  'Beacons', 'Probe requests', 'Probe responses', 'Authentication',
+  'Association/reassociation requests', 'Association/reassociation responses',
+  'Deauth/disassociation', 'Other management', 'Data', 'Control',
+  'Reserved/unknown',
+] as const
+
 // PRK63: one-emulator feasibility experiment. These are counters in the
 // pinned WASM Wi-Fi callbacks, NOT evidence of a connected second DS.
 // No emulated button presses, guest memory writes, packet payloads or sends.
@@ -270,6 +278,24 @@ export function White2NativeWirelessResearchPanel({
               radio link. Only freshly generated, in-memory firmware is changed;
               no ROM, stored firmware or battery-save data is rewritten.
               PRK70 below verifies the *actual radio-frame addresses*.
+            </p>
+          </div>}
+          {radioStatus.native && <div style={{ paddingTop: 8, borderTop: '1px solid #9bacb9' }}>
+            <strong>PRK72 • NATIVE CONNECTION FRAME STAGES (READ ONLY)</strong>
+            <p style={{ fontSize: 11, opacity: 0.75 }}>
+              TX counts actual outgoing Wi-Fi callbacks; hardware RX counts
+              packets committed to the emulated DS receive ring (IRQ).
+              This is not proof the game parsed or responded to a packet.
+            </p>
+            {radioStatus.native.handshakeStages.map(stage => <p key={stage.kind}
+              style={{ margin: '3px 0', fontSize: 12 }}>
+              {handshakeStageLabels[stage.kind] ?? 'Unknown'}:
+              {' '}TX {stage.sent} • hardware RX {stage.receivedByHardware}
+            </p>)}
+            <p style={{ fontSize: 11, opacity: 0.75 }}>
+              If probe/authentication/association/data remain zero, no actual
+              native connection handshake is visible. C-Gear beacons alone
+              do not establish a connected multiplayer peer.
             </p>
           </div>}
           {radioStatus.native && <div style={{ paddingTop: 8, borderTop: '1px solid #9bacb9' }}>
