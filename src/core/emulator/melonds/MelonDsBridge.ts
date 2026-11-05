@@ -51,6 +51,17 @@ export class MelonDsBridge implements EmulatorBridge {
   private saveFlushTimer: number | null = null
   private saveDirty = false
   private savePath = '/pokerun/saves/game.sav'
+  private devWirelessFirmwareRole: 0 | 1 | 2 = 0
+
+  /** PRK71: assign before loadRom. Applies only to in-memory firmware of a
+   * verified real-player DEV session; never writes MACs into battery saves.
+   */
+  setDevWirelessFirmwareRole(role: 1 | 2) {
+    if (!import.meta.env.DEV || this.emulator || this.status !== 'idle') {
+      throw new Error('PRK71 wireless role must be assigned before emulator startup in DEV.')
+    }
+    this.devWirelessFirmwareRole = role
+  }
 
   attachScreens(top: HTMLCanvasElement, bottom: HTMLCanvasElement) { this.topCanvas = top; this.bottomCanvas = bottom }
 
@@ -106,6 +117,7 @@ export class MelonDsBridge implements EmulatorBridge {
       incomingEnqueued: emu.prk66RxQueued() >>> 0,
       incomingConsumed: emu.prk66RxConsumed() >>> 0,
       dropped: emu.prk66FramesDropped() >>> 0,
+      firmwareRoleApplied: emu.prk71AppliedFirmwareMacRole() >>> 0,
       // PRK67: exact native receiver acceptance checks, after PRK66 dequeue.
       wifiAccepted: emu.prk67RxAccepted() >>> 0,
       wifiBadLength: emu.prk67RxBadLength() >>> 0,
@@ -186,7 +198,18 @@ export class MelonDsBridge implements EmulatorBridge {
     this.cart = new module.WasmNdsCart()
     if (!this.cart.loadFromFile('/pokerun/roms/game.nds')) throw new Error('melonDS rejected this .nds ROM.')
     this.emulator.setSavePath(this.savePath)
+    if (this.devWirelessFirmwareRole) {
+      // Firmware identity is set BEFORE melonDS generates firmware and before
+      // direct boot copies its header to emulated DS memory.
+      if (!this.emulator.prk71SetFirmwareMacRole(this.devWirelessFirmwareRole)) {
+        throw new Error('PRK71 could not assign the firmware MAC identity before boot.')
+      }
+    }
     this.emulator.loadFreeBIOS()
+    if (this.devWirelessFirmwareRole &&
+        this.emulator.prk71AppliedFirmwareMacRole() !== this.devWirelessFirmwareRole) {
+      throw new Error('PRK71 firmware identity was not applied before ROM startup.')
+    }
     if (!this.emulator.loadRom(this.cart, false)) throw new Error('melonDS could not attach the ROM cartridge.')
     this.status = 'loaded'
   }
