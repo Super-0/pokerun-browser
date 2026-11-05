@@ -82,6 +82,7 @@ export function White2NativeWirelessResearchPanel({
   const [error, setError] = useState<string | null>(null)
   const [radioStatus, setRadioStatus] = useState<NativeRadioLinkStatus | null>(null)
   const [radioError, setRadioError] = useState<string | null>(null)
+  const [fastRadioPoll, setFastRadioPoll] = useState(false)
   const [radioBefore, setRadioBefore] = useState<RadioSample | null>(null)
   const [radioAfter, setRadioAfter] = useState<RadioSample | null>(null)
   const [radioCaptureError, setRadioCaptureError] = useState<string | null>(null)
@@ -116,6 +117,7 @@ export function White2NativeWirelessResearchPanel({
       const link = new White2NativeRadioLink(bridge, {
         roomCode, startId, localPlayerId, remotePlayerId,
         romSha256: rom.sha256, saveProfileId,
+        pollIntervalMs: fastRadioPoll ? 5 : 50,
       }, setRadioStatus)
       radioLink.current = link
       link.start()
@@ -307,6 +309,18 @@ export function White2NativeWirelessResearchPanel({
           Raw emulated Wi-Fi frames stay in this browser's BroadcastChannel.
           This is a risky research experiment: use backed-up disposable saves.
         </p>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 12, marginBottom: 8 }}>
+          <input type="checkbox" checked={fastRadioPoll}
+            disabled={Boolean(radioLink.current && radioStatus?.phase !== 'stopped' && radioStatus?.phase !== 'error')}
+            onChange={event => setFastRadioPoll(event.target.checked)}/>
+          PRK78 EXPERIMENT: 5 ms RADIO POLL (default 50 ms)
+        </label>
+        <p style={{ fontSize: 11, opacity: 0.8 }}>
+          Opt-in research test of host radio delivery latency, not a native
+          channel override. Stop the radio on both tabs before switching,
+          and compare equal-duration PRK76 samples at 50 ms vs 5 ms with
+          both DS windows visible. The browser may throttle either interval.
+        </p>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
           <button type="button" disabled={!eligible || !remotePlayerId || !saveProfileId ||
               Boolean(radioLink.current && radioStatus?.phase !== 'stopped' && radioStatus?.phase !== 'error')}
@@ -322,7 +336,8 @@ export function White2NativeWirelessResearchPanel({
             ? 'A matching real emulator tab responded. Radio frames can now be exchanged.'
             : 'Awaiting an opted-in, verified real DS peer.'}
           <p>Browser TX {radioStatus.framesSent} • Browser RX accepted {radioStatus.framesReceived}
-            {' '}• Browser RX rejected {radioStatus.framesRejected}</p>
+            {' '}• Browser RX rejected {radioStatus.framesRejected}
+            {' '}• PRK78 radio poll {radioStatus.pollIntervalMs} ms</p>
           {radioStatus.native && <p>
             Native TX queued {radioStatus.native.outgoingEnqueued}
             {' '}• Native RX queued {radioStatus.native.incomingEnqueued}

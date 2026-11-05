@@ -628,3 +628,43 @@ native WASM rebuild is needed. Confirm PRK75 radio isolation appears
 on both tabs, use 1× and two browser windows visibly side by side where
 possible, and distinguish existing identical trainer IDs from genuine
 independent trainers before interpreting Union Room discovery.
+
+
+## PRK78 — opt-in radio transport poll A/B test (host only)
+
+After a controlled PRK77 test, both visible emulators advanced at about
+60 frames/s over their individual five-second observation windows.
+The longer PRK76 averages (48.7 fps and 13.7 fps) therefore include
+periods not explained by a persistent inability to reach 60 fps;
+those windows were not simultaneous and cannot establish that both tabs
+stayed visible or in sync. The games still sent only beacons.
+
+The browser transport previously polled outgoing wasm Wi-Fi queues every
+50 ms. PRK78 adds a **disabled-by-default** opt-in 5 ms alternative using
+`PRK78 EXPERIMENT: 5 ms RADIO POLL` in the same PRK66 section.
+It only changes host queue draining frequency; it does not change the
+native emulator, radio channel, frame bytes/timestamps, saves, firmware,
+or game logic. The actual browser timer cadence may be coarser than 5 ms.
+
+Test **independent fresh emulator sessions** on each mode to avoid mixed
+cumulative counters and state-dependent Union Room scanning. In BOTH tabs,
+keep PRK75 isolation active, open P1/P2 in **separate visible windows**, and
+leave both games at 1x. Start PRK66 with the checkbox **OFF**, capture
+PRK76 baselines, remain in the Union Room ~60 seconds, capture AFTER
+on both and record PRK77 instantaneous FPS. Stop PRK66 before relaunching
+the independent test with the checkbox **ON** in both tabs. Repeat the same
+window and compare native RX acceptance, wrong-channel failures and any
+first non-beacon frame. Avoid cross-mode comparisons based only on
+lifetime counters. Do not attempt a trade until actual discovery and
+association are confirmed.
+
+If the faster host bridge raises accepted beacon counts but non-beacon TX
+remains zero, discovery parsing/eligibility remains unverified and a
+native-game-visible beacon consumption diagnostic is the next step.
+If it causes the first authentication/association frame, host queue delay
+was a meaningful bottleneck; a more accurate emulation-clock-coupled
+transport can be developed later. If it changes nothing, do not assume
+wireless timing is fully ruled out. The pinned melonDS `Wifi::CheckRX`
+compares sender channels with current receiver channel at dequeue time;
+this experiment changes only how quickly frames become available to that
+receiver. Avoid forcing BSSID or RF channels to chase false positives.

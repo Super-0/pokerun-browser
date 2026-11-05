@@ -7,6 +7,7 @@ const PROTOCOL = 'pokerun-prk66-radio-v1'
 const HELLO_INTERVAL_MS = 750
 const PEER_EXPIRY_MS = 2500
 const RADIO_POLL_MS = 50
+const FAST_RADIO_POLL_MS = 5
 const MAX_FRAMES_PER_TICK = 32
 const MIN_FRAME_BYTES = 36
 const MAX_FRAME_BYTES = 2048
@@ -17,6 +18,7 @@ export type NativeRadioLinkStatus = {
   framesSent: number
   framesReceived: number
   framesRejected: number
+  pollIntervalMs: 5 | 50
   native: ReturnType<MelonDsBridge['getNativeWirelessDevLinkCounters']> | null
   reason?: string
 }
@@ -28,6 +30,7 @@ export type NativeRadioLinkOptions = {
   remotePlayerId: string
   romSha256: string
   saveProfileId: string
+  pollIntervalMs?: 5 | 50
 }
 
 type Hello = {
@@ -59,6 +62,7 @@ export class White2NativeRadioLink {
   private readonly localNonce = crypto.randomUUID()
   private readonly firmwareRole: 1 | 2
   private readonly options: NativeRadioLinkOptions
+  private readonly pollIntervalMs: 5 | 50
   private readonly bridge: MelonDsBridge
   private readonly onStatus: (status: NativeRadioLinkStatus) => void
   private tickTimer: number | null = null
@@ -92,6 +96,10 @@ export class White2NativeRadioLink {
       throw new Error('PRK71 requires a real Player 1/2 tab with distinct firmware identity. Relaunch both players after rebuilding melonDS.')
     }
     this.firmwareRole = applied as 1 | 2
+    // PRK78: opt-in shorter host delivery interval; never change native RF
+    // channels, timestamps, packet contents, firmware or save data.
+    this.pollIntervalMs = options.pollIntervalMs === FAST_RADIO_POLL_MS
+      ? FAST_RADIO_POLL_MS : RADIO_POLL_MS
     this.bridge = bridge
     this.options = options
     this.onStatus = onStatus
@@ -107,7 +115,7 @@ export class White2NativeRadioLink {
     if (this.bridge.status !== 'running') throw new Error('Native radio requires a running melonDS instance.')
     this.publish('waiting')
     this.sendHello()
-    this.tickTimer = window.setInterval(() => this.tick(), RADIO_POLL_MS)
+    this.tickTimer = window.setInterval(() => this.tick(), this.pollIntervalMs)
   }
 
   stop() {
@@ -254,6 +262,7 @@ export class White2NativeRadioLink {
       framesSent: this.framesSent,
       framesReceived: this.framesReceived,
       framesRejected: this.framesRejected,
+      pollIntervalMs: this.pollIntervalMs,
       native,
       reason,
     })
