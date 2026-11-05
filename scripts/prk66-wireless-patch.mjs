@@ -18,8 +18,10 @@ export function applyPrk66LocalRadioBridge(source) {
   }
 
   replaceUnique(header, '#include <atomic>', `#include <atomic>
+#include <algorithm>
 #include <deque>
 #include <mutex>
+#include <utility>
 #include <vector>`)
 
   replaceUnique(header,
