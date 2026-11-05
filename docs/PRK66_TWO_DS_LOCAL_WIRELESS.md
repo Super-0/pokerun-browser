@@ -1,5 +1,14 @@
 # PRK66 — first two-real-DS, same-browser local wireless bridge
 
+> **Current active milestone (PRK79, November 2026):** native White 2 discovery,
+> association, and Union Room invitation delivery work with PRK75 isolation and
+> PRK78 5 ms host polling. Accepting an invitation still produces a communication
+> error. PRK79 introduces AID-indexed client reply forwarding and a host
+> `MP_RecvReplies` queue, but correct timing across two asynchronous browser tabs
+> is **not yet demonstrated**. Build the new WASM runtime before testing.
+> Historical statements below describe earlier experiments, not the present state.
+>
+
 Status: **implemented in DEV-only code; uncompiled / not yet live tested**.
 
 ## Why this comes next

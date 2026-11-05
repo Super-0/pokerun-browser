@@ -221,7 +221,7 @@ try {
     throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
   }
   if (!patchedCpp.includes('return 0x50524B45;')) {
-    throw new Error('PokéRun melonDS patch did not install the PRK72 runtime stamp.')
+    throw new Error('PokéRun melonDS patch did not install the PRK79 runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new

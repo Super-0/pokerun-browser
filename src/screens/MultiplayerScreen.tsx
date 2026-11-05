@@ -12,7 +12,6 @@ import { gameById } from '../data/games'
 import { LocalMultiplayerSession, type MultiplayerSessionSnapshot } from '../multiplayer/core/LocalMultiplayerSession'
 import type { MultiplayerPlayerState, MultiplayerTradeState } from '../multiplayer/core/protocol'
 import { identifyWhite2Rom } from '../multiplayer/games/white2Rom'
-import { validateWhite2CgearTestSave } from '../multiplayer/games/White2CgearTestSave'
 import { validateWhite2ProgressedTestSave } from '../multiplayer/games/White2ProgressedTestSave'
 import { White2LiveStateAdapter } from '../multiplayer/games/White2LiveStateAdapter'
 import { White2WorldPositionReader } from '../multiplayer/games/White2WorldPositionReader'
@@ -64,7 +63,6 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
   const picker = useRef<HTMLInputElement>(null)
   const saveImportPicker = useRef<HTMLInputElement>(null)
   const saveImportTarget = useRef<MultiplayerSaveProfile | null>(null)
-  const saveImportKind = useRef<'cgear' | 'progressed'>('cgear')
   const [loading, setLoading] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedGames, setSavedGames] = useState<MultiplayerSaveProfile[]>(() => multiplayerSaveStore.list(roomGame.id))
@@ -105,8 +103,7 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
       setLoading(true)
       setSaveError(null)
       const bytes = new Uint8Array(await file.arrayBuffer())
-      if (saveImportKind.current === 'progressed') validateWhite2ProgressedTestSave(bytes)
-      else validateWhite2CgearTestSave(bytes)
+      validateWhite2ProgressedTestSave(bytes)
       const rom = await multiplayerSaveStore.restoreRom(sourceProfile.id)
       if (!rom) throw new Error('The source save slot no longer has a local ROM.')
       const identity = identifyWhite2Rom(rom)
@@ -117,7 +114,7 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
       await multiplayerSaveStore.saveBatterySave(created.id, bytes)
       refreshSavedGames()
       console.info('[PokéRun save] TEST SAVE IMPORTED AS NEW PROFILE', {
-        testKind: saveImportKind.current,
+        testKind: 'progressed',
         sourceSlot: sourceProfile.slotNumber,
         testSlot: created.slotNumber,
         bytes: bytes.length,
@@ -163,20 +160,13 @@ function Lobby({ roomGame, session, state, onHome, right }: { roomGame: typeof g
       <input ref={saveImportPicker} type="file" accept=".sav" hidden
         onChange={event => void importDiagnosticSaveCopy(event.target.files?.[0] ?? null)}/>
       <p style={{ fontSize: 12, marginBottom: 12 }}>
-        PRK63: Import an edited C-Gear .sav into a <strong>new test slot</strong>.
-        PRK74: Import a complete, normally progressed White 2 512 KB .sav with the Basic Badge
-        and C-Gear already obtained. PRK74 checks structure and checksums only; verify progress
-        and distinct trainer identities inside the game. Both imports create independent test
-        slots without overwriting the original.
+        Import a valid, normally progressed 512 KB White 2 save as a new test
+        slot without overwriting its source. Verify each player's Trainer ID
+        in-game before attempting native multiplayer.
       </p>
     </>}
     {savedGames.length === 0 ? <section className="runs-empty pixel-border"><h2>NO SAVED GAMES YET</h2><p>Select your White 2 ROM above. PokéRun will create a local save slot and persist the game's normal in-game save when you save from the Pokémon menu.</p></section> : <section className="runs-list">{savedGames.map(profile => <article className="run-card pixel-border" key={profile.id}><div className="run-card-main"><span className="eyebrow">{roomGame.title.toUpperCase()}</span><h2>SAVE {String(profile.slotNumber).padStart(3, '0')}</h2><div className="run-card-meta"><span>{profile.lastSavedAt ? `IN-GAME SAVE • ${new Date(profile.lastSavedAt).toLocaleString()}` : 'NO IN-GAME SAVE YET'}</span><span>{profile.fileName}</span><span>SHA {profile.romSha256.slice(0, 12)}…</span></div></div><div className="run-card-actions"><PixelButton disabled={loading} onClick={() => void continueSavedGame(profile)}>CONTINUE</PixelButton>{import.meta.env.DEV && <PixelButton tone="ghost" disabled={loading} onClick={() => {
       saveImportTarget.current = profile
-      saveImportKind.current = 'cgear'
-      saveImportPicker.current?.click()
-    }}>IMPORT C-GEAR TEST .SAV AS NEW SLOT</PixelButton>}{import.meta.env.DEV && <PixelButton tone="ghost" disabled={loading} onClick={() => {
-      saveImportTarget.current = profile
-      saveImportKind.current = 'progressed'
       saveImportPicker.current?.click()
     }}>IMPORT PROGRESSED .SAV AS NEW SLOT</PixelButton>}</div></article>)}</section>}
   </div></main>
@@ -203,9 +193,6 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
   const [saveStatus, setSaveStatus] = useState('WAITING FOR IN-GAME SAVE')
   const [exportingSave, setExportingSave] = useState(false)
   const [exportSaveError, setExportSaveError] = useState<string | null>(null)
-  const cgearImportPicker = useRef<HTMLInputElement>(null)
-  const [importingCgear, setImportingCgear] = useState(false)
-  const [cgearImportError, setCgearImportError] = useState<string | null>(null)
   const localRomIdentity = state.localRom!.identity
   const saveProfileId = state.localRom!.saveProfileId
   useEffect(() => {
@@ -221,55 +208,6 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
     })
     return () => { cancelled = true }
   }, [saveProfileId])
-
-  // PRK63 import from the running game's DEVELOPMENT UI: only a new storage
-  // profile is created. Never inject an edited save into a live emulator.
-  // The separate test profile is selected for the next auto-start.
-  const importCgearTestDuringGame = useCallback(async (file: File | null) => {
-    if (!import.meta.env.DEV || !file || importingCgear) return
-    let created: MultiplayerSaveProfile | null = null
-    setImportingCgear(true)
-    setCgearImportError(null)
-    try {
-      if (!saveProfileId) throw new Error('No saved White 2 profile is active.')
-      const player = new URLSearchParams(window.location.search).get('player')
-      if (player !== '1' && player !== '2') {
-        throw new Error('Auto-import requires the dev launcher ?player=1 or ?player=2 address.')
-      }
-      const bytes = new Uint8Array(await file.arrayBuffer())
-      validateWhite2CgearTestSave(bytes)
-      const loadedRom = state.localRom!.rom
-      const identity = identifyWhite2Rom(loadedRom)
-      if (identity.status !== 'verified' || identity.sha256 !== localRomIdentity.sha256) {
-        throw new Error('The currently running White 2 ROM is not the verified source.')
-      }
-      created = multiplayerSaveStore.createDerived(saveProfileId, loadedRom, identity)
-      await multiplayerSaveStore.saveBatterySave(created.id, bytes)
-
-      // The original save keeps its own profile ID and stored battery file.
-      // Only the chosen automatic launch slot is updated, after creation
-      // and save-storage commit both succeed. ROM bytes remain in the
-      // original profile's existing IndexedDB record.
-      const selectionKey = `pokerun-multiplayer-dev-save-player-${player}-v1`
-      localStorage.setItem(selectionKey, created.id)
-      console.info('[PokéRun save] PRK63 AUTO TEST SLOT PREPARED', {
-        player,
-        sourceSlot: saveProfileId,
-        testSlot: created.slotNumber,
-        bytes: bytes.length,
-        originalSlotOverwritten: false,
-        liveEmulatorMemoryTouched: false,
-        nextAction: 'Reload dev harness and auto-start the new test slot',
-      })
-      window.location.reload()
-    } catch (error) {
-      if (created) await multiplayerSaveStore.delete(created.id).catch(() => undefined)
-      setCgearImportError(error instanceof Error ? error.message : 'Could not import C-Gear test save.')
-    } finally {
-      setImportingCgear(false)
-      if (cgearImportPicker.current) cgearImportPicker.current.value = ''
-    }
-  }, [importingCgear, localRomIdentity.sha256, roomGame.id, saveProfileId, state.localRom])
 
   // Export a standalone copy of the *actual* melonDS battery-save file,
   // without touching the game, save profile, or emulated memory. The browser
@@ -395,32 +333,22 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
       </section>
 
       {import.meta.env.DEV && <>
-        <section className="multiplayer-session-debug pixel-border" style={{ padding: 12, marginBottom: 12 }}>
-          <h2>WHITE 2 • SAVE BACKUP (DEVELOPMENT)</h2>
+        <details className="multiplayer-session-debug pixel-border" style={{ padding: 12, marginBottom: 12 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 700 }}>ADVANCED • SAVE BACKUP</summary>
           <p style={{ fontSize: 12 }}>Save from the Pokémon menu first. Download a copy of the battery save for offline research or editing. This button does not modify the game or your stored save.</p>
           <PixelButton disabled={!bridge || exportingSave} onClick={() => void downloadSaveBackup()}>
             {exportingSave ? 'PREPARING BACKUP...' : 'DOWNLOAD SAVE BACKUP (.SAV)'}
           </PixelButton>
           {exportSaveError && <p className="form-error" role="alert">{exportSaveError}</p>}
-          <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid #9bacb9' }}>
-            <p style={{ fontSize: 12 }}>
-              PRK63 C-Gear test: import the edited .sav as a <strong>new local profile</strong>.
-              The current emulator is not modified. The dev harness will reload
-              and auto-start using the new profile; your original save stays intact.
-            </p>
-            <input ref={cgearImportPicker} hidden type="file" accept=".sav"
-              onChange={event => void importCgearTestDuringGame(event.target.files?.[0] ?? null)}/>
-            <PixelButton tone="ghost" disabled={importingCgear || !bridge || !saveProfileId}
-              onClick={() => cgearImportPicker.current?.click()}>
-              {importingCgear ? 'IMPORTING TEST SAVE...' : 'IMPORT C-GEAR TEST .SAV AND RESTART'}
-            </PixelButton>
-            {cgearImportError && <p className="form-error" role="alert">{cgearImportError}</p>}
-          </div>
-        </section>
-        <White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/><White2NativeWirelessResearchPanel bridge={bridge} rom={localRomIdentity}
+        </details>
+        <details className="multiplayer-session-debug pixel-border" style={{ padding: 12, marginBottom: 12 }}>
+          <summary style={{ cursor: 'pointer', fontWeight: 700 }}>ARCHIVED RESEARCH • PARTY MEMORY</summary>
+          <White2MemoryResearchPanel bridge={bridge} rom={localRomIdentity}/>
+        </details>
+        <White2NativeWirelessResearchPanel bridge={bridge} rom={localRomIdentity}
           roomCode={room.code} startId={room.gameStart!.startId}
           localPlayerId={session.localPlayerId} remotePlayerId={remote?.id ?? null}
-          saveProfileId={saveProfileId ?? null}/><section className="multiplayer-debug multiplayer-session-debug pixel-border"><h2>PLAYER STATE DEBUG</h2><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></section></>}
+          saveProfileId={saveProfileId ?? null}/><details className="multiplayer-debug multiplayer-session-debug pixel-border"><summary style={{ cursor: 'pointer', fontWeight: 700 }}>ADVANCED • PLAYER STATE DEBUG</summary><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></details></>}
     </div>
   </main>
 }
