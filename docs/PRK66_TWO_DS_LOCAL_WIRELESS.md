@@ -219,3 +219,70 @@ What we will learn:
 - If channels overlap but White 2 cannot discover a peer, next inspect
   the downstream receive-ring commit, BSSID/MAC filtering, and native
   handshake prerequisites—not a forced channel override.
+
+
+## PRK69 actual two-DS channel data — November 4, 2026
+
+Two independently running games, cumulative counters:
+
+| Measurement | Player 1 | Player 2 |
+|---|---:|---:|
+| Current RF channel | 7 | 1 |
+| RF channel changes | 419 | 387 |
+| TX channels | ch7:36, ch13:35 | ch1:19, ch7:15, ch13:12 |
+| Accepted RX | ch7:15 | none in this capture |
+| Wrong-channel RX | ch1:14 | ch7:33, ch13:1 |
+| RF tuned to | ch?:193, ch1:62, ch7:67, ch13:65 | ch?:209, ch1:67, ch7:73, ch13:70 |
+
+The RF hardware cycles repeatedly through channels **1, 7, 13**.
+The large channel-0 / invalid entries likely reflect intermediate tuning
+register writes; do not assume the radios are permanently misconfigured.
+The captures are from different points in time and must not be treated
+as matched packet-loss accounting. A checkRX-accepted beacon is not
+proof that the emulated game received an RX interrupt or discovered a
+real player. We should not override channels based on this evidence.
+
+## PRK70 downstream receive audit
+
+PRK70 instruments the *pinned melonDS Wi-Fi implementation* without
+changing the game's radio tuning, packet contents or save data.
+
+1. For incoming PRK66 beacons, after checking frame length but **before
+   channel filtering**, it tests whether the beacon transmitter's
+   802.11 source address equals the local Wi-Fi MAC. Only same/different
+   aggregate counters are exposed. The raw six bytes are never exported.
+2. For actual PRK66 frames that pass CheckRX, a temporary, emulator-local
+   provenance bit marks the asynchronous `Wifi::FinishRX` path.
+   It counts completed hardware receive operations, destination filtering,
+   WEP filtering, BSSID matches on beacons, beacon receive-filter drops,
+   and IRQ 0 after successfully committing the frame to the Wi-Fi RX ring.
+   The bit is cleared on reset and at FinishRX.
+3. The exact pinned-source rewrite sequence PRK63 → PRK65 → PRK66 →
+   PRK67 → PRK69 → PRK70 passed unique-anchor validation against
+   upstream files. The new runtime stamp is `0x50524B42`. Compilation
+   and actual White 2 behavior are **not verified yet**.
+
+### How to interpret PRK70
+
+- **Beacon same MAC > 0**: at least one incoming beacon appears to use
+  this DS's *own* MAC as its transmitter address. That is strong evidence
+  of a duplicate MAC configuration when paired with two actual DSs.
+  We must investigate distinct per-emulator firmware/MAC identities
+  **before** allowing any native trade.
+- **Different MAC > 0**: some incoming beacons carry a different
+  source address; does not by itself prove native association.
+- **Wi-Fi accepted > 0 but native RX finished = 0**: a later receive
+  pipeline step did not complete; examine timing/teardown before making
+  changes.
+- **Native RX finished > 0 but RX ring/IRQ = 0**: downstream receiver
+  filtering or no valid ring commit likely prevented delivery.
+- **RX ring/IRQ > 0**: emulated Wi-Fi hardware notified the DS of
+  a frame, but does not prove White 2 understood the beacon or
+  began its trade networking protocol.
+- **Association accepted = 0** remains a hard limitation on claiming
+  the game has discovered and associated with a remote DS.
+
+Test with two *different disposable* battery save slots and a verified
+matching White 2 ROM. Stop radio before leaving the page, rebuild WASM,
+restart dev server, and enable PRK66 on both tabs. Compare PRK70 counters
+with PRK67 and PRK69, and **do not invoke overlay 194 or trade**.
