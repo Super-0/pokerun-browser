@@ -118,6 +118,12 @@ export class MelonDsBridge implements EmulatorBridge {
       incomingConsumed: emu.prk66RxConsumed() >>> 0,
       dropped: emu.prk66FramesDropped() >>> 0,
       firmwareRoleApplied: emu.prk71AppliedFirmwareMacRole() >>> 0,
+      // PRK72: TX raw-radio callbacks vs native RX-ring/IRQ deliveries.
+      // One counter per frame type, no packet data exposed.
+      handshakeStages: Array.from({ length: 11 }, (_, kind) => ({
+        kind, sent: emu.prk72TxKind(kind) >>> 0,
+        receivedByHardware: emu.prk72RxKind(kind) >>> 0,
+      })),
       // PRK67: exact native receiver acceptance checks, after PRK66 dequeue.
       wifiAccepted: emu.prk67RxAccepted() >>> 0,
       wifiBadLength: emu.prk67RxBadLength() >>> 0,
