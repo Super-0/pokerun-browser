@@ -10,6 +10,21 @@ import { White2NativeRadioLink, type NativeRadioLinkStatus } from '../multiplaye
 type Counters = ReturnType<MelonDsBridge['getNativeWirelessProbeCounters']>
 type Capture = { capturedAt: number; counters: Counters }
 
+// PRK69: all counters are per-emulator aggregates. Channel 0 = unknown/invalid.
+type RadioChannel = {
+  channel: number
+  tx: number
+  accepted: number
+  rejected: number
+  tuned: number
+}
+function formatChannelCounts(channels: RadioChannel[], field: 'tx' | 'accepted' | 'rejected' | 'tuned') {
+  return channels
+    .filter(row => row[field] > 0)
+    .map(row => `ch${row.channel || '?'}: ${row[field]}`)
+    .join(' • ') || 'none'
+}
+
 const rows: { key: keyof Counters; label: string; note: string }[] = [
   { key: 'wifiStarts', label: 'WI-FI POWER ON', note: 'Native Wi-Fi hardware session started' },
   { key: 'wifiStops', label: 'WI-FI POWER OFF', note: 'Native Wi-Fi hardware session ended' },
@@ -230,6 +245,20 @@ export function White2NativeWirelessResearchPanel({
             {' '}• beacons accepted {radioStatus.native.wifiBeaconsAccepted}
             {' '}• association responses accepted {radioStatus.native.wifiAssociationAccepted}
           </p>}
+          {radioStatus.native && <div style={{ paddingTop: 8, borderTop: '1px solid #9bacb9' }}>
+            <strong>PRK69 • NATIVE RF CHANNELS (READ ONLY)</strong>
+            <p>Current RF channel: {radioStatus.native.radioCurrentChannel || 'unknown'}
+              {' '}• game-driven channel changes: {radioStatus.native.radioChannelChanges}</p>
+            <p><strong>TX:</strong> {formatChannelCounts(radioStatus.native.radioChannels, 'tx')}</p>
+            <p><strong>Accepted RX:</strong> {formatChannelCounts(radioStatus.native.radioChannels, 'accepted')}</p>
+            <p><strong>Wrong-channel RX:</strong> {formatChannelCounts(radioStatus.native.radioChannels, 'rejected')}</p>
+            <p><strong>RF tuned to:</strong> {formatChannelCounts(radioStatus.native.radioChannels, 'tuned')}</p>
+            <p style={{ opacity: 0.75, fontSize: 11 }}>
+              Cumulative totals since this emulator booted. Mismatched channels
+              may reflect normal scanning, not a transport failure. These counts
+              never override radio channels or capture packet payloads.
+            </p>
+          </div>}
           {radioStatus.reason && <p className="form-error">{radioStatus.reason}</p>}
         </div>}
         <p style={{ fontSize: 11, opacity: 0.75 }}>
