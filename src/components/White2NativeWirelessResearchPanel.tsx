@@ -259,6 +259,24 @@ export function White2NativeWirelessResearchPanel({
               never override radio channels or capture packet payloads.
             </p>
           </div>}
+          {radioStatus.native && <div style={{ paddingTop: 8, borderTop: '1px solid #9bacb9' }}>
+            <strong>PRK70 • NATIVE BEACON DELIVERY + MAC COLLISION (READ ONLY)</strong>
+            <p>Incoming beacons whose sender MAC matches this DS:
+              {' '}{radioStatus.native.rxBeaconSameLocalMac}
+              {' '}• different MAC: {radioStatus.native.rxBeaconDifferentLocalMac}</p>
+            <p>Native frames completed by hardware: {radioStatus.native.rxNativeCompleted}
+              {' '}• RX ring/IRQ signaled: {radioStatus.native.rxNativeRingIrq}</p>
+            <p>Hardware destination filtered: {radioStatus.native.rxDestinationRejected}
+              {' '}• WEP filtered: {radioStatus.native.rxWepRejected}
+              {' '}• beacon BSSID matched: {radioStatus.native.rxBeaconBssidMatched}
+              {' '}• beacon RX filter rejected: {radioStatus.native.rxBeaconHardwareFiltered}</p>
+            <p style={{ fontSize: 11, opacity: 0.75 }}>
+              Same-MAC is an equality check only; neither MAC address is
+              exposed. Counts are cumulative since emulator startup.
+              RX IRQ indicates the native Wi-Fi hardware raised a receive
+              interrupt, not that White 2 discovered another player.
+            </p>
+          </div>}
           {radioStatus.reason && <p className="form-error">{radioStatus.reason}</p>}
         </div>}
         <p style={{ fontSize: 11, opacity: 0.75 }}>
