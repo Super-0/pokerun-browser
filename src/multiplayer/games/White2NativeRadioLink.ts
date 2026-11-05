@@ -27,6 +27,7 @@ export type NativeRadioLinkOptions = {
   localPlayerId: string
   remotePlayerId: string
   romSha256: string
+  saveProfileId: string
 }
 
 type Hello = {
@@ -34,6 +35,7 @@ type Hello = {
   kind: 'hello' | 'bye'
   startId: string
   romSha256: string
+  saveProfileId: string
   fromId: string
   toId: string
   sessionNonce: string
@@ -77,7 +79,7 @@ export class White2NativeRadioLink {
     if (!('BroadcastChannel' in window)) throw new Error('This browser does not support same-origin BroadcastChannel.')
     if (!options.roomCode || !options.startId || !options.localPlayerId ||
         !options.remotePlayerId || options.localPlayerId === options.remotePlayerId ||
-        !/^[0-9a-f]{64}$/i.test(options.romSha256)) {
+        !options.saveProfileId || !/^[0-9a-f]{64}$/i.test(options.romSha256)) {
       throw new Error('PRK66 requires a valid room, two distinct player IDs, and a verified ROM.')
     }
     this.bridge = bridge
@@ -118,6 +120,7 @@ export class White2NativeRadioLink {
       kind: message.kind,
       startId: this.options.startId,
       romSha256: this.options.romSha256,
+      saveProfileId: this.options.saveProfileId,
       fromId: this.options.localPlayerId,
       toId: this.options.remotePlayerId,
       sessionNonce: this.localNonce,
@@ -134,6 +137,8 @@ export class White2NativeRadioLink {
     const v = value as Partial<Message>
     return v.protocol === PROTOCOL && v.startId === this.options.startId &&
       v.romSha256 === this.options.romSha256 &&
+      typeof v.saveProfileId === 'string' &&
+      v.saveProfileId.length > 0 && v.saveProfileId !== this.options.saveProfileId &&
       v.fromId === this.options.remotePlayerId &&
       v.toId === this.options.localPlayerId &&
       typeof v.sessionNonce === 'string' && v.sessionNonce.length >= 12
