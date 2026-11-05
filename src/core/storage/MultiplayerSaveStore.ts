@@ -59,8 +59,21 @@ async function withBatteryStore<T>(mode: IDBTransactionMode, action: (store: IDB
   try {
     return await new Promise<T>((resolve, reject) => {
       const transaction = database.transaction(BATTERY_STORE, mode)
-      action(transaction.objectStore(BATTERY_STORE), resolve, reject)
+      let requestResolved = false
+      let value: T
+      // The IDB request's success event can fire before the transaction is
+      // committed. A dev-harness reload at that instant can lose the imported
+      // battery save. Only report success once the transaction is complete.
+      transaction.oncomplete = () => {
+        if (requestResolved) resolve(value)
+        else reject(new Error('Multiplayer save transaction completed without a result.'))
+      }
       transaction.onerror = () => reject(transaction.error ?? new Error('Multiplayer save transaction failed.'))
+      transaction.onabort = () => reject(transaction.error ?? new Error('Multiplayer save transaction aborted.'))
+      action(transaction.objectStore(BATTERY_STORE), result => {
+        value = result
+        requestResolved = true
+      }, reject)
     })
   } finally {
     database.close()
