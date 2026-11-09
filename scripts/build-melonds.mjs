@@ -9,6 +9,7 @@ import { applyPrk70ReceiveDeliveryAudit } from './prk70-native-delivery-audit.mj
 import { applyPrk71FirmwareMacIdentity } from './prk71-firmware-mac-identity.mjs'
 import { applyPrk72HandshakeStageAudit } from './prk72-handshake-stage-audit.mjs'
 import { applyPrk79NativeMpReplies } from './prk79-native-mp-replies.mjs'
+import { applyReplyScheduleTestHooks } from './prk80-reply-schedule-hooks.mjs'
 import { applyPrk80GreetingTrace } from './prk80-greeting-trace.mjs'
 import { applyPrk80MpTimingAudit } from './prk80-mp-timing-audit.mjs'
 
@@ -26,7 +27,9 @@ const patches = [
 const build = resolve(source, 'build-pokerun-wasm')
 const output = resolve(root, 'public/emulators/melonds')
 const expectedRevision = '53c7c6cb362560a9e362ae754a162f638fa3cd64'
+const withScheduleTestHooks = process.env.POKERUN_NATIVE_TEST_HOOKS === '1'
 const requiredRuntimeSymbols = [
+  ...(withScheduleTestHooks ? ['pokerunTestSendMpCommand', 'pokerunTestPollMpReplies'] : []),
   'writeArm9U8', 'writeArm9U16', 'writeArm9U32',
   'getArm9Sp', 'callArm9Thumb4', 'callArm9Thumb8Atomic', 'arm9CallStatus',
   'arm9CallPc', 'arm9CallLr', 'arm9CallCpsr', 'arm9CallInstructions',
@@ -204,6 +207,7 @@ try {
   applyPrk79NativeMpReplies(source)
   applyPrk80MpTimingAudit(source)
   applyPrk80GreetingTrace(source)
+  if (withScheduleTestHooks) applyReplyScheduleTestHooks(source)
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')

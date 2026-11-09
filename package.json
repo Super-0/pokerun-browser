@@ -19,7 +19,8 @@
     "test:smoke": "playwright test --grep-invert @integration",
     "test:native": "node scripts/test-white2-private.mjs runtime",
     "test:white2:prepare": "node scripts/test-white2-private.mjs prepare",
-    "test:white2": "node scripts/test-white2-private.mjs greeting"
+    "test:white2": "node scripts/test-white2-private.mjs greeting",
+    "test:native:schedule": "node scripts/test-white2-private.mjs schedule"
   },
   "dependencies": {
     "@thenick775/mgba-wasm": "2.5.1",

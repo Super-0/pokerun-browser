@@ -6,9 +6,10 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
 import { createServer } from 'vite'
+import { checkReplySchedules } from '../tests/native/reply-schedule.mjs'
 
 const mode = process.argv[2]
-assert(['prepare', 'greeting', 'runtime'].includes(mode), 'Use prepare, greeting, or runtime.')
+assert(['prepare', 'greeting', 'runtime', 'schedule'].includes(mode), 'Use prepare, greeting, runtime, or schedule.')
 assert(!process.env.CI, 'This runner is local only.')
 const privateRoot = resolve('local-test-assets')
 const checkpoint = join(privateRoot, 'white2-checkpoint')
@@ -80,34 +81,39 @@ let pages = []
 const report = { mode, tracing, stage: 'startup', pageErrors: [0, 0] }
 try {
   await server.listen()
-  if (mode === 'runtime') {
+  if (mode === 'runtime' || mode === 'schedule') {
     browser = await chromium.launch()
     const page = await browser.newPage()
     await page.goto(origin)
-    const stamp = await within(20_000, 'WASM initialization timed out.', () => page.evaluate(async () => {
-      const { loadMelonDsRuntime } = await import('/src/core/emulator/melonds/runtime.ts')
-      const module = await loadMelonDsRuntime()
-      const emu = new module.WasmEmulator()
-      try {
-        emu.prk66SetEnabled(true)
-        emu.setGreetingTrace(true)
-        if (!emu.prk79InjectReply(new Uint8Array(), 123, 1, 42)) throw new Error('Synthetic reply was rejected.')
-        const before = performance.timeOrigin + performance.now()
-        const batch = emu.drainGreetingTrace()
-        const after = performance.timeOrigin + performance.now()
-        if (batch.values.length !== 7 || batch.values[0] !== 10 || batch.values[2] !== 123 ||
-            batch.values[4] !== 42 || batch.values[5] !== 1 || batch.dropped || batch.nativeNowMs < before - 1 || batch.nativeNowMs > after + 1) {
-          throw new Error('Unexpected native queue trace or clock domain.')
-        }
-        emu.setGreetingTrace(false)
-        if (!emu.prk79InjectReply(new Uint8Array(), 124, 1, 43) || emu.drainGreetingTrace().values.length) {
-          throw new Error('Disabling observation changed the queue or continued tracing.')
-        }
-        emu.prk66SetEnabled(false)
-        return emu.pokerunRuntimeVersion().toString(16)
-      } finally { emu.delete() }
-    }))
-    console.log(`Chromium loaded melonDS runtime 0x${stamp} and verified the trace clock without a ROM.`)
+    if (mode === 'schedule') {
+      await within(20_000, 'Native schedule test timed out.', () => checkReplySchedules(page))
+      console.log('Native reply schedules passed: early and in-flight empty, late matched, −32 µs matched, −33 µs stale.')
+    } else {
+      const stamp = await within(20_000, 'WASM initialization timed out.', () => page.evaluate(async () => {
+        const { loadMelonDsRuntime } = await import('/src/core/emulator/melonds/runtime.ts')
+        const module = await loadMelonDsRuntime()
+        const emu = new module.WasmEmulator()
+        try {
+          emu.prk66SetEnabled(true)
+          emu.setGreetingTrace(true)
+          if (!emu.prk79InjectReply(new Uint8Array(), 123, 1, 42)) throw new Error('Synthetic reply was rejected.')
+          const before = performance.timeOrigin + performance.now()
+          const batch = emu.drainGreetingTrace()
+          const after = performance.timeOrigin + performance.now()
+          if (batch.values.length !== 7 || batch.values[0] !== 10 || batch.values[2] !== 123 ||
+              batch.values[4] !== 42 || batch.values[5] !== 1 || batch.dropped || batch.nativeNowMs < before - 1 || batch.nativeNowMs > after + 1) {
+            throw new Error('Unexpected native queue trace or clock domain.')
+          }
+          emu.setGreetingTrace(false)
+          if (!emu.prk79InjectReply(new Uint8Array(), 124, 1, 43) || emu.drainGreetingTrace().values.length) {
+            throw new Error('Disabling observation changed the queue or continued tracing.')
+          }
+          emu.prk66SetEnabled(false)
+          return emu.pokerunRuntimeVersion().toString(16)
+        } finally { emu.delete() }
+      }))
+      console.log(`Chromium loaded melonDS runtime 0x${stamp} and verified the trace clock without a ROM.`)
+    }
   } else {
     context = await chromium.launchPersistentContext(mode === 'prepare' ? checkpoint : join(run, 'profile'), {
       headless: mode !== 'prepare' && !manual && process.env.POKERUN_HEADED !== '1',

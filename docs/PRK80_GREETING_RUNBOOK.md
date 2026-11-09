@@ -44,6 +44,20 @@ Run `npm.cmd run test:white2` or `npm run test:white2`. The script verifies the 
 
 Set `$env:POKERUN_GREETING_TRACE = '0'` in Windows or prefix `POKERUN_GREETING_TRACE=0` on macOS/Linux for the control run. Then remove the variable or set it to 1 and repeat once on a fresh profile copy. Compare DS health, counter deltas and both dialogs. Degraded health or trace overflow invalidates timing conclusions.
 
+## Reproduce the ordering without a ROM
+
+From the clean native build checkout with Emscripten 3.1.74 active, run:
+
+```bash
+POKERUN_NATIVE_TEST_HOOKS=1 npm run build:melonds
+npm run test:native:schedule
+npm run build:melonds
+```
+
+The first build adds two synthetic command and poll hooks for this test. The last build restores the normal runtime. For Windows Chromium verification, copy the test JS/WASM pair from WSL, run `npm.cmd run test:native:schedule`, then replace both files with the normal pair. Keep both generated versions out of Git.
+
+The test uses the actual native command queue and reply collector in Chromium. Virtual events are fixed at 8.0 ms for browser send, 14.7 ms for peer command arrival, and 26.8 ms for native reply enqueue. With the same valid reply, polling at 0.070 ms or 10 ms yields an empty poll; polling at 27 ms matches the reply. At that same late poll, a reply 32 DS microseconds behind matches, while 33 behind is stale. These cases isolate ordering from the timestamp rule. The virtual fixture does not simulate the game's ACK and dialogue state machine.
+
 ## Interpret the timing evidence
 
 ```powershell
