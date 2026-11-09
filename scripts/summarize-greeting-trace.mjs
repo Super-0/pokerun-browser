@@ -30,12 +30,12 @@ export function summarizeGreetingTrace(traces) {
   const arrivals = index(wire.filter(event => event.phase === 'arrival'), e => key(e.source, e.sequence))
   const nativeSends = index(native.filter(event => event.kind === 1 || event.kind === 2), e => key(e.role, e.sequence))
   const commands = [], replies = [], nativeToWire = [], hostCommandToPoll = [], arrivalToQueue = []
-  const sentNativeIds = new Set()
+  const sendsByNativeId = new Map()
   let sendsWithoutArrival = 0
   for (const [id, sent] of sends) {
     const tx = nativeSends.get(key(sent.source, sent.nativeTxId))
     if (!tx) continue
-    sentNativeIds.add(key(sent.source, sent.nativeTxId))
+    sendsByNativeId.set(key(sent.source, sent.nativeTxId), sent)
     nativeToWire.push(sent.atMs - tx.atMs)
     const arrival = arrivals.get(id)
     if (!arrival) { sendsWithoutArrival++; continue }
@@ -52,6 +52,7 @@ export function summarizeGreetingTrace(traces) {
     if (arrival) arrivalToQueue.push(enqueued.atMs - arrival.atMs)
   }
   const firstPolls = new Set()
+  const emptyFirstPolls = { beforeBrowserSend: 0, beforePeerArrival: 0, afterPeerArrival: 0, noObservedSend: 0, noObservedArrival: 0 }
   for (const event of native) {
     const { kind, role, sequence, dsUs, replyUs, atMs } = event
     if (kind < 3 || kind > 9) continue
@@ -62,6 +63,15 @@ export function summarizeGreetingTrace(traces) {
       if (command && !firstPolls.has(commandKey)) {
         firstPolls.add(commandKey)
         hostCommandToPoll.push(atMs - command.atMs)
+        if (kind === 3) {
+          const sent = sendsByNativeId.get(commandKey)
+          const arrival = sent && arrivals.get(key(role, sent.sequence))
+          if (!sent) emptyFirstPolls.noObservedSend++
+          else if (atMs < sent.atMs) emptyFirstPolls.beforeBrowserSend++
+          else if (!arrival) emptyFirstPolls.noObservedArrival++
+          else if (atMs < arrival.atMs) emptyFirstPolls.beforePeerArrival++
+          else emptyFirstPolls.afterPeerArrival++
+        }
       }
       continue
     }
@@ -89,9 +99,10 @@ export function summarizeGreetingTrace(traces) {
     hostCommandToFirstPollMs: range(hostCommandToPoll),
     replyQueueToDecisionMs: range(queueToPoll),
     replyArrivalToNativeQueueMs: range(arrivalToQueue),
-    nativeTxWithoutBrowserSend: nativeSends.size - sentNativeIds.size,
+    nativeTxWithoutBrowserSend: nativeSends.size - sendsByNativeId.size,
     sendsWithoutArrival,
     decisions,
+    emptyFirstPolls,
     staleReplyMinusPollDsUs: range(staleDelta),
     matchedReplyMinusPollDsUs: range(matchedDelta),
     estimatedStaleClockOffsetUs: range(staleOffset),

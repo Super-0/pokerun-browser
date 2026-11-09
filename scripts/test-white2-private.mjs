@@ -51,6 +51,10 @@ const manualDriver = {
     const verified = await confirm('Verify the two Trainer IDs are different and position both players just before the native Union Room greeting. Ready?')
     return { distinctTrainerIds: verified, atGreetingCheckpoint: verified }
   },
+  async stageGreeting() {
+    assert(await confirm('Enter both Union Rooms, verify the other trainer appears, and position the host to greet. Ready?'),
+      'The paired Union Room setup was not confirmed.')
+  },
   async attemptGreeting() {
     const reproduced = await confirm('Attempt one normal greeting. Did you observe native association, a greeting failure, and no Trade menu or confirmation on either player?')
     return reproduced ? { association: true, greetingFailed: true, tradeMenu: false, tradeConfirmed: false } : null
@@ -157,10 +161,28 @@ try {
       report.health = report.baselineCounters.map(sample => sample.emulatedFrames * 1000 / sample.elapsedMs)
       assert(report.health.every(fps => fps >= 55 && fps <= 65), 'Expected both real emulators at 55–65 DS frames/s near the 60 FPS target.')
 
+      if (typeof driver.stageGreeting === 'function') {
+        report.stage = 'association-setup'
+        await Promise.all(pages.map(page => page.getByRole('button', { name: before }).click()))
+        await within(90_000, 'Union Room staging timed out.', () => driver.stageGreeting({ pages }))
+        report.stagingCounters = await Promise.all(pages.map(captureAfter))
+        await Promise.all(pages.map(page => page.getByRole('button', { name: before }).click()))
+        await delay(5_000)
+        report.readyCounters = await Promise.all(pages.map(captureAfter))
+        report.readyHealth = report.readyCounters.map(sample => sample.emulatedFrames * 1000 / sample.elapsedMs)
+        assert(report.readyHealth.every(fps => fps >= 55 && fps <= 65), 'DS frame health fell outside 55–65 frames/s after entering the Union Room.')
+      }
+
       report.stage = 'greeting'
       await Promise.all(pages.map((page, i) => page.screenshot({ path: join(run, `p${i + 1}-before.png`), timeout: 5_000 })))
       await Promise.all(pages.map(page => page.getByRole('button', { name: before }).click()))
-      const result = await within(45_000, 'One greeting attempt exceeded 45 seconds.', () => driver.attemptGreeting({ pages }))
+      let result
+      try {
+        result = await within(45_000, 'One greeting attempt exceeded 45 seconds.', () => driver.attemptGreeting({ pages }))
+      } catch (error) {
+        report.greetingCounters = await Promise.all(pages.map(captureAfter)).catch(() => undefined)
+        throw error
+      }
       report.observation = {
         association: result?.association === true,
         greetingFailed: result?.greetingFailed === true,
@@ -168,7 +190,7 @@ try {
         tradeConfirmed: result?.tradeConfirmed === true,
       }
       report.greetingCounters = await Promise.all(pages.map(captureAfter))
-      report.associationFramesReceived = [...report.baselineCounters, ...report.greetingCounters]
+      report.associationFramesReceived = [...report.baselineCounters, ...(report.stagingCounters ?? []), ...(report.readyCounters ?? []), ...report.greetingCounters]
         .flatMap(sample => sample.stages)
         .filter(stage => stage.label === 'Association responses')
         .reduce((sum, stage) => sum + stage.hardwareRx, 0)
@@ -219,7 +241,13 @@ try {
   } finally {
     try {
       input?.close()
-      await context?.close()
+      try {
+        if (typeof driver?.dispose === 'function') {
+          await within(2_000, 'Private driver cleanup timed out.', () => driver.dispose())
+        }
+      } finally {
+        await context?.close()
+      }
       await browser?.close()
     } finally { await server.close() }
   }
