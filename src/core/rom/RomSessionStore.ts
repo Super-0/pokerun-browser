@@ -6,7 +6,7 @@ const ROM_STORE = 'roms'
 
 type StoredRom = Omit<LoadedRom, 'bytes'> & {
   runId: string
-  bytes: Uint8Array | ArrayBuffer
+  bytes: Blob | Uint8Array | ArrayBuffer
 }
 
 function openDatabase() {
@@ -99,8 +99,8 @@ class RomSessionStore {
 
       if (!stored) return null
 
-      const bytes = stored.bytes instanceof Uint8Array
-        ? new Uint8Array(stored.bytes)
+      const bytes = stored.bytes instanceof Blob
+        ? new Uint8Array(await stored.bytes.arrayBuffer())
         : new Uint8Array(stored.bytes)
 
       const rom: LoadedRom = {
@@ -150,7 +150,7 @@ class RomSessionStore {
       platform: rom.platform,
       extension: rom.extension,
       sha256: rom.sha256,
-      bytes: rom.bytes.slice(),
+      bytes: new Blob([new Uint8Array(rom.bytes)]),
     }
 
     await withRomStore<void>('readwrite', (store, resolve, reject) => {

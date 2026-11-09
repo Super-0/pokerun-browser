@@ -21,3 +21,15 @@ public/dev-generated/
 # Reproducible local melonDS build output — generated from the pinned GPL source.
 third_party/ds-anywhere/build-pokerun-wasm/
 public/emulators/melonds/
+
+# Private test fixtures, profiles and evidence; public test output is transient.
+local-test-assets/
+playwright-report/
+test-results/
+*.nds
+*.gba
+*.gbc
+*.gb
+*.sav
+*.srm
+*.dsv

@@ -62,7 +62,7 @@ export function White2NativeWirelessResearchPanel({
   const native = radioStatus?.native
 
   function startRadioLink() {
-    if (!bridge || !eligible || !remotePlayerId || !saveProfileId) return
+    if (!bridge || !eligible || !remotePlayerId || !saveProfileId || !rom.sha256) return
     if (radioLink.current) {
       if (running) return
       radioLink.current.stop()
