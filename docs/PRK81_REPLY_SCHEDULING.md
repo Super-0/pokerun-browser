@@ -77,3 +77,26 @@ This test is designed to establish whether synchronous WASM entry
 points work while an Asyncify call is suspended. It does not prove
 that `processFrame()` or the actual radio handshake can safely yield.
 Do not assume full emulator reentrancy from a passing result.
+
+## PRK81B revision — interpreting Asyncify return types
+
+The first PRK81B browser run reported:
+```
+Attempting synchronous WASM radio calls at +12.3 ms
+FAIL: RX counter did not advance: 0 -> [object Promise]
+```
+This is a **test expectation failure**: while Asyncify is active, the
+otherwise synchronous Embind radio getter returned a Promise. It does
+not yet show that `prk79InjectReply` failed or that concurrent native
+access is safe.
+
+The revised page awaits the native injection, counter read and outgoing
+queue read, timestamps Promise resolution, and compares it against the
+original 80 ms native suspension. A result that settles only after the
+native call resumes is *not* evidence of usable reentrant access.
+A result that settles beforehand is a promising signal, not a guarantee
+that full `processFrame()` suspension is safe.
+
+There is **no native WASM code change and no new build stamp** in this
+revision. Pull the JS-only commit, refresh
+`/prk81b-reentry-probe.html`, and copy every result line.
