@@ -7,6 +7,8 @@ Branch: `mp/map-transition-recovery-v2`
 
 Canonical handoff for the current White 2 multiplayer implementation and reverse-engineering state. New chats should read this file and `docs/WHITE2_RESEARCH.md` before proposing changes.
 
+See the [tooling handoff](../HANDOFF.md) for the later two-emulator PRK80 greeting captures. The single-emulator fake-peer workflow below applies to the earlier overworld actor probes.
+
 ## CURRENT HARNESS — IMPORTANT
 
 The debugging setup has **ONE real White 2 emulator/game/tab** plus a **headless fake P2 peer**.
