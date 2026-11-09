@@ -93,7 +93,7 @@ export function White2NativeWirelessResearchPanel({
     if (!bridge || !eligible) return
     try {
       const current: Snapshot = {
-        at: Date.now(),
+        at: performance.now(),
         emulatedFrames: bridge.getFrameStats().frames,
         radio: bridge.getNativeWirelessDevLinkCounters(),
       }

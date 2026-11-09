@@ -1,4 +1,5 @@
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
+import { White2GreetingTrace } from './White2GreetingTrace'
 
 // PRK66: ephemeral BroadcastChannel-only experiment. It connects two real
 // melonDS instances in separate tabs of the same browser origin. It is NOT
@@ -66,6 +67,7 @@ export class White2NativeRadioLink {
   private readonly pollIntervalMs: 5 | 50
   private readonly bridge: MelonDsBridge
   private readonly onStatus: (status: NativeRadioLinkStatus) => void
+  private trace: White2GreetingTrace | null = null
   private tickTimer: number | null = null
   private lastHelloAt = 0
   private lastHelloSentAt = 0
@@ -114,6 +116,13 @@ export class White2NativeRadioLink {
   start() {
     if (this.stopped || this.tickTimer !== null) return
     if (this.bridge.status !== 'running') throw new Error('Native radio requires a running melonDS instance.')
+    try {
+      if (sessionStorage.getItem('pokerun:prk80-greeting-trace') === '1') {
+        this.trace = new White2GreetingTrace(this.bridge, this.firmwareRole)
+      }
+    } catch (error) {
+      console.warn('[PokéRun] Greeting trace could not start.', error)
+    }
     this.publish('waiting')
     this.sendHello()
     this.tickTimer = window.setInterval(() => this.tick(), this.pollIntervalMs)
@@ -126,6 +135,7 @@ export class White2NativeRadioLink {
     this.tickTimer = null
     try { this.channel.postMessage(this.wrap({ kind: 'bye' })) } catch { /* page teardown */ }
     this.channel.close()
+    try { this.trace?.stop() } catch { /* page teardown */ }
     if (this.radioEnabled) {
       try { this.bridge.setNativeWirelessDevLinkEnabled(false) } catch { /* page teardown */ }
       this.radioEnabled = false
@@ -181,6 +191,11 @@ export class White2NativeRadioLink {
       if (this.peerNonce === value.sessionNonce) this.lastHelloAt = 0
       return
     }
+    if (value.kind === 'frame' && this.peerNonce === value.sessionNonce &&
+        Number.isSafeInteger(value.sequence) && Number.isSafeInteger(value.timestamp) &&
+        Number.isInteger(value.replyAid)) {
+      this.trace?.wireEvent('arrival', value.firmwareRole, value.sequence, value.timestamp, value.replyAid)
+    }
     if (value.kind !== 'frame' || !this.radioEnabled ||
         this.peerNonce !== value.sessionNonce ||
         performance.now() - this.lastHelloAt > PEER_EXPIRY_MS) {
@@ -201,8 +216,9 @@ export class White2NativeRadioLink {
     // Native receiver performs its own frame length and fixed-buffer checks.
     try {
       const received = value.replyAid
-        ? this.bridge.receiveNativeWirelessDevReply(value.bytes, value.timestamp, value.replyAid)
+        ? this.bridge.receiveNativeWirelessDevReply(value.bytes, value.timestamp, value.replyAid, this.trace ? value.sequence : 0)
         : this.bridge.receiveNativeWirelessDevFrame(value.bytes, value.timestamp)
+      this.trace?.wireEvent(received ? 'queued' : 'rejected', value.firmwareRole, value.sequence, value.timestamp, value.replyAid)
       if (received) {
         this.lastSequence = value.sequence
         this.framesReceived++
@@ -250,9 +266,15 @@ export class White2NativeRadioLink {
             timestamp: outgoing.timestamp,
             replyAid,
           }
+          this.trace?.wireEvent('send', this.firmwareRole, frame.sequence, frame.timestamp, replyAid, outgoing.traceTxId)
           this.channel.postMessage(frame)
           this.framesSent++
         }
+      }
+      try { this.trace?.drainNative() } catch (error) {
+        console.warn('[PokéRun] Greeting trace could not drain.', error)
+        try { this.trace?.stop() } catch { /* page teardown */ }
+        this.trace = null
       }
       const phase = peerPresent ? 'linked' : 'waiting'
       if (this.lastPhase !== phase || now - this.lastStatusAt > 1000) {

@@ -44,6 +44,7 @@ export default defineConfig({
   plugins: [pokerunMgbaMemoryBridge, react()],
   server: {
     headers: crossOriginIsolationHeaders,
+    fs: { deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', '**/local-test-assets/**'] },
   },
   preview: {
     headers: crossOriginIsolationHeaders,

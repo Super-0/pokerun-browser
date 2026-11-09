@@ -1,6 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { applyPrk66LocalRadioBridge } from './prk66-wireless-patch.mjs'
 import { applyPrk67NativeRxAudit } from './prk67-native-rx-audit.mjs'
 import { applyPrk69ChannelAudit } from './prk69-native-channel-audit.mjs'
@@ -8,9 +9,10 @@ import { applyPrk70ReceiveDeliveryAudit } from './prk70-native-delivery-audit.mj
 import { applyPrk71FirmwareMacIdentity } from './prk71-firmware-mac-identity.mjs'
 import { applyPrk72HandshakeStageAudit } from './prk72-handshake-stage-audit.mjs'
 import { applyPrk79NativeMpReplies } from './prk79-native-mp-replies.mjs'
+import { applyPrk80GreetingTrace } from './prk80-greeting-trace.mjs'
 import { applyPrk80MpTimingAudit } from './prk80-mp-timing-audit.mjs'
 
-const root = resolve(new URL('..', import.meta.url).pathname)
+const root = fileURLToPath(new URL('..', import.meta.url))
 const source = resolve(root, 'third_party/ds-anywhere')
 const patches = [
   resolve(root, 'third_party/patches/0001-expose-arm9-bus-reads.patch'),
@@ -45,6 +47,7 @@ const requiredRuntimeSymbols = [
   'prk72TxKind', 'prk72RxKind',
   'prk79InjectReply', 'prk79ReplyTx', 'prk79ReplyRx', 'prk79HostPoll',
   'prk79HostMatch', 'prk79Stale', 'prk79Empty',
+  'setGreetingTrace', 'drainGreetingTrace',
   'prk80EmptyPoll', 'prk80MissPoll', 'prk80PendingMiss', 'prk80FutureMatch', 'prk80AckFail', 'prk80AckOk',
 ]
 
@@ -175,6 +178,9 @@ if (!existsSync(resolve(source, '.git'))) throw new Error('Missing third_party/d
 const revision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: source, encoding: 'utf8' }).trim()
 if (revision !== expectedRevision) throw new Error(`DS Anywhere must be pinned to ${expectedRevision}; found ${revision}.`)
 
+const sourceChanges = execFileSync('git', ['status', '--porcelain'], { cwd: source, encoding: 'utf8' }).trim()
+if (sourceChanges) throw new Error('The melonDS submodule must be clean before the build wrapper can patch and reset it.')
+
 let published = false
 try {
   // PokéRun-owned patches can change while the pinned upstream revision stays fixed.
@@ -197,6 +203,7 @@ try {
   applyPrk72HandshakeStageAudit(source)
   applyPrk79NativeMpReplies(source)
   applyPrk80MpTimingAudit(source)
+  applyPrk80GreetingTrace(source)
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')
@@ -223,8 +230,8 @@ try {
       !patchedCpp.includes('arm.R[13] = injectedSp;')) {
     throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
   }
-  if (!patchedCpp.includes('return 0x50524B46;')) {
-    throw new Error('PokéRun melonDS patch did not install the PRK80 runtime stamp.')
+  if (!patchedCpp.includes('return 0x50524B47;')) {
+    throw new Error('PokéRun melonDS patch did not install the PRK80 greeting trace runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new
