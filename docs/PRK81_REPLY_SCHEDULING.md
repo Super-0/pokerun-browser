@@ -53,3 +53,27 @@ rates before testing the Union Room again.
 
 Do not implement synthetic replies, fake success ACKs, forced menu
 transitions, or Pokémon save edits.
+
+
+## PRK81B — synchronous WASM radio reentry (no rebuild)
+
+PRK81A passed on the Codespace: browser cross-origin isolation true;
+stamp `0x50524B47`; JS timer ran during native suspension; Embind
+resumed after 32 ms. Emscripten warns that reentering a suspended
+module can violate invariants, so a capability test is necessary.
+
+Open `/prk81b-reentry-probe.html` on the **same origin as Vite** with
+the existing PRK81A runtime. No ROM, saves, player pairing, or WAsm
+rebuild is required. The page suspends `prk81AsyncifyProbe(80)`,
+then calls the real PRK79 reply injector and outgoing-queue reader
+from a JavaScript timer after 10 ms. Native radio is enabled only for
+the test and cleared afterward; no packet is broadcast.
+
+Expected: native reply injection accepted; outgoing queue remains empty;
+native test resumes; PASS.
+
+If the page reports FAIL, copy all its output before trying any changes.
+This test is designed to establish whether synchronous WASM entry
+points work while an Asyncify call is suspended. It does not prove
+that `processFrame()` or the actual radio handshake can safely yield.
+Do not assume full emulator reentrancy from a passing result.

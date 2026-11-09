@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PokéRun PRK81B — Radio reentry during suspension</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; color-scheme: dark; }
+    body { max-width: 54rem; margin: 2rem auto; padding: 0 1rem; background: #111827; color: #e5e7eb; }
+    pre { white-space: pre-wrap; overflow: auto; line-height: 1.6; padding: 1rem; background: #1f2937; border-radius: .75rem; }
+    .muted { color: #9ca3af; }
+  </style>
+</head>
+<body>
+  <h1>PRK81B — WASM radio reentry test</h1>
+  <p class="muted">No ROM or emulator frames. This test deliberately calls synchronous radio functions while a test-only native function is suspended.</p>
+  <pre id="output" aria-live="polite">Starting…</pre>
+  <script type="module" src="/src/prk81b-reentry-probe.ts"></script>
+</body>
+</html>
