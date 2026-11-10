@@ -22,7 +22,7 @@ var Module={
     var inst=new mod.WasmEmulator();
     var stamp=inst.pokerunRuntimeVersion();
     inst.delete();
-    if(stamp!==0x50524b49)throw Error('Bad runtime stamp 0x'+Number(stamp).toString(16));
+    if(stamp!==0x50524b4a)throw Error('Bad runtime stamp 0x'+Number(stamp).toString(16));
     getFS();
     ready=true;send('ready',{stamp:stamp});
   }catch(e){fail('runtime',e)}
