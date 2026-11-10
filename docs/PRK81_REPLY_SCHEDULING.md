@@ -100,3 +100,41 @@ that full `processFrame()` suspension is safe.
 There is **no native WASM code change and no new build stamp** in this
 revision. Pull the JS-only commit, refresh
 `/prk81b-reentry-probe.html`, and copy every result line.
+
+
+## PRK81C — switch to worker/shared-memory architecture
+
+PRK81A established that a native Asyncify Embind call can suspend and
+resume. PRK81B discovered that while such a call is suspended, injected
+radio calls return Promises and their results only settle after the
+original 80 ms sleep window. The original sleep did not settle within
+5 seconds. This invalidates the assumption that we can reenter the
+same WASM module synchronously from its main thread to inject replies.
+
+PRK81C tests the alternative topology *without changing melonDS*:
+- A dedicated Worker posts a command and blocks on an
+  `Atomics.wait` mailbox with a bounded timeout.
+- The browser main thread stays responsive, simulates delivery of a
+  correctly framed 36-byte packet, writes it to shared memory and
+  wakes the worker with `Atomics.notify`.
+- Twenty successive rounds validate association ID, frame length,
+  payload marker, order and browser responsiveness.
+
+Test page: `/prk81c-worker-mailbox.html` on the Codespaces Vite
+origin. This uses only native browser Web Workers/SharedArrayBuffer,
+so no `npm run build:melonds` is needed.
+
+```bash
+cd /workspaces/pokerun-browser
+git pull --ff-only origin mp/prk81-reply-scheduling
+npm run dev:multiplayer
+```
+
+A PASS proves the host thread can block while the browser delivers a
+packet through shared memory. It does *not* prove native melonDS can
+run inside the worker: the current runtime loader uses `window` and
+`document`, so porting is a separate step. Actual native integration
+must publish host commands before sleeping and share the same queue
+memory with browser delivery; `postMessage` to the blocked worker
+cannot itself deliver the reply. Do not fabricate ACKs or bypass
+native client-failure checks.

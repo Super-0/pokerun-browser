@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PokéRun PRK81C — Worker mailbox experiment</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { background: #111827; color: #e5e7eb; margin: 2rem auto; padding: 0 1rem; max-width: 54rem; }
+    pre { background: #1f2937; padding: 1rem; border-radius: .75rem; line-height: 1.55; white-space: pre-wrap; overflow: auto; }
+    p { color: #9ca3af; }
+  </style>
+</head>
+<body>
+  <h1>PRK81C — Worker / shared-memory mailbox</h1>
+  <p>Isolated scheduling test. No WASM, ROM, saves, native ACKs or production radio behavior.</p>
+  <pre id="output" aria-live="polite">Starting…</pre>
+  <script type="module" src="/src/prk81c-worker-mailbox-probe.ts"></script>
+</body>
+</html>
