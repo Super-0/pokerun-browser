@@ -10,6 +10,7 @@ import { applyPrk72HandshakeStageAudit } from './prk72-handshake-stage-audit.mjs
 import { applyPrk79NativeMpReplies } from './prk79-native-mp-replies.mjs'
 import { applyPrk80MpTimingAudit } from './prk80-mp-timing-audit.mjs'
 import { applyPrk81AsyncifyProbe } from './prk81-asyncify-probe.mjs'
+import { applyPrk81WorkerCallbacks } from './prk81-worker-callbacks.mjs'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
 const source = resolve(root, 'third_party/ds-anywhere')
@@ -200,6 +201,7 @@ try {
   applyPrk79NativeMpReplies(source)
   applyPrk80MpTimingAudit(source)
   applyPrk81AsyncifyProbe(source)
+  applyPrk81WorkerCallbacks(source)
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')
@@ -228,8 +230,8 @@ try {
       !patchedCpp.includes('arm.R[13] = injectedSp;')) {
     throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
   }
-  if (!patchedCpp.includes('return 0x50524B47;')) {
-    throw new Error('PokéRun melonDS patch did not install the PRK81A runtime stamp.')
+  if (!patchedCpp.includes('return 0x50524B48;')) {
+    throw new Error('PokéRun melonDS patch did not install the PRK81E runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new

@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRK81E — Real melonDS frames in a worker</title>
+<style>body{font:16px system-ui;color:#eee;background:#111827;max-width:780px;margin:40px auto;padding:0 20px}pre{white-space:pre-wrap;background:#1f2937;padding:18px;border-radius:12px;line-height:1.6}</style></head>
+<body><h1>PRK81E — Native worker frame test</h1><p>Select a local .nds ROM. The file stays in temporary WASM memory; no save is imported or persisted. This test does not enable wireless.</p>
+<input id="rom" type="file" accept=".nds"><button id="run" disabled>Run 60 frames</button>
+<pre id="log">Starting...</pre><script type="module" src="/src/prk81e-worker-frames.ts"></script></body></html>
