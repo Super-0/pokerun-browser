@@ -7,6 +7,8 @@ const roleElement=document.querySelector<HTMLElement>('#role')
 const otherLink=document.querySelector<HTMLAnchorElement>('#peerLink')
 const fileInput=document.querySelector<HTMLInputElement>('#rom')
 const bootButton=document.querySelector<HTMLButtonElement>('#boot')
+const roomElement=document.querySelector<HTMLElement>('#roomId')
+const pairingElement=document.querySelector<HTMLElement>('#pairStatus')
 const log=(s:string)=>{
  if(logElement)logElement.textContent+=(logElement.textContent?'\n':'')+s
  console.info('[PRK81I]',s)
@@ -15,7 +17,25 @@ if(logElement)logElement.textContent=''
 const url=new URL(window.location.href)
 const role:'host'|'peer'=url.searchParams.get('role')==='peer'?'peer':'host'
 let room=url.searchParams.get('room')??''
-if(!/^[0-9a-f-]{16,64}$/i.test(room))room=crypto.randomUUID()
+const validRoom=/^[0-9a-f-]{16,64}$/i.test(room)
+// A peer without a host-generated room used to create its own random room.
+// That appeared to work locally but cannot connect to the intended host.
+if(role==='peer'&&!validRoom){
+ if(roleElement)roleElement.textContent='PEER — NOT PAIRED'
+ if(roomElement)roomElement.textContent='No host room supplied'
+ if(pairingElement)pairingElement.textContent=
+  'BLOCKED: Open the peer tab from the HOST page. A peer cannot create its own room.'
+ if(otherLink){
+  const hostStart=new URL(url.pathname,url.origin)
+  otherLink.href=hostStart.href
+  otherLink.textContent='Start a new host session'
+ }
+ if(bootButton)bootButton.disabled=true
+ log('BLOCKED: This peer URL has no valid host room. Return to the HOST tab and click its peer link.')
+ throw Error('PRK81I peer requires a valid host room ID in its URL.')
+}
+if(!validRoom)room=crypto.randomUUID()
+url.searchParams.delete('utm_source')
 url.searchParams.set('role',role)
 url.searchParams.set('room',room)
 window.history.replaceState(null,'',url)
@@ -24,8 +44,15 @@ otherUrl.searchParams.set('role',role==='host'?'peer':'host')
 if(roleElement)roleElement.textContent=role==='host'?'HOST (Player 1)':'PEER (Player 2)'
 if(otherLink){
  otherLink.href=otherUrl.href
- otherLink.textContent=role==='host'?'Open the peer tab (Player 2)':'Open the host tab (Player 1)'
+ otherLink.textContent=role==='host'?'Open the paired peer tab (Player 2)':'Open the paired host tab (Player 1)'
 }
+if(roomElement)roomElement.textContent=room
+const setPairingStatus=(message:string)=>{
+ if(pairingElement)pairingElement.textContent=message
+}
+setPairingStatus('Waiting for matching-room player to boot 30 real DS frames.')
+log('Pairing room: '+room)
+log('HOST and PEER room IDs MUST match exactly. Open the peer from the HOST link.')
 log('Starting PRK81I independent native worker test')
 log('Role: '+role)
 log('Cross-origin isolated: '+window.crossOriginIsolated)
@@ -58,6 +85,31 @@ const scenarios:Case[]=[
  {marker:55,mode:'timeout',expected:0},
 ]
 const me=crypto.randomUUID()
+const channel=new BroadcastChannel('pokerun-prk81i-live-frames-v1-'+room)
+// Display-only discovery: warns about wrong-room tabs. It never carries
+// native packets or automatically joins a different room.
+const discoveryChannel=new BroadcastChannel('pokerun-prk81i-discovery-v1')
+let reportedDifferentRoom=false
+const advertise=()=>{
+ if(done)return
+ discoveryChannel.postMessage({kind:'presence',from:me,role,room})
+}
+const advertiseTimer=window.setInterval(advertise,1000)
+discoveryChannel.onmessage=(event:MessageEvent<{
+ kind?:string;from?:string;role?:string;room?:string
+}>)=>{
+ const m=event.data
+ if(done||!m||m.kind!=='presence'||m.from===me||
+    m.role===role||typeof m.room!=='string')return
+ if(m.room!==room&&!remote&&!reportedDifferentRoom){
+  reportedDifferentRoom=true
+  const warning='ROOM MISMATCH: other '+m.role+' uses '+m.room+
+   ' but this tab uses '+room+'. Close the mismatched tab and open the peer from the HOST link.'
+  log(warning)
+  setPairingStatus(warning)
+ }
+}
+advertise()
 const channel=new BroadcastChannel('pokerun-prk81i-live-frames-v1-'+room)
 const worker=new Worker('/prk81i-live-frame-worker.js?role='+role,{type:'classic'})
 let remote:string|null=null
@@ -109,8 +161,11 @@ function closeSession(message:string,fail=false){
  if(done)return
  done=true
  log((fail?'FAIL: ':'')+message)
+ setPairingStatus((fail?'FAILED: ':'COMPLETED: ')+message)
  window.clearInterval(pulse)
  window.clearInterval(helloTimer)
+ window.clearInterval(advertiseTimer)
+ discoveryChannel.close()
  if(watchdog!==null)window.clearTimeout(watchdog)
  worker.terminate()
  txObserver?.terminate()
@@ -124,6 +179,7 @@ function startIfReady(){
   closeSession('Native WASM shared memory missing for transport.',true);return
  }
  started=true
+ setPairingStatus('CONNECTED: matching room and two booted DS cores. Native callback tests running.')
  watchdog=window.setTimeout(()=>closeSession('Transport or peer callbacks exceeded 20 seconds.',true),20000)
  const heap=txCtrl.buffer,peer=remote
  txObserver=new Worker('/prk81i-tx-observer.js',{type:'classic'})
@@ -262,6 +318,7 @@ worker.onmessage=(event:MessageEvent<WorkerMsg>)=>{
    }catch(e){closeSession('Could not map native WASM mailboxes: '+String(e),true);return}
   }
   workerReady=true
+  if(!peerAcked)setPairingStatus('Local '+role+' game booted; waiting for other player to finish booting in room '+room)
   log('Native '+role+' DS boot: '+m.frames+'/30 frames, '+m.callbacks+'/30 callbacks, firmware role '+m.firmwareRole+'.')
   announce()
   signalReady()
@@ -335,7 +392,8 @@ channel.onmessage=(event:MessageEvent<WireMessage>)=>{
   if(remote&&remote!==m.from){closeSession('Multiple peers in one room are not supported.',true);return}
   if(!remote){
    remote=m.from
-   log('Other tab discovered; answering hello immediately.')
+   log('Other tab discovered IN MATCHING ROOM '+room+'; answering hello immediately.')
+   setPairingStatus('Matching-room tab found. Waiting for its real DS core to finish booting.')
    announce()
   }
   signalReady()
@@ -345,7 +403,8 @@ channel.onmessage=(event:MessageEvent<WireMessage>)=>{
   if(remote===m.from&&m.to===me&&workerReady){
    if(!peerAcked){
     peerAcked=true
-    log('Other tab acknowledged this worker; two-way handshake ready.')
+    log('Other tab acknowledged this worker in room '+room+'; two-way handshake ready.')
+    setPairingStatus('Both cores booted and room matched; preparing transport workers.')
    }
    startIfReady()
   }
