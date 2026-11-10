@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PokéRun PRK81H — Two native emulator tabs</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif}
+body{background:#111827;color:#f3f4f6;max-width:800px;margin:40px auto;padding:0 18px}
+pre{background:#1f2937;border-radius:12px;padding:16px;line-height:1.6;white-space:pre-wrap;overflow:auto}
+a{color:#93c5fd}button{font:inherit;padding:8px}
+</style></head>
+<body>
+<h1>PRK81H — Cross-tab native radio callbacks</h1>
+<p>Two independent melonDS workers in two same-origin tabs exchange controlled test packets. This is <strong>not</strong> Pokémon gameplay or a complete wireless handshake. No ROMs, saves, or game frames are used.</p>
+<p><strong>Role:</strong> <span id="role">Starting...</span></p>
+<p><a id="peerLink" href="#" target="_blank" rel="noopener">Open the other emulator tab</a></p>
+<pre id="log" aria-live="polite">Starting...</pre>
+<script type="module" src="/src/prk81h-cross-tab-probe.ts"></script>
+</body></html>
