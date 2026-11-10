@@ -12,6 +12,10 @@ export function applyPrk81fNativeMailbox(source) {
     writeFileSync(file, content.replace(before, after))
   }
 
+  // offsetof is also evaluated in source units that include this header.
+  replaceUnique(header, '#include <emscripten/bind.h>',
+    '#include <emscripten/bind.h>\n#include <cstddef>')
+
   replaceUnique(cpp, '#include <emscripten.h>',
     '#include <emscripten.h>\n#include <emscripten/threading.h>\n#include <cstddef>\n#include <cstdint>')
 
