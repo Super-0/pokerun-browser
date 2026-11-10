@@ -64,9 +64,11 @@ let remote:string|null=null
 let peerAcked=false
 let wasmReady=false,bootRequested=false,workerReady=false,started=false,done=false
 let nativeFinished=false,localAfter=false,remoteAfter=false,peerAfterRequested=false
-let txCtrl:Int32Array|null=null,txFrame:Uint8Array|null=null
-let rxCtrl:Int32Array|null=null,rxFrame:Uint8Array|null=null
-let testIndex=0,pending:{sequence:number;marker:number;mode:Mode;sentAt:number}|null=null
+let txCtrl:Int32Array|null=null,rxCtrl:Int32Array|null=null
+let txObserver:Worker|null=null,rxCommitter:Worker|null=null
+let txReady=false,rxReady=false,transportStarted=false,txArmed=false,txFinished=false
+let forwardedCommands=0
+let testIndex=0,pending:{sequence:number;marker:number;mode:Mode}|null=null
 let stats:NativeStats|null=null
 let receivedFromPeer=0,peerRepliesProduced=0,withheld=0
 let heartbeats=0
@@ -111,14 +113,89 @@ function closeSession(message:string,fail=false){
  window.clearInterval(helloTimer)
  if(watchdog!==null)window.clearTimeout(watchdog)
  worker.terminate()
+ txObserver?.terminate()
+ rxCommitter?.terminate()
  channel.close()
 }
 function startIfReady(){
  if(done||started||role!=='host'||!workerReady||!remote||!peerAcked)return
+ if(!txCtrl||!rxCtrl||txCtrl.buffer!==rxCtrl.buffer||
+    !(txCtrl.buffer instanceof SharedArrayBuffer)){
+  closeSession('Native WASM shared memory missing for transport.',true);return
+ }
  started=true
- watchdog=window.setTimeout(()=>closeSession('Peer round trips did not complete within 20 seconds.',true),20000)
- log('Both DS cores completed their first 30 frames; starting native callback exchanges.')
- next()
+ watchdog=window.setTimeout(()=>closeSession('Transport or peer callbacks exceeded 20 seconds.',true),20000)
+ const heap=txCtrl.buffer,peer=remote
+ txObserver=new Worker('/prk81i-tx-observer.js',{type:'classic'})
+ rxCommitter=new Worker('/prk81i-rx-committer.js',{type:'classic'})
+ txObserver.onerror=e=>closeSession('Native TX observer crashed: '+e.message,true)
+ rxCommitter.onerror=e=>closeSession('Native RX committer crashed: '+e.message,true)
+ txObserver.onmessageerror=()=>closeSession('Unreadable TX observer message.',true)
+ rxCommitter.onmessageerror=()=>closeSession('Unreadable RX committer message.',true)
+ txObserver.onmessage=(event:MessageEvent<{
+  kind:string;stage?:string;message?:string;sequence?:number;
+  marker?:number;mode?:Mode;count?:number
+ }>)=>{
+  if(done)return
+  const m=event.data
+  if(m.kind==='error'){
+   closeSession('TX transport '+m.stage+': '+m.message,true)
+  }else if(m.kind==='ready'){
+   txReady=true
+   log('Native TX observer ready (no browser polling timer).')
+   armTransport()
+  }else if(m.kind==='armed'){
+   if(!transportStarted||txArmed){
+    closeSession('Unexpected native TX observer state.',true);return
+   }
+   txArmed=true
+   log('Native TX observer armed; both DS cores have completed 30 frames.')
+   next()
+  }else if(m.kind==='forwarded'){
+   const expected=scenarios[(m.sequence??0)-1]
+   if(!expected||m.marker!==expected.marker||m.mode!==expected.mode||
+      m.sequence!==forwardedCommands+1){
+    closeSession('TX observer saw an invalid or out-of-order command.',true);return
+   }
+   forwardedCommands++
+   log('Native CMD '+m.sequence+' forwarded directly to peer ('+m.mode+').')
+  }else if(m.kind==='complete'){
+   if(m.count!==5||forwardedCommands!==5){
+    closeSession('Native TX observer completion mismatch.',true);return
+   }
+   txFinished=true
+  }
+ }
+ rxCommitter.onmessage=(event:MessageEvent<{
+  kind:string;stage?:string;message?:string;sequence?:number;mode?:Mode
+ }>)=>{
+  if(done)return
+  const m=event.data
+  if(m.kind==='error'){
+   closeSession('RX transport '+m.stage+': '+m.message,true)
+  }else if(m.kind==='ready'){
+   rxReady=true
+   log('Native RX committer ready (peer reply + Atomics.notify).')
+   armTransport()
+  }else if(m.kind==='delivered'){
+   if(m.sequence!==receivedFromPeer+1||
+      m.mode!==(m.sequence===4?'stale':'valid')){
+    closeSession('Native peer reply order mismatch.',true);return
+   }
+   receivedFromPeer++
+   log('Peer native reply '+m.sequence+' committed to host WASM ('+m.mode+').')
+  }
+ }
+ txObserver.postMessage({
+  kind:'init',heap,tx:txCtrl.byteOffset,room,from:me,to:peer,
+  cases:scenarios.map(t=>({marker:t.marker,mode:t.mode}))
+ })
+ rxCommitter.postMessage({kind:'init',heap,rx:rxCtrl.byteOffset,room,from:me,to:peer})
+}
+function armTransport(){
+ if(done||!started||!txReady||!rxReady||transportStarted)return
+ transportStarted=true
+ txObserver?.postMessage({kind:'start'})
 }
 function finishIfReady(){
  if(done||!nativeFinished||!localAfter||!remoteAfter)return
@@ -135,7 +212,8 @@ function next(){
  if(done)return
  if(testIndex===scenarios.length){
   if(!stats||stats.matched!==3||stats.rejected!==1||
-     stats.timedOut!==1||stats.dropped!==0||receivedFromPeer!==4){
+     stats.timedOut!==1||stats.dropped!==0||receivedFromPeer!==4||
+     forwardedCommands!==5||!txFinished){
    closeSession('Native packet counters incorrect: '+JSON.stringify({stats,receivedFromPeer}),true)
    return
   }
@@ -146,88 +224,11 @@ function next(){
   worker.postMessage({kind:'post-frames'})
   return
  }
- // Arm polling before native execution, preserving PRK81H-A handshake.
- handleHostCalling(scenarios[testIndex].marker)
- if(!done)worker.postMessage({kind:'host-test',marker:scenarios[testIndex].marker})
-}
-function handleHostCalling(marker:number){
+ // TX observer is armed already; the native worker can now publish a CMD.
  const test=scenarios[testIndex]
- const control=txCtrl,bytes=txFrame
- if(!test||!control||!bytes||marker!==test.marker||pending){
-  closeSession('Host native test state mismatch.',true)
-  return
- }
- const until=performance.now()+600
- const poll=()=>{
-  if(done)return
-  if(Atomics.load(control,0)!==1){
-   if(performance.now()>until){closeSession('Native MP_SendCmd did not publish command.',true);return}
-   window.setTimeout(poll,1)
-   return
-  }
-  const sequence=Atomics.load(control,1)
-  const len=Atomics.load(control,2)
-  const timestampLow=Atomics.load(control,3)
-  const timestampHigh=Atomics.load(control,4)
-  if(sequence!==testIndex+1||len!==36||timestampLow!==1000||timestampHigh!==0||
-     bytes[10]!==24||bytes[11]!==0||bytes[14]!==test.marker){
-   closeSession('Invalid native command publication seq='+sequence+' len='+len,true)
-   return
-  }
-  const frame=bytes.slice(0,len)
-  Atomics.store(control,0,0)
-  pending={sequence,marker,mode:test.mode,sentAt:performance.now()}
-  log('Host native CMD '+sequence+' published at +'+(performance.now()-sessionStarted).toFixed(1)+'ms; forwarding to peer.')
-  if(!remote){closeSession('Peer disappeared.',true);return}
-  const msg:WireMessage={
-   kind:'command',room,role:'host',from:me,to:remote,
-   sequence,marker,mode:test.mode,frame,timestamp:1000
-  }
-  channel.postMessage(msg)
- }
- poll()
-}
-function commitRemoteReply(message:WireMessage){
- const p=pending,control=rxCtrl,bytes=rxFrame
- if(!p||!control||!bytes||message.sequence!==p.sequence||
-    message.marker!==p.marker||p.mode==='timeout'){
-  closeSession('Unsolicited or out-of-order peer reply.',true)
-  return
- }
- log('Remote reply arrived after '+(performance.now()-p.sentAt).toFixed(1)+'ms')
- const frame=message.frame
- if(!(frame instanceof Uint8Array)||frame.length!==36||
-    frame[10]!==24||frame[11]!==0||
-    frame[14]!==p.marker||frame[15]!==0xA7||
-    message.aid!==1||message.timestamp!==1000){
-  closeSession('Peer callback reply failed frame and origin validation.',true)
-  return
- }
- // Store exactly the packet received from the second WASM instance.
- // Only the stale negative test deliberately corrupts the mailbox sequence.
- const until=performance.now()+100
- const poll=()=>{
-  if(done)return
-  if(Atomics.load(control,0)!==1){
-   if(performance.now()>until){closeSession('Native host no longer waiting for peer.',true);return}
-   window.setTimeout(poll,1)
-   return
-  }
-  window.setTimeout(()=>{
-   if(done)return
-   if(Atomics.load(control,0)!==1){closeSession('Native host timed out before delivery.',true);return}
-   bytes.fill(0)
-   bytes.set(frame)
-   Atomics.store(control,1,p.mode==='stale'?p.sequence+1:p.sequence)
-   Atomics.store(control,2,frame.length)
-   Atomics.store(control,3,1)
-   Atomics.store(control,0,2)
-   Atomics.notify(control,0,1)
-   receivedFromPeer++
-   log('Remote native reply '+p.sequence+' delivered ('+p.mode+')')
-  },2)
- }
- poll()
+ if(pending){closeSession('Prior native callback still pending.',true);return}
+ pending={sequence:testIndex+1,marker:test.marker,mode:test.mode}
+ worker.postMessage({kind:'host-test',marker:test.marker})
 }
 worker.onerror=e=>closeSession('Worker error: '+e.message,true)
 worker.onmessageerror=()=>closeSession('Unreadable WASM worker message.',true)
@@ -257,9 +258,7 @@ worker.onmessage=(event:MessageEvent<WorkerMsg>)=>{
    if(!m.heap||m.tx===undefined||m.rx===undefined){closeSession('Missing native mailbox.',true);return}
    try{
     txCtrl=new Int32Array(m.heap,m.tx,8)
-    txFrame=new Uint8Array(m.heap,m.tx+32,2048)
     rxCtrl=new Int32Array(m.heap,m.rx,8)
-    rxFrame=new Uint8Array(m.heap,m.rx+32,1024)
    }catch(e){closeSession('Could not map native WASM mailboxes: '+String(e),true);return}
   }
   workerReady=true
@@ -312,7 +311,7 @@ worker.onmessage=(event:MessageEvent<WorkerMsg>)=>{
      ' (native '+(m.elapsed??0).toFixed(1)+'ms, txState='+
      (txCtrl?Atomics.load(txCtrl,0):'n/a')+', rxState='+
      (rxCtrl?Atomics.load(rxCtrl,0):'n/a')+', peerAck='+peerAcked+
-     ', forwarded='+Boolean(pending)+', received='+receivedFromPeer+
+     ', forwarded='+forwardedCommands+', received='+receivedFromPeer+
      ', counters='+JSON.stringify(m.stats)+')',true)
     return
    }
@@ -393,6 +392,6 @@ channel.onmessage=(event:MessageEvent<WireMessage>)=>{
    })
   }
  }else if(role==='host'&&m.kind==='reply'){
-  commitRemoteReply(m)
+  // Dedicated RX committer has its own BroadcastChannel subscription.
  }
 }
