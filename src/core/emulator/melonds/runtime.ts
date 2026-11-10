@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v26-prk81g-native-platform-callback-mailboxes'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v27-prk81h-cross-tab-native-peer'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B4A
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B4B
 export const POKERUN_ARM9_CALL_BUDGET = 1000000
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
@@ -81,6 +81,7 @@ type WasmEmulator = {
   prk81gRejected(): number
   prk81gTimedOut(): number
   prk81gDropped(): number
+  prk81hPeerReplyFromQueue(): number
   prk66TxQueued(): number
   prk66RxQueued(): number
   prk66RxConsumed(): number
@@ -182,6 +183,7 @@ export function loadMelonDsRuntime() {
              'prk81AsyncifyProbe', 'prk81fMailboxPtr', 'prk81fWaitForReply',
              'prk81gTxPtr', 'prk81gRxPtr', 'prk81gEnable', 'prk81gTestPlatformRoundTrip',
              'prk81gMatched', 'prk81gRejected', 'prk81gTimedOut', 'prk81gDropped',
+             'prk81hPeerReplyFromQueue',
           ].every(key => typeof (probe as unknown as Record<string, unknown>)[key] === 'function')
           if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET || !hasAtomicStackArgs || !hasPrk63WirelessCounters) {
             reject(new Error(

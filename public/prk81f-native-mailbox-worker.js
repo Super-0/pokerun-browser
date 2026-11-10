@@ -13,7 +13,7 @@ var Module={
       var mod=self.Module||Module;
       emulator=new mod.WasmEmulator();
       var stamp=Number(await emulator.pokerunRuntimeVersion());
-      if(stamp!==0x50524b4a)throw Error('Expected runtime 0x50524b4a, got 0x'+stamp.toString(16));
+      if(stamp!==0x50524b4b)throw Error('Expected runtime 0x50524b4b, got 0x'+stamp.toString(16));
       var address=Number(await emulator.prk81fMailboxPtr());
       var heap=self.HEAPU8||mod.HEAPU8;
       if(!(heap instanceof Uint8Array))throw Error('Native heap unavailable in worker');

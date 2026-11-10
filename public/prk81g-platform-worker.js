@@ -12,7 +12,7 @@ var Module={
       var module=self.Module||Module;
       emu=new module.WasmEmulator();
       var stamp=Number(await emu.pokerunRuntimeVersion());
-      if(stamp!==0x50524b4a)throw Error('Expected runtime 0x50524b4a, got '+stamp.toString(16));
+      if(stamp!==0x50524b4b)throw Error('Expected runtime 0x50524b4b, got '+stamp.toString(16));
       await emu.prk66SetEnabled(true);
       await emu.prk81gEnable(true);
       var txPtr=Number(await emu.prk81gTxPtr());

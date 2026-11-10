@@ -13,6 +13,7 @@ import { applyPrk81AsyncifyProbe } from './prk81-asyncify-probe.mjs'
 import { applyPrk81WorkerCallbacks } from './prk81-worker-callbacks.mjs'
 import { applyPrk81fNativeMailbox } from './prk81f-native-mailbox.mjs'
 import { applyPrk81gPlatformMailboxes } from './prk81g-platform-mailboxes.mjs'
+import { applyPrk81hNativePeer } from './prk81h-native-peer.mjs'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
 const source = resolve(root, 'third_party/ds-anywhere')
@@ -53,6 +54,7 @@ const requiredRuntimeSymbols = [
   'prk81AsyncifyProbe', 'prk81fMailboxPtr', 'prk81fWaitForReply',
   'prk81gTxPtr', 'prk81gRxPtr', 'prk81gEnable', 'prk81gTestPlatformRoundTrip',
   'prk81gMatched', 'prk81gRejected', 'prk81gTimedOut', 'prk81gDropped',
+  'prk81hPeerReplyFromQueue',
 ]
 
 function run(command, args, cwd = root) { execFileSync(command, args, { cwd, stdio: 'inherit' }) }
@@ -208,6 +210,7 @@ try {
   applyPrk81WorkerCallbacks(source)
   applyPrk81fNativeMailbox(source)
   applyPrk81gPlatformMailboxes(source)
+  applyPrk81hNativePeer(source)
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')
@@ -236,8 +239,8 @@ try {
       !patchedCpp.includes('arm.R[13] = injectedSp;')) {
     throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
   }
-  if (!patchedCpp.includes('return 0x50524B4A;')) {
-    throw new Error('PokéRun melonDS patch did not install the PRK81G runtime stamp.')
+  if (!patchedCpp.includes('return 0x50524B4B;')) {
+    throw new Error('PokéRun melonDS patch did not install the PRK81H runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new
