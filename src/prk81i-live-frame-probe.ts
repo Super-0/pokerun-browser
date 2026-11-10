@@ -109,12 +109,12 @@ discoveryChannel.onmessage=(event:MessageEvent<{
   setPairingStatus(warning)
  }
 }
-advertise()
 const channel=new BroadcastChannel('pokerun-prk81i-live-frames-v1-'+room)
 const worker=new Worker('/prk81i-live-frame-worker.js?role='+role,{type:'classic'})
 let remote:string|null=null
 let peerAcked=false
 let wasmReady=false,bootRequested=false,workerReady=false,started=false,done=false
+advertise() // Must run after done has initialized; avoid temporal-dead-zone error.
 let nativeFinished=false,localAfter=false,remoteAfter=false,peerAfterRequested=false
 let txCtrl:Int32Array|null=null,rxCtrl:Int32Array|null=null
 let txObserver:Worker|null=null,rxCommitter:Worker|null=null
