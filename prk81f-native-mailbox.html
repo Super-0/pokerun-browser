@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PokéRun PRK81F — Native WASM shared reply mailbox</title>
+<style>:root{font-family:system-ui;color-scheme:dark}body{max-width:780px;margin:36px auto;padding:0 20px;background:#111827;color:#f3f4f6}pre{white-space:pre-wrap;line-height:1.65;padding:18px;background:#1f2937;border-radius:12px}</style></head>
+<body><h1>PRK81F — Native shared-memory reply wait</h1>
+<p>Real C++ futex wait inside the melonDS worker; main thread writes test packets directly to the WASM heap. No ROM, save, game frame, radio link or native ACK changes.</p>
+<pre id="log">Starting…</pre>
+<script type="module" src="/src/prk81f-wasm-mailbox-probe.ts"></script></body></html>
