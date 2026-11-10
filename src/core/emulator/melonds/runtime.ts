@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v24-prk81e-worker-portable-callbacks'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v25-prk81f-native-futex-mailbox'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B48
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B49
 export const POKERUN_ARM9_CALL_BUDGET = 1000000
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
@@ -71,6 +71,8 @@ type WasmEmulator = {
   prk80AckOk(): number
   /** PRK81A test-only; Asyncify should turn this into a Promise. */
   prk81AsyncifyProbe(delayMs: number): number | Promise<number>
+  prk81fMailboxPtr(): number
+  prk81fWaitForReply(sequence: number, timeoutMs: number): number | Promise<number>
   prk66TxQueued(): number
   prk66RxQueued(): number
   prk66RxConsumed(): number
@@ -169,7 +171,7 @@ export function loadMelonDsRuntime() {
             'prk72TxKind', 'prk72RxKind',
              'prk79InjectReply', 'prk79ReplyTx', 'prk79ReplyRx', 'prk79HostPoll', 'prk79HostMatch', 'prk79Stale', 'prk79Empty',
              'prk80EmptyPoll', 'prk80MissPoll', 'prk80PendingMiss', 'prk80FutureMatch', 'prk80AckFail', 'prk80AckOk',
-             'prk81AsyncifyProbe',
+             'prk81AsyncifyProbe', 'prk81fMailboxPtr', 'prk81fWaitForReply',
           ].every(key => typeof (probe as unknown as Record<string, unknown>)[key] === 'function')
           if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET || !hasAtomicStackArgs || !hasPrk63WirelessCounters) {
             reject(new Error(

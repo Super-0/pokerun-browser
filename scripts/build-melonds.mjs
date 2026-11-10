@@ -11,6 +11,7 @@ import { applyPrk79NativeMpReplies } from './prk79-native-mp-replies.mjs'
 import { applyPrk80MpTimingAudit } from './prk80-mp-timing-audit.mjs'
 import { applyPrk81AsyncifyProbe } from './prk81-asyncify-probe.mjs'
 import { applyPrk81WorkerCallbacks } from './prk81-worker-callbacks.mjs'
+import { applyPrk81fNativeMailbox } from './prk81f-native-mailbox.mjs'
 
 const root = resolve(new URL('..', import.meta.url).pathname)
 const source = resolve(root, 'third_party/ds-anywhere')
@@ -48,7 +49,7 @@ const requiredRuntimeSymbols = [
   'prk79InjectReply', 'prk79ReplyTx', 'prk79ReplyRx', 'prk79HostPoll',
   'prk79HostMatch', 'prk79Stale', 'prk79Empty',
   'prk80EmptyPoll', 'prk80MissPoll', 'prk80PendingMiss', 'prk80FutureMatch', 'prk80AckFail', 'prk80AckOk',
-  'prk81AsyncifyProbe',
+  'prk81AsyncifyProbe', 'prk81fMailboxPtr', 'prk81fWaitForReply',
 ]
 
 function run(command, args, cwd = root) { execFileSync(command, args, { cwd, stdio: 'inherit' }) }
@@ -202,6 +203,7 @@ try {
   applyPrk80MpTimingAudit(source)
   applyPrk81AsyncifyProbe(source)
   applyPrk81WorkerCallbacks(source)
+  applyPrk81fNativeMailbox(source)
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')
@@ -230,8 +232,8 @@ try {
       !patchedCpp.includes('arm.R[13] = injectedSp;')) {
     throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
   }
-  if (!patchedCpp.includes('return 0x50524B48;')) {
-    throw new Error('PokéRun melonDS patch did not install the PRK81E runtime stamp.')
+  if (!patchedCpp.includes('return 0x50524B49;')) {
+    throw new Error('PokéRun melonDS patch did not install the PRK81F runtime stamp.')
   }
 
   // Rebuild from scratch, but keep the last served runtime in place until the new

@@ -31,7 +31,7 @@ self.onmessage=function(event) {
         var stamp=Number(await emulator.pokerunRuntimeVersion());
         var budget=Number(await emulator.arm9CallBudget());
         var count=Number(await emulator.prk79ReplyRx());
-        if(stamp!==0x50524b48||budget!==1000000||!Number.isSafeInteger(count))
+        if(stamp!==0x50524b49||budget!==1000000||!Number.isSafeInteger(count))
           throw Error('Native values do not match PRK81A runtime: '+stamp.toString(16)+', '+budget+', '+count);
         completed=true;
         self.postMessage({kind:'passed',stamp:stamp,budget:budget,count:count});
