@@ -109,7 +109,6 @@ discoveryChannel.onmessage=(event:MessageEvent<{
   setPairingStatus(warning)
  }
 }
-const channel=new BroadcastChannel('pokerun-prk81i-live-frames-v1-'+room)
 const worker=new Worker('/prk81i-live-frame-worker.js?role='+role,{type:'classic'})
 let remote:string|null=null
 let peerAcked=false
