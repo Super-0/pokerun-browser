@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 import { chromium } from 'playwright'
 import { createServer } from 'vite'
+import { assertReciprocalPartyExchange } from './white2-party-exchange.mjs'
 import { checkReplySchedules } from '../tests/native/reply-schedule.mjs'
 
 const mode = process.argv[2]
@@ -18,9 +19,13 @@ const origin = 'http://127.0.0.1:4181'
 const manual = process.env.POKERUN_MANUAL === '1'
 const tracing = mode === 'greeting' && process.env.POKERUN_GREETING_TRACE !== '0'
 
+const unattended = process.env.POKERUN_WHITE2_UNATTENDED === '1'
 const expectedOutcome = process.env.POKERUN_EXPECT_WHITE2 ?? 'greeting-failure'
 if (mode === 'greeting') assert(['greeting-failure', 'trade-menu', 'trade-confirmed'].includes(expectedOutcome),
   'POKERUN_EXPECT_WHITE2 must be greeting-failure, trade-menu, or trade-confirmed.')
+
+assert(!unattended || (mode === 'greeting' && !manual && expectedOutcome === 'trade-confirmed'),
+  'Unattended mode requires the private trade driver and a trade-confirmed expectation.')
 
 const traceGameNegotiation = process.env.POKERUN_TRACE_GAME_NEGOTIATION === '1'
 const workerRadio = mode === 'greeting' && process.env.POKERUN_WORKER_RADIO === '1'
@@ -37,6 +42,42 @@ async function captureAfter(page) {
     page.getByRole('button', { name: '2. CAPTURE AFTER' }).click(),
   ])
   return message.args()[1].jsonValue()
+}
+
+async function readCheckpointSave(page, player) {
+  return page.evaluate(async player => {
+    const { multiplayerSaveStore } = await import('/src/core/storage/MultiplayerSaveStore.ts')
+    const { readWhite2SavedParty } = await import('/src/multiplayer/games/White2PartyStructureProbe.ts')
+    const profile = localStorage.getItem(`pokerun-multiplayer-dev-save-player-${player}-v1`)
+    if (!profile) throw new Error('Missing disposable White 2 save selection.')
+    const bytes = await multiplayerSaveStore.loadBatterySave(profile)
+    if (!bytes) throw new Error('Missing disposable White 2 battery.')
+    const party = readWhite2SavedParty(bytes)
+    const hash = await crypto.subtle.digest('SHA-256', bytes)
+    return { digest: Array.from(new Uint8Array(hash)).join(','), party }
+  }, player)
+}
+
+async function verifyTradeIntegrity(pages, savesBefore) {
+  let lastFailure
+  const deadline = Date.now() + 90_000
+  do {
+    try {
+      const savesAfter = await Promise.all(pages.map((page, index) => readCheckpointSave(page, index + 1)))
+      assertReciprocalPartyExchange(savesBefore.map(save => save.party), savesAfter.map(save => save.party))
+      const persistedBatteryChanged = savesAfter.map((save, index) => save.digest !== savesBefore[index].digest)
+      assert(persistedBatteryChanged.every(Boolean), 'The two disposable batteries did not both change after the trade.')
+      return {
+        reciprocalPartyExchange: true,
+        bothSavedBatteriesPassFooterValidation: true,
+        persistedBatteryChanged,
+      }
+    } catch (error) {
+      lastFailure = error
+      await delay(2_000)
+    }
+  } while (Date.now() < deadline)
+  throw lastFailure
 }
 
 async function within(ms, description, action) {
@@ -233,6 +274,11 @@ try {
         assert(report.readyHealth.every(fps => fps >= 55 && fps <= 65), 'DS frame health fell outside 55–65 frames/s after entering the Union Room.')
       }
 
+      let savesBefore
+      if (unattended) {
+        report.stage = 'pre-trade-integrity'
+        savesBefore = await Promise.all(pages.map((page, index) => readCheckpointSave(page, index + 1)))
+      }
       report.stage = 'greeting'
       await Promise.all(pages.map((page, i) => page.screenshot({ path: join(run, `p${i + 1}-before.png`), timeout: 5_000 })))
       await Promise.all(pages.map(page => page.getByRole('button', { name: before }).click()))
@@ -244,11 +290,20 @@ try {
         report.greetingCounters = await Promise.all(pages.map(captureAfter)).catch(() => undefined)
         throw error
       }
+      let tradeConfirmed = result?.tradeConfirmed === true
+      if (unattended) {
+        report.stage = 'post-trade-integrity'
+        assert(result?.exchangeSubmitted === true && result?.tradeMenu === true &&
+          result?.association === true && !result?.greetingFailed,
+        'The private driver did not reach and submit the reciprocal trade confirmation.')
+        report.integrity = await verifyTradeIntegrity(pages, savesBefore)
+        tradeConfirmed = true
+      }
       report.observation = {
         association: result?.association === true,
         greetingFailed: result?.greetingFailed === true,
         tradeMenu: result?.tradeMenu === true,
-        tradeConfirmed: result?.tradeConfirmed === true,
+        tradeConfirmed,
       }
       report.greetingCounters = await Promise.all(pages.map(captureAfter))
       report.associationFramesReceived = [...report.baselineCounters, ...(report.stagingCounters ?? []), ...(report.readyCounters ?? []), ...report.greetingCounters]
@@ -256,13 +311,19 @@ try {
         .filter(stage => stage.label === 'Association responses')
         .reduce((sum, stage) => sum + stage.hardwareRx, 0)
       assert(report.pageErrors.every(count => count === 0), 'An uncaught browser error occurred during the run.')
-      const { association, greetingFailed, tradeMenu, tradeConfirmed } = report.observation
+      const { association, greetingFailed, tradeMenu } = report.observation
       assert(association && report.associationFramesReceived > 0, 'Native association was not verified.')
       if (tradeConfirmed && tradeMenu && !greetingFailed) report.outcome = 'trade-confirmed'
       else if (tradeMenu && !greetingFailed) report.outcome = 'trade-menu'
       else if (greetingFailed && !tradeMenu && !tradeConfirmed) report.outcome = 'greeting-failure'
       else report.outcome = 'other'
       assert.equal(report.outcome, expectedOutcome, 'Unexpected game-level outcome.')
+      if (unattended) {
+        assert(report.greetingCounters.every(sample => {
+          const fps = sample.emulatedFrames * 1000 / sample.elapsedMs
+          return fps >= 55 && fps <= 65
+        }), 'DS frame health fell outside 55–65 frames/s during the trade.')
+      }
       report.stage = 'complete'
       console.log(`Verified White 2 outcome: ${report.outcome}.`)
     }

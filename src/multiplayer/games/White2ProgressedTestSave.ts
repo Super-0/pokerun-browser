@@ -11,7 +11,7 @@ const FOOTER_CRC_OFFSET = 0x25fa2
 const FOOTER_SIZE = 0x25fa4
 const FOOTER_MAGIC = 0x31053527
 
-function crc16Ccitt(data: Uint8Array) {
+export function crc16Ccitt(data: Uint8Array) {
   let crc = 0xffff
   for (const byte of data) {
     crc ^= byte << 8
@@ -22,12 +22,12 @@ function crc16Ccitt(data: Uint8Array) {
   return crc
 }
 
-export function validateWhite2ProgressedTestSave(bytes: Uint8Array) {
+export function validWhite2SaveRegions(bytes: Uint8Array) {
   if (bytes.length !== SAVE_BYTES) {
     throw new Error('PRK74 requires a complete 512 KB raw White 2 .sav battery image (not a save state or .dsv).')
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  let validRegions = 0
+  const regions: { offset: number; generation: number }[] = []
   for (const region of [0, REGION_BYTES]) {
     if (view.getUint32(region + FOOTER_OFFSET + 4, true) !== FOOTER_SIZE ||
         view.getUint32(region + FOOTER_OFFSET + 8, true) !== FOOTER_MAGIC) continue
@@ -35,9 +35,14 @@ export function validateWhite2ProgressedTestSave(bytes: Uint8Array) {
     const actualCrc = crc16Ccitt(bytes.subarray(
       region + CRC_TABLE_OFFSET, region + CRC_TABLE_OFFSET + CRC_TABLE_LENGTH,
     ))
-    if (actualCrc === expectedCrc) validRegions += 1
+    if (actualCrc === expectedCrc) regions.push({ offset: region, generation: view.getUint32(region + FOOTER_OFFSET, true) })
   }
-  if (validRegions === 0) {
+  if (regions.length === 0) {
     throw new Error('No valid White 2 save footer/CRC-table checksum found. Import canceled; original saves remain unchanged.')
   }
+  return regions
+}
+
+export function validateWhite2ProgressedTestSave(bytes: Uint8Array) {
+  validWhite2SaveRegions(bytes)
 }

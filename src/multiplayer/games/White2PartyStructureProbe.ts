@@ -1,3 +1,4 @@
+import { crc16Ccitt, validWhite2SaveRegions } from './White2ProgressedTestSave'
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import type { MultiplayerRomIdentity } from '../core/protocol'
 import { TESTED_WHITE2_SHA256 } from './White2LiveStateAdapter'
@@ -108,6 +109,42 @@ function decodeSlotBytes(raw: Uint8Array): DecodedLocalSlot {
     maxHp,
     hpPlausible: level >= 1 && level <= 100 && maxHp > 0 && currentHp <= maxHp,
   }
+}
+
+// The White 2 save directory's party block and its checksum-table entry.
+export function readWhite2SavedParty(bytes: Uint8Array) {
+  const partyOffset = 0x18e00
+  const partyCrcOffset = 0x19336
+  const partyTableOffset = 0x25f34
+  const regions = validWhite2SaveRegions(bytes)
+  if (regions.length === 2) {
+    const difference = (regions[1].generation - regions[0].generation) | 0
+    if (difference > 0) regions.reverse()
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  for (const region of regions) {
+    const checksum = view.getUint16(region.offset + partyTableOffset, true)
+    // The game can read a block from either physical copy when the selected
+    // checksum table still references an unchanged block in the other copy.
+    for (const offset of [region.offset, 0x26000 - region.offset]) {
+      const start = offset + partyOffset
+      if (view.getUint16(offset + partyCrcOffset, true) !== checksum ||
+          crc16Ccitt(bytes.subarray(start, start + PARTY_STRUCT_BYTES)) !== checksum) continue
+      const count = view.getUint32(start + 4, true)
+      if (view.getUint32(start, true) !== PARTY_SIZE || count < 1 || count > PARTY_SIZE) {
+        throw new Error('The saved White 2 party header is invalid.')
+      }
+      return Array.from({ length: count }, (_, slot) => {
+        const address = start + PARTY_HEADER_BYTES + slot * PARTY_PKM_BYTES
+        const member = decodeSlotBytes(bytes.subarray(address, address + PARTY_PKM_BYTES))
+        if (!member.boxChecksumValid || !member.speciesPlausible || member.level < 1 || member.level > 100) {
+          throw new Error('The saved White 2 party contains an invalid member.')
+        }
+        return `${member.speciesId}:${member.level}`
+      })
+    }
+  }
+  throw new Error('No White 2 party block matches a valid save checksum table.')
 }
 
 export type White2PartySlotResearch = {
