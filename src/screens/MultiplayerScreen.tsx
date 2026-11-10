@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { MelonDsPlayer } from '../components/MelonDsPlayer'
 import { MultiplayerPlayerPanel } from '../components/MultiplayerPlayerPanel'
+import { White2LocalWirelessControls } from '../components/White2LocalWirelessControls'
+import { white2LocalWirelessEnabled } from '../multiplayer/games/white2LocalWirelessFeature'
 import { White2MemoryResearchPanel } from '../components/White2MemoryResearchPanel'
 import { White2NativeWirelessResearchPanel } from '../components/White2NativeWirelessResearchPanel'
 import { PixelButton } from '../components/PixelButton'
@@ -195,6 +197,18 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
   const [exportSaveError, setExportSaveError] = useState<string | null>(null)
   const localRomIdentity = state.localRom!.identity
   const saveProfileId = state.localRom!.saveProfileId
+  const query = new URLSearchParams(window.location.search)
+  const legacyPlayer = import.meta.env.DEV && (query.get('fake') === '1' ||
+    query.get('player') === '1' || query.get('player') === '2')
+  const nativeRole: 1 | 2 | undefined = white2LocalWirelessEnabled && !legacyPlayer && localPlayer &&
+    White2LiveStateAdapter.supportsRom(localRomIdentity) && saveProfileId
+    ? (localIndex === 0 ? 1 : 2) : undefined
+  const nativeOptions = useMemo(() => nativeRole && remote?.id && saveProfileId && localRomIdentity.sha256 && room.gameStart ? {
+    roomCode: room.code, startId: room.gameStart.startId, localPlayerId: session.localPlayerId,
+    remotePlayerId: remote.id, romSha256: localRomIdentity.sha256, saveProfileId,
+    pollIntervalMs: 5 as const, firmwareRole: nativeRole,
+  } : null, [nativeRole, remote?.id, saveProfileId, localRomIdentity.sha256, room.code, room.gameStart?.startId, session.localPlayerId])
+
   useEffect(() => {
     let cancelled = false
     setBatteryReady(false)
@@ -316,7 +330,7 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
   return <main className="screen themed-screen active-run" style={{ '--theme-sky': roomGame.theme.sky, '--theme-sky-soft': roomGame.theme.skySoft, '--theme-accent': roomGame.theme.accent, '--theme-accent-dark': roomGame.theme.accentDark, '--theme-ground': roomGame.theme.ground, '--theme-water': roomGame.theme.water } as React.CSSProperties}>
     <div className="screen-shell">
       <AppHeader onHome={onHome} right={right}/>
-      <section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>{import.meta.env.DEV
+      <section className="page-title-row"><div><span className="eyebrow">MULTIPLAYER SESSION • {room.gameStart!.startId.slice(0, 8)}</span><h1>{roomGame.title.toUpperCase()}</h1><p>{nativeRole ? 'Two saved games can use the Union Room through local wireless in this browser.' : import.meta.env.DEV
   ? 'Development multiplayer: P2 may be simulated or a second actual DS. PRK66 radio requires two actual emulators; native Pokémon trading remains disabled.'
   : 'Both players keep independent saves. Live position is shared between the two games; party and gym reads are the next adapter fields.'}</p><span className={saveStatus === 'LOCAL SAVE FAILED' ? 'form-error' : 'memory-ok'}>{saveStatus}</span></div><PixelButton tone="ghost" onClick={() => session.leave()}>LEAVE SESSION</PixelButton></section>
 
@@ -328,10 +342,11 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
 
       <section className="multiplayer-play-layout">
         <MultiplayerPlayerPanel playerLabel={localLabel} roleLabel={`PLAYER ${localIndex + 1} • YOU`} state={localState} relation={relation} error={liveStateError}/>
-        <div className="multiplayer-emulator-center"><section className="emulator-column">{batteryReady ? <MelonDsPlayer game={roomGame} rom={state.localRom!.rom} onBridgeReady={setBridge} saveKey={saveProfileId ?? session.localPlayerId} batterySave={batterySave} onBatterySave={persistBatterySave}/> : <section className="runs-empty pixel-border"><h2>RESTORING LOCAL SAVE...</h2></section>}</section></div>
+        <div className="multiplayer-emulator-center"><section className="emulator-column">{batteryReady ? <MelonDsPlayer game={roomGame} rom={state.localRom!.rom} onBridgeReady={setBridge} saveKey={saveProfileId ?? session.localPlayerId} batterySave={batterySave} onBatterySave={persistBatterySave} nativeLocalRadioRole={nativeRole}/> : <section className="runs-empty pixel-border"><h2>RESTORING LOCAL SAVE...</h2></section>}</section></div>
         <MultiplayerPlayerPanel playerLabel={remoteLabel} roleLabel={`PLAYER ${remoteIndex + 1} • PARTNER`} state={remoteState} relation={relation}/>
       </section>
 
+      {nativeOptions && <White2LocalWirelessControls bridge={bridge} options={nativeOptions}/>}
       {import.meta.env.DEV && <>
         <details className="multiplayer-session-debug pixel-border" style={{ padding: 12, marginBottom: 12 }}>
           <summary style={{ cursor: 'pointer', fontWeight: 700 }}>ADVANCED • SAVE BACKUP</summary>
@@ -348,7 +363,7 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
         <White2NativeWirelessResearchPanel bridge={bridge} rom={localRomIdentity}
           roomCode={room.code} startId={room.gameStart!.startId}
           localPlayerId={session.localPlayerId} remotePlayerId={remote?.id ?? null}
-          saveProfileId={saveProfileId ?? null}/><details className="multiplayer-debug multiplayer-session-debug pixel-border"><summary style={{ cursor: 'pointer', fontWeight: 700 }}>ADVANCED • PLAYER STATE DEBUG</summary><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></details></>}
+          saveProfileId={saveProfileId ?? null} observeOnly={Boolean(nativeRole)}/><details className="multiplayer-debug multiplayer-session-debug pixel-border"><summary style={{ cursor: 'pointer', fontWeight: 700 }}>ADVANCED • PLAYER STATE DEBUG</summary><div><strong>LOCAL</strong>{localState ? <span>MAP {localState.location.mapId} • X {localState.x} • Y {localState.y} • {localState.direction.toUpperCase()}</span> : liveStateError ? <span className="form-error">{liveStateError}</span> : <span>WAITING FOR WHITE 2 LIVE STATE</span>}</div><div><strong>REMOTE</strong>{remoteState ? <span>MAP {remoteState.location.mapId} • X {remoteState.x} • Y {remoteState.y} • {remoteState.direction.toUpperCase()}{remoteDifferentMap ? ' • DIFFERENT LOCATION' : ''}</span> : <span>NO REMOTE STATE YET</span>}</div></details></>}
     </div>
   </main>
 }

@@ -23,7 +23,7 @@ const trackedKinds = [
 ] as const
 
 export function White2NativeWirelessResearchPanel({
-  bridge, rom, roomCode, startId, localPlayerId, remotePlayerId, saveProfileId,
+  bridge, rom, roomCode, startId, localPlayerId, remotePlayerId, saveProfileId, observeOnly = false,
 }: {
   bridge: MelonDsBridge | null
   rom: MultiplayerRomIdentity
@@ -32,6 +32,7 @@ export function White2NativeWirelessResearchPanel({
   localPlayerId: string
   remotePlayerId: string | null
   saveProfileId: string | null
+  observeOnly?: boolean
 }) {
   const [radioStatus, setRadioStatus] = useState<NativeRadioLinkStatus | null>(null)
   const [radioError, setRadioError] = useState<string | null>(null)
@@ -167,7 +168,7 @@ export function White2NativeWirelessResearchPanel({
 
   return <section className="multiplayer-session-debug pixel-border" style={{ padding: 12, marginBottom: 12 }}>
     <h2 style={{ fontSize: 16 }}>WHITE 2 • NATIVE MULTIPLAYER TEST</h2>
-    <p style={{ fontSize: 12 }}>
+    {!observeOnly && <><p style={{ fontSize: 12 }}>
       Goal: both players complete a real Union Room invitation without a
       communication error. Native player discovery already works. PRK75 radio
       isolation should remain active in both tabs. Use separate disposable
@@ -179,7 +180,7 @@ export function White2NativeWirelessResearchPanel({
       <button type="button" disabled={!radioLink.current} onClick={stopRadioLink}>
         STOP & CLEAR RADIO QUEUES
       </button>
-    </div>
+    </div></>}
     {!eligible && <p style={{ fontSize: 12 }}>Requires the running, verified White 2 ROM.</p>}
     {radioError && <p className="form-error" role="alert">{radioError}</p>}
     {radioStatus && <div role="status" style={{ fontSize: 12, display: 'grid', gap: 5 }}>
@@ -259,7 +260,7 @@ export function White2NativeWirelessResearchPanel({
       </div>}
     </div>
 
-    <details style={{ marginTop: 12 }}>
+    {!observeOnly && <details style={{ marginTop: 12 }}>
       <summary style={{ cursor: 'pointer', fontWeight: 700 }}>
         ADVANCED • RADIO SETTINGS AND CONNECTION COUNTERS
       </summary>
@@ -285,6 +286,6 @@ export function White2NativeWirelessResearchPanel({
         </p>)}
       </div>}
       <White2NativeFreezeWatch bridge={bridge}/>
-    </details>
+    </details>}
   </section>
 }

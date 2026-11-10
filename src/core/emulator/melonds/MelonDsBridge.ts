@@ -1,4 +1,5 @@
 import type { EmulatorBridge, EmulatorStatus } from '../EmulatorBridge'
+import { white2LocalWirelessEnabled } from '../../../multiplayer/games/white2LocalWirelessFeature'
 import type { Platform } from '../../../types'
 import { DS_SCREEN_HEIGHT, DS_SCREEN_WIDTH, loadMelonDsRuntime, POKERUN_MELONDS_RUNTIME_STAMP, type MelonDsModule, type RuntimeCart, type RuntimeEmulator } from './runtime'
 
@@ -56,7 +57,16 @@ export class MelonDsBridge implements EmulatorBridge {
   private readonly radioOutputListeners = new Set<() => void>()
   private readonly workerRadioRequested = import.meta.env.DEV &&
     sessionStorage.getItem('pokerun:prk80-worker-radio') === '1'
-  private get workerRadio() { return this.workerRadioRequested && this.devWirelessFirmwareRole !== 0 }
+  private nativeLocalRadio = false
+  private get workerRadio() { return this.nativeLocalRadio || (this.workerRadioRequested && this.devWirelessFirmwareRole !== 0) }
+
+  enableNativeLocalRadio(role: 1 | 2) {
+    if (!white2LocalWirelessEnabled || this.emulator || this.status !== 'idle') {
+      throw new Error('White 2 local wireless must be enabled before startup.')
+    }
+    this.nativeLocalRadio = true
+    this.devWirelessFirmwareRole = role
+  }
   private devWirelessFirmwareRole: 0 | 1 | 2 = 0
 
   /** PRK71: assign before loadRom. Applies only to in-memory firmware of a
@@ -105,13 +115,13 @@ export class MelonDsBridge implements EmulatorBridge {
    * or sends them to a network service. Not a trade or a live save operation.
    */
   setNativeWirelessDevLinkEnabled(enabled: boolean) {
-    if (!import.meta.env.DEV) throw new Error('PRK66 radio bridge is development-only.')
+    if (!import.meta.env.DEV && !this.nativeLocalRadio) throw new Error('White 2 local wireless is disabled.')
     const emulator = this.assertEmulator()
     if (this.workerRadio) emulator.pokerunSetRadioWaiting?.(enabled)
     emulator.prk66SetEnabled(enabled)
   }
   receiveNativeWirelessDevReply(bytes: Uint8Array, timestamp: number, aid: number, traceSequence = 0) {
-    if (!import.meta.env.DEV) throw new Error('PRK79 radio replies are development-only.')
+    if (!import.meta.env.DEV && !this.nativeLocalRadio) throw new Error('White 2 local wireless is disabled.')
     return this.assertEmulator().prk79InjectReply(bytes, timestamp, aid, traceSequence)
   }
   setPrk80DeferHostPoll(mode: number) {
@@ -128,11 +138,11 @@ export class MelonDsBridge implements EmulatorBridge {
     return () => this.radioOutputListeners.delete(listener)
   }
   takeNativeWirelessOutgoingFrame() {
-    if (!import.meta.env.DEV) throw new Error('PRK66 radio bridge is development-only.')
+    if (!import.meta.env.DEV && !this.nativeLocalRadio) throw new Error('White 2 local wireless is disabled.')
     return this.assertEmulator().prk66TakeOutgoing()
   }
   receiveNativeWirelessDevFrame(bytes: Uint8Array, timestamp: number) {
-    if (!import.meta.env.DEV) throw new Error('PRK66 radio bridge is development-only.')
+    if (!import.meta.env.DEV && !this.nativeLocalRadio) throw new Error('White 2 local wireless is disabled.')
     return this.assertEmulator().prk66InjectIncoming(bytes, timestamp)
   }
   getNativeWirelessDevLinkCounters() {

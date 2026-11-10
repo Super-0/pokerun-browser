@@ -1,4 +1,5 @@
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
+import { white2LocalWirelessEnabled } from './white2LocalWirelessFeature'
 import { White2GreetingTrace } from './White2GreetingTrace'
 
 // PRK66: ephemeral BroadcastChannel-only experiment. It connects two real
@@ -32,6 +33,7 @@ export type NativeRadioLinkOptions = {
   romSha256: string
   saveProfileId: string
   pollIntervalMs?: 5 | 50
+  firmwareRole?: 1 | 2
 }
 
 type Hello = {
@@ -84,7 +86,7 @@ export class White2NativeRadioLink {
 
   constructor(bridge: MelonDsBridge, options: NativeRadioLinkOptions,
     onStatus: (status: NativeRadioLinkStatus) => void) {
-    if (!import.meta.env.DEV) throw new Error('PRK66 is development-only.')
+    if (!import.meta.env.DEV && !(white2LocalWirelessEnabled && options.firmwareRole)) throw new Error('White 2 local wireless is disabled.')
     if (!('BroadcastChannel' in window)) throw new Error('This browser does not support same-origin BroadcastChannel.')
     if (!options.roomCode || !options.startId || !options.localPlayerId ||
         !options.remotePlayerId || options.localPlayerId === options.remotePlayerId ||
@@ -93,7 +95,9 @@ export class White2NativeRadioLink {
     }
     // PRK71: prevent claiming an actual two-DS link when either instance
     // booted with the duplicate stock firmware MAC. Never expose MAC bytes.
-    const pageRole = new URLSearchParams(window.location.search).get('player')
+    const pageRole = white2LocalWirelessEnabled && options.firmwareRole
+      ? String(options.firmwareRole)
+      : new URLSearchParams(window.location.search).get('player')
     const applied = bridge.getNativeWirelessDevLinkCounters().firmwareRoleApplied
     if (!((pageRole === '1' && applied === 1) || (pageRole === '2' && applied === 2))) {
       throw new Error('PRK71 requires a real Player 1/2 tab with distinct firmware identity. Relaunch both players after rebuilding melonDS.')

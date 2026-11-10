@@ -36,3 +36,22 @@ test('two launcher pages auto-pair in one browser context and block start withou
     await isolated.close()
   }
 })
+
+test('normal multiplayer room pairs two tabs and blocks start until they supply saves', async ({ page: host, context }) => {
+  const guest = await context.newPage()
+  await Promise.all([host, guest].map(async page => {
+    await page.goto('/')
+    await page.getByRole('button', { name: 'MULTIPLAYER', exact: true }).click()
+    await page.getByRole('button', { name: /white 2/i }).click()
+  }))
+  await host.getByRole('button', { name: 'CREATE ROOM', exact: true }).click()
+  const roomCode = await host.locator('.lobby-room-code strong').innerText()
+  expect(roomCode).toMatch(/^[A-Z2-9]{6}$/)
+  await guest.getByRole('textbox', { name: 'Room code' }).fill(roomCode)
+  await guest.getByRole('button', { name: 'JOIN', exact: true }).click()
+  await expect(host.getByText('2/2 PLAYERS • HOST')).toBeVisible()
+  await expect(guest.getByText('2/2 PLAYERS • GUEST')).toBeVisible()
+  await expect(guest.locator('.lobby-room-code strong')).toHaveText(roomCode)
+  for (const page of [host, guest]) await expect(page.getByRole('button', { name: 'READY', exact: true })).toBeDisabled()
+  await expect(host.getByRole('button', { name: 'START GAME', exact: true })).toBeDisabled()
+})

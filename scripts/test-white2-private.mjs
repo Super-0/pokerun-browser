@@ -27,12 +27,46 @@ if (mode === 'greeting') assert(['greeting-failure', 'trade-menu', 'trade-confir
 assert(!unattended || (mode === 'greeting' && !manual && expectedOutcome === 'trade-confirmed'),
   'Unattended mode requires the private trade driver and a trade-confirmed expectation.')
 
+const normalUi = process.env.POKERUN_WHITE2_NORMAL_UI === '1'
+assert(!normalUi || (unattended && process.env.VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER === '1'),
+  'The normal UI test requires unattended mode and the local wireless feature flag.')
+
 const traceGameNegotiation = process.env.POKERUN_TRACE_GAME_NEGOTIATION === '1'
 const workerRadio = mode === 'greeting' && process.env.POKERUN_WORKER_RADIO === '1'
 assert(!workerRadio || !process.env.POKERUN_DEFER_HOST_POLL, 'Worker radio and emulated poll delays are separate experiments.')
 const requestedPollMode = process.env.POKERUN_DEFER_HOST_POLL
 const pollModes = new Map([['1', 1], ['adaptive', 2], ['preserve-counter', 3]])
 const deferHostPoll = mode === 'greeting' ? pollModes.get(requestedPollMode) ?? 0 : 0
+
+async function launchFromNormalUi(pages) {
+  const [host, guest] = pages
+  await Promise.all(pages.map(async page => {
+    await page.goto(origin + '/')
+    await page.getByRole('button', { name: 'MULTIPLAYER', exact: true }).click()
+    await page.getByRole('button', { name: /white 2/i }).click()
+  }))
+  await host.getByRole('button', { name: 'CREATE ROOM' }).click()
+  const code = await host.locator('.lobby-room-code strong').textContent()
+  assert(code && /^[A-Z2-9]{6}$/.test(code), 'The normal lobby did not provide a valid room code.')
+  await guest.getByRole('textbox', { name: 'Room code' }).fill(code)
+  await guest.getByRole('button', { name: 'JOIN', exact: true }).click()
+  await Promise.all(pages.map(async (page, index) => {
+    await page.getByText('Both real players joined this PokeRun room.').waitFor()
+    const slot = await page.evaluate(index => {
+      const id = localStorage.getItem(`pokerun-multiplayer-dev-save-player-${index + 1}-v1`)
+      const profiles = JSON.parse(localStorage.getItem('pokerun-multiplayer-save-profiles-v1') ?? '[]')
+      return profiles.find(profile => profile.id === id)?.slotNumber
+    }, index)
+    assert(Number.isInteger(slot), 'The disposable checkpoint has no saved slot for this player.')
+    const title = `SAVE ${String(slot).padStart(3, '0')}`
+    await page.locator('article.run-card').filter({
+      has: page.getByRole('heading', { name: title, exact: true }),
+    }).getByRole('button', { name: 'CONTINUE', exact: true }).click()
+    await page.getByRole('button', { name: 'READY', exact: true }).click()
+  }))
+  await host.getByRole('button', { name: 'START GAME', exact: true }).click()
+  await Promise.all(pages.map(page => page.getByRole('heading', { name: 'WHITE 2 LOCAL WIRELESS' }).waitFor({ timeout: 90_000 })))
+}
 
 async function captureAfter(page) {
   const [message] = await Promise.all([
@@ -149,7 +183,7 @@ const server = await createServer({
 })
 let browser, context
 let pages = []
-const report = { mode, tracing, deferHostPoll, workerRadio, expectedOutcome, stage: 'startup', pageErrors: [0, 0] }
+const report = { mode, tracing, deferHostPoll, workerRadio, expectedOutcome, normalUi, stage: 'startup', pageErrors: [0, 0] }
 try {
   await server.listen()
   if (mode === 'runtime' || mode === 'schedule') {
@@ -231,7 +265,7 @@ try {
       pages = [p1, p2]
       for (const [index, page] of pages.entries()) page.on('pageerror', () => { report.pageErrors[index]++ })
       report.stage = 'boot'
-      await p1.goto(origin + '/multiplayer-dev.html', { waitUntil: 'commit' })
+      await p1.goto(origin + (normalUi ? '/' : '/multiplayer-dev.html'), { waitUntil: 'commit' })
       const distinctSlots = await p1.evaluate(() => {
         localStorage.removeItem('pokerun-multiplayer-dev-room-v1')
         const prefix = 'pokerun-multiplayer-dev-save-player-'
@@ -240,9 +274,10 @@ try {
         return Boolean(first && second && first !== second)
       })
       assert(distinctSlots, 'Select two different save slots in the checkpoint launcher.')
-      await Promise.all(pages.map((page, i) => page.goto(`${origin}/multiplayer-dev.html?player=${i + 1}&radioIsolation=1`, { waitUntil: 'commit' })))
+      if (normalUi) await launchFromNormalUi(pages)
+      else await Promise.all(pages.map((page, i) => page.goto(`${origin}/multiplayer-dev.html?player=${i + 1}&radioIsolation=1`, { waitUntil: 'commit' })))
       await Promise.all(pages.map(async page => {
-        await page.getByText(/PRK75 RADIO ISOLATION ACTIVE/).waitFor({ timeout: 90_000 })
+        if (!normalUi) await page.getByText(/PRK75 RADIO ISOLATION ACTIVE/).waitFor({ timeout: 90_000 })
         await page.getByRole('button', { name: 'PAUSE', exact: true }).waitFor()
         await page.waitForFunction(() => [...document.querySelectorAll('button')].some(button =>
           button.textContent === 'PAUSE' && !button.disabled), { timeout: 90_000 })
@@ -255,8 +290,12 @@ try {
       report.stage = 'health'
       const before = '1. CAPTURE BEFORE'
       await Promise.all(pages.map(page => page.getByRole('button', { name: before }).click()))
-      await Promise.all(pages.map(page => page.getByRole('button', { name: 'START LOCAL DS RADIO' }).click()))
-      await Promise.all(pages.map((page, i) => page.getByText(/LINKED\s*•\s*5 ms host poll/).filter({ hasText: `PLAYER ${i + 1}` }).waitFor()))
+      async function startRadio() {
+        await Promise.all(pages.map(page => page.getByRole('button', { name: normalUi ? 'CONNECT LOCAL WIRELESS' : 'START LOCAL DS RADIO', exact: true }).click()))
+        if (normalUi) await Promise.all(pages.map(page => page.getByText('LOCAL WIRELESS CONNECTED', { exact: true }).waitFor()))
+        else await Promise.all(pages.map((page, i) => page.getByText(/LINKED\s*•\s*5 ms host poll/).filter({ hasText: `PLAYER ${i + 1}` }).waitFor()))
+      }
+      await startRadio()
       await delay(5_000)
       report.baselineCounters = await Promise.all(pages.map(captureAfter))
       report.health = report.baselineCounters.map(sample => sample.emulatedFrames * 1000 / sample.elapsedMs)
@@ -297,6 +336,7 @@ try {
           result?.association === true && !result?.greetingFailed,
         'The private driver did not reach and submit the reciprocal trade confirmation.')
         report.integrity = await verifyTradeIntegrity(pages, savesBefore)
+        report.verifiedTrades = 1
         tradeConfirmed = true
       }
       report.observation = {
@@ -347,7 +387,7 @@ try {
           writeFile(prefix + '-ds-' + screen + '.png', Buffer.from(png, 'base64'))))
         const panel = await page.locator('.melonds-player, [role="status"]').allTextContents().catch(() => [])
         await writeFile(prefix + '-panel.txt', panel.join('\n'))
-        await page.getByRole('button', { name: /STOP & CLEAR RADIO/ }).click({ timeout: 2_000 }).catch(() => {})
+        await page.getByRole('button', { name: normalUi ? 'DISCONNECT LOCAL WIRELESS' : /STOP & CLEAR RADIO/ }).click({ timeout: 2_000 }).catch(() => {})
         if (!tracing) return
         const serialized = await within(15_000, 'Trace extraction timed out.', () => page.evaluate(async () => {
           const { takeWhite2GreetingTrace } = await import('/src/multiplayer/games/White2GreetingTrace.ts')

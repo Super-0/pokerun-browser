@@ -64,6 +64,27 @@ On Windows, build the JS/WASM pair in WSL, copy it into the Windows checkout's i
 
 The frame pthread pauses emulated execution at the native host reply poll and the guest's next host-frame receive after transmitting a reply. The existing same-origin link relays the exact frames. Its native output notification wakes the browser relay without waiting for the periodic tick. The wait is bounded in wall time and releases when the link stops. Compare pre-greeting frame health, guest ACK indications, host datasets and both screens.
 
+## Use local wireless in the normal PokéRun interface
+
+The feature defaults off. Build the worker-enabled runtime and enable the browser feature when starting Vite.
+
+```bash
+POKERUN_NATIVE_WORKER_RADIO=1 npm run build:melonds
+VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER=1 npm run dev
+```
+
+On Windows build the worker runtime in WSL and copy the generated JS/WASM pair into the ignored emulator directory. Set `$env:VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER = '1'` and run `npm.cmd run dev`. A production bundle uses the same flag at `npm run build` time and requires the cross-origin isolation headers used by the local server.
+
+Open two tabs in the same browser profile. In each tab open **Multiplayer** and choose White 2. Create the room in the first tab and join with its code in the second. Continue a different verified save in each tab, ready both players, and start the game. Choose **Connect Local Wireless** on both tabs and enter the Union Room in the game. Use the in-game menus for the trade. Keep the saves in their own slots and allow the game save to finish before leaving.
+
+The private normal-interface regression uses those same controls and checks both persisted parties.
+
+```bash
+VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER=1 POKERUN_WHITE2_NORMAL_UI=1 \
+POKERUN_WHITE2_UNATTENDED=1 POKERUN_WORKER_RADIO=1 \
+POKERUN_TRACE_GAME_NEGOTIATION=1 POKERUN_EXPECT_WHITE2=trade-confirmed npm run test:white2
+```
+
 ## Repeat fresh-session trades
 
 The local streak command starts a new Chromium profile from the same disposable checkpoint for each attempt. It uses the private driver in unattended mode. The driver must throw when it cannot complete a step without intervention. It returns `exchangeSubmitted: true` only after both normal in-game confirmations. The runner verifies the resulting exchange from the saved batteries. The batch keeps a private result ledger and per-attempt logs. A failed attempt resets the streak. Two consecutive failures at the same stage end the batch so that stage can be diagnosed.

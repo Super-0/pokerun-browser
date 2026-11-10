@@ -3,6 +3,7 @@ import { MelonDsBridge, type DsButton, type DsSpeedMultiplier } from '../core/em
 import { romSessionStore } from '../core/rom/RomSessionStore'
 import type { LoadedRom } from '../core/rom/RomLoader'
 import { multiplayerPresence, type MultiplayerPresenceSnapshot } from '../multiplayer/core/MultiplayerPresence'
+import { white2LocalWirelessEnabled } from '../multiplayer/games/white2LocalWirelessFeature'
 import { TESTED_WHITE2_SHA256 } from '../multiplayer/games/White2LiveStateAdapter'
 import { White2RemoteTrainerRuntime } from '../multiplayer/games/White2RemoteTrainerRuntime'
 import { DevConsolePanel } from '../multiplayer/debug/DevConsolePanel'
@@ -31,6 +32,7 @@ interface Props {
   batterySave?: Uint8Array | null
   onBatterySave?: (save: Uint8Array) => void | Promise<void>
   partnerMarker?: DsPartnerMarker | null
+  nativeLocalRadioRole?: 1 | 2
 }
 
 const keys: Record<string, DsButton> = {
@@ -88,7 +90,7 @@ function sameMarkerPresence(a: MultiplayerPresenceSnapshot, b: MultiplayerPresen
 }
 
 /** React shell only: frame rendering and emulated-memory access stay inside MelonDsBridge. */
-export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave, partnerMarker }: Props) {
+export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave, partnerMarker, nativeLocalRadioRole }: Props) {
   const topRef = useRef<HTMLCanvasElement>(null)
   const bottomRef = useRef<HTMLCanvasElement>(null)
   const bridgeRef = useRef<MelonDsBridge | null>(null)
@@ -96,7 +98,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   const [statusText, setStatusText] = useState('INITIALIZING melonDS...')
   const [paused, setPaused] = useState(false)
   const [memoryText, setMemoryText] = useState('NOT READ')
-  const [speed, setSpeed] = useState<DsSpeedMultiplier>(storedSpeed)
+  const [speed, setSpeed] = useState<DsSpeedMultiplier>(() => nativeLocalRadioRole ? 1 : storedSpeed())
   const [presence, setPresence] = useState<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const presenceRef = useRef<MultiplayerPresenceSnapshot>({ local: null, remote: null })
   const nativeMenuOpenRef = useRef(false)
@@ -107,10 +109,12 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
   // native interaction menu, field transition guards, or emote writes. They are
   // independent of melonDS Wi-Fi and can leave live field tasks on map changes.
   // Explicit per-tab opt-in preserves older renderer research when absent.
-  const radioIsolation = import.meta.env.DEV && isNativeWhite2 &&
+  const legacyRadioIsolation = import.meta.env.DEV && isNativeWhite2 &&
     (new URLSearchParams(window.location.search).get('player') === '1' ||
       new URLSearchParams(window.location.search).get('player') === '2') &&
     new URLSearchParams(window.location.search).get('radioIsolation') === '1'
+  const localRadio = white2LocalWirelessEnabled && isNativeWhite2 && Boolean(nativeLocalRadioRole)
+  const radioIsolation = legacyRadioIsolation || localRadio
 
   useEffect(() => multiplayerPresence.subscribe(snapshot => {
     presenceRef.current = snapshot
@@ -216,7 +220,8 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
     const devArgs = new URLSearchParams(window.location.search)
     const realPlayerRole = devArgs.get('fake') !== '1'
       ? devArgs.get('player') : null
-    if (import.meta.env.DEV && isNativeWhite2 &&
+    if (localRadio && nativeLocalRadioRole) bridge.enableNativeLocalRadio(nativeLocalRadioRole)
+    else if (import.meta.env.DEV && isNativeWhite2 &&
         (realPlayerRole === '1' || realPlayerRole === '2')) {
       bridge.setDevWirelessFirmwareRole(realPlayerRole === '1' ? 1 : 2)
     }
@@ -277,7 +282,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
       onBridgeReady?.(null)
       void bridge.dispose()
     }
-  }, [game.id, game.title, run?.id, suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave])
+  }, [game.id, game.title, run?.id, suppliedRom, onBridgeReady, saveKey, batterySave, onBatterySave, localRadio, nativeLocalRadioRole])
 
   const ready = status === 'running'
   async function togglePause() {
@@ -320,7 +325,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
     <div className="melonds-player">
       {multiplayerRomIdentity && !radioIsolation &&
         <White2RemoteTrainerRuntime bridge={ready ? bridgeRef.current : null} rom={multiplayerRomIdentity} romBytes={suppliedRom?.bytes}/>}
-      {radioIsolation && <>
+      {legacyRadioIsolation && <>
         <div className="melonds-debug pixel-border" role="status">
           PRK75 RADIO ISOLATION ACTIVE — no PokeRun injected remote actor,
           custom interaction menu, or native field transition runtime.
@@ -331,7 +336,7 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
       <div className="emulator-toolbar pixel-border">
         <strong>melonDS</strong>
         <div className="emulator-speed-controls" aria-label="Emulation speed">
-          {SPEED_OPTIONS.map(multiplier => <button key={multiplier} disabled={!ready} className={speed === multiplier ? 'active' : ''} aria-pressed={speed === multiplier} onClick={() => changeSpeed(multiplier)}>{multiplier}×</button>)}
+          {SPEED_OPTIONS.map(multiplier => <button key={multiplier} disabled={!ready || (localRadio && multiplier !== 1)} className={speed === multiplier ? 'active' : ''} aria-pressed={speed === multiplier} onClick={() => changeSpeed(multiplier)}>{multiplier}×</button>)}
         </div>
         <button disabled={!ready} onClick={() => void togglePause()}>{paused ? 'RESUME' : 'PAUSE'}</button>
         <span>DUAL SCREEN</span>
