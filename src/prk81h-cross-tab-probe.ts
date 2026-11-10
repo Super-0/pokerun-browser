@@ -42,7 +42,7 @@ type WorkerMsg={
  result?:number;elapsed?:number;stats?:NativeStats
 }
 type WireMessage={
- kind:'hello'|'command'|'reply';
+ kind:'hello'|'ready'|'command'|'reply';
  room:string;role:'host'|'peer';from:string;to?:string;
  sequence?:number;marker?:number;mode?:Mode;frame?:Uint8Array;
  timestamp?:number;aid?:number
@@ -58,10 +58,11 @@ const me=crypto.randomUUID()
 const channel=new BroadcastChannel('pokerun-prk81h-cross-tab-v1-'+room)
 const worker=new Worker('/prk81h-cross-tab-worker.js?role='+role,{type:'classic'})
 let remote:string|null=null
+let peerAcked=false
 let workerReady=false,started=false,done=false
 let txCtrl:Int32Array|null=null,txFrame:Uint8Array|null=null
 let rxCtrl:Int32Array|null=null,rxFrame:Uint8Array|null=null
-let testIndex=0,pending:{sequence:number;marker:number;mode:Mode}|null=null
+let testIndex=0,pending:{sequence:number;marker:number;mode:Mode;sentAt:number}|null=null
 let stats:NativeStats|null=null
 let receivedFromPeer=0,peerRepliesProduced=0,withheld=0
 let heartbeats=0
@@ -72,6 +73,10 @@ const announce=()=>{
  if(done||!workerReady)return
  const hello:WireMessage={kind:'hello',room,role,from:me}
  channel.postMessage(hello)
+}
+const signalReady=()=>{
+ if(done||!workerReady||!remote)return
+ channel.postMessage({kind:'ready',room,role,from:me,to:remote} satisfies WireMessage)
 }
 const helloTimer=window.setInterval(announce,400)
 function closeSession(message:string,fail=false){
@@ -85,10 +90,10 @@ function closeSession(message:string,fail=false){
  channel.close()
 }
 function startIfReady(){
- if(done||started||role!=='host'||!workerReady||!remote)return
+ if(done||started||role!=='host'||!workerReady||!remote||!peerAcked)return
  started=true
  watchdog=window.setTimeout(()=>closeSession('Peer round trips did not complete within 20 seconds.',true),20000)
- log('Peer ready. Starting five real native-platform callback exchanges.')
+ log('Two-way ready acknowledged; starting five native callback exchanges.')
  next()
 }
 function next(){
@@ -110,7 +115,9 @@ function next(){
   log('Actual Pokémon DS frames, radio negotiation, and gameplay ACK behavior remain untested.')
   return
  }
- worker.postMessage({kind:'host-test',marker:scenarios[testIndex].marker})
+ // Arm polling before native execution; worker message delivery can be late.
+ handleHostCalling(scenarios[testIndex].marker)
+ if(!done)worker.postMessage({kind:'host-test',marker:scenarios[testIndex].marker})
 }
 function handleHostCalling(marker:number){
  const test=scenarios[testIndex]
@@ -138,8 +145,8 @@ function handleHostCalling(marker:number){
   }
   const frame=bytes.slice(0,len)
   Atomics.store(control,0,0)
-  pending={sequence,marker,mode:test.mode}
-  log('Host native CMD '+sequence+' published; sending to separate peer tab.')
+  pending={sequence,marker,mode:test.mode,sentAt:performance.now()}
+  log('Host native CMD '+sequence+' published at +'+(performance.now()-sessionStarted).toFixed(1)+'ms; forwarding to peer.')
   if(!remote){closeSession('Peer disappeared.',true);return}
   const msg:WireMessage={
    kind:'command',room,role:'host',from:me,to:remote,
@@ -156,6 +163,7 @@ function commitRemoteReply(message:WireMessage){
   closeSession('Unsolicited or out-of-order peer reply.',true)
   return
  }
+ log('Remote reply arrived after '+(performance.now()-p.sentAt).toFixed(1)+'ms')
  const frame=message.frame
  if(!(frame instanceof Uint8Array)||frame.length!==36||
     frame[10]!==24||frame[11]!==0||
@@ -211,6 +219,7 @@ worker.onmessage=(event:MessageEvent<WorkerMsg>)=>{
   workerReady=true
   log('Real melonDS worker ready; stamp 0x'+m.stamp.toString(16))
   announce()
+  signalReady()
   startIfReady()
   return
  }
@@ -233,10 +242,15 @@ worker.onmessage=(event:MessageEvent<WorkerMsg>)=>{
  if(role==='host'){
   const test=scenarios[testIndex]
   if(!test||m.marker!==test.marker){closeSession('Unexpected host worker result.',true);return}
-  if(m.kind==='calling'){handleHostCalling(m.marker);return}
+  if(m.kind==='calling'){log('Native host callback entered for marker '+m.marker);return}
   if(m.kind==='host-result'){
    if(!pending||m.result!==test.expected){
-    closeSession('Native '+test.mode+' returned '+m.result+' instead of '+test.expected,true)
+    closeSession('Native '+test.mode+' returned '+m.result+' instead of '+test.expected+
+     ' (native '+(m.elapsed??0).toFixed(1)+'ms, txState='+
+     (txCtrl?Atomics.load(txCtrl,0):'n/a')+', rxState='+
+     (rxCtrl?Atomics.load(rxCtrl,0):'n/a')+', peerAck='+peerAcked+
+     ', forwarded='+Boolean(pending)+', received='+receivedFromPeer+
+     ', counters='+JSON.stringify(m.stats)+')',true)
     return
    }
    log('Host native '+test.mode+': result '+m.result+' ('+(m.elapsed??0).toFixed(1)+' ms)')
@@ -257,8 +271,22 @@ channel.onmessage=(event:MessageEvent<WireMessage>)=>{
  if(m.role!==otherRole)return
  if(m.kind==='hello'){
   if(remote&&remote!==m.from){closeSession('Multiple peers in one room are not supported.',true);return}
-  if(!remote){remote=m.from;log('Other tab connected.')}
-  startIfReady()
+  if(!remote){
+   remote=m.from
+   log('Other tab discovered; answering hello immediately.')
+   announce()
+  }
+  signalReady()
+  return
+ }
+ if(m.kind==='ready'){
+  if(remote===m.from&&m.to===me&&workerReady){
+   if(!peerAcked){
+    peerAcked=true
+    log('Other tab acknowledged this worker; two-way handshake ready.')
+   }
+   startIfReady()
+  }
   return
  }
  if(!remote||m.from!==remote||m.to!==me||!workerReady)return

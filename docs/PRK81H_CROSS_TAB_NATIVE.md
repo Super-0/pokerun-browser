@@ -48,3 +48,28 @@ error, copy its output too. No ROM or save selection is needed.
 Potential future work: full worker-backed game-frame execution with
 render, input, save I/O and verified native DS wireless packets. Do not
 enable opt-in test callback routing in normal gameplay.
+
+
+## PRK81H-A — two-way readiness race fix (JS only)
+
+First user run: host discovered peer but first native valid reply returned 0;
+peer had not yet logged discovery of host. Hello interval 400 ms exceeds the
+native reply timeout of 120 ms. The host must wait until the peer explicitly
+acknowledges knowing its identity and having an initialized native worker.
+
+New approach: targeted ready response on hello, immediate reciprocal hello
+on first discovery, and gate host test on explicit peer readiness. Poll native
+shared TX slot before triggering worker native call. Add timestamps and
+native-state counters in failure reports. This does not alter radio,
+ACK generation, game ROMs, or saves.
+
+Run (no native rebuild):
+
+    cd /workspaces/pokerun-browser
+    git pull --ff-only origin mp/prk81-reply-scheduling
+    git rev-parse --short HEAD
+    npm run dev:multiplayer
+
+Refresh the host page and open a NEW peer tab from the updated host link.
+Do not reuse the old peer link or old room ID. Send full host log and any
+peer errors.
