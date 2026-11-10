@@ -63,6 +63,8 @@ The first batch stopped twice before the invitation when the archived live RAM p
 
 Reopening the two batteries from the successful `KuLAWv` profile and comparing against the starting checkpoint independently verified that the reciprocal party exchange was persisted. The first unattended run with the new check passed, with complete paired traces and 59.90/60.01 DS frames/s during gameplay. Both batteries changed and passed footer, party block and member checksum validation. The trace contains 10,531 guest firmware ACK successes and one error before a subsequent ring commit. The game recovered and the trade persisted. See `local-test-assets/white2-run-fE55b1/` and the batch ledger in `local-test-assets/white2-streak-2Hk7r3/`.
 
+The complete fresh-session batch ended with ten consecutive unattended passes. It completed 15 genuine trades across 16 sessions. Session six stopped at the extra C-Gear confirmation before any invitation. After the driver recognized that prompt, the last ten sessions all passed with both persisted exchanges and both complete timing traces. Gameplay health across those ten was 59.96–60.01 DS frames/s. A read-only audit of the first four completed profiles found two distinct exchange pairs. The final private ledger is `local-test-assets/white2-streak-2Hk7r3/result.json`.
+
 ## Normal-interface local wireless
 
 The default-off `VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER=1` feature gives a real local room distinct firmware roles, uses the existing worker transport, and keeps the older injected actor code out of the local radio session. It pairs two tabs in one browser profile. The standard save selection and persistence paths stay in use. The legacy diagnostic launcher remains available.
