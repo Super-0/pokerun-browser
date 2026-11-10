@@ -62,6 +62,66 @@ function summarizeHardware(native) {
   return observed ? totals : null
 }
 
+function summarizeGfl(native) {
+  const routines = new Map([
+    [0x0203F81C, 'receive-machine'], [0x0203F924, 'receive-server'],
+    [0x02040530, 'send-negotiation'], [0x020408AC, 'receive-negotiation'],
+    [0x02040988, 'receive-negotiation-reply'], [0x020424D8, 'network-error'],
+    [0x02080B2C, 'wm-fifo'], [0x02081E1C, 'wm-step'], [0x020820F0, 'wm-parent-port'], [0x020821B4, 'wm-child-port'],
+  ])
+  const counters = {}
+  for (const { kind, role, sequence, replyUs, aidOrMask } of native) {
+    if (kind !== 19 && kind !== 20) continue
+    const routine = routines.get(sequence)
+    if (!routine) continue
+    let label = `${role}:${routine}`
+    if (kind === 20) label += `:${aidOrMask}:${replyUs ? 'accepted' : 'returned-false'}`
+    else if (routine === 'wm-step') label += `:result-${replyUs}:received-${aidOrMask}`
+    else if (routine === 'wm-fifo') label += `:api-${replyUs}:state-${aidOrMask & 255}:error-${aidOrMask >>> 8}`
+    else if (routine.endsWith('-port')) {
+      label += `:state-${(aidOrMask >>> 4) & 255}:error-${aidOrMask >>> 12}:aid-${aidOrMask & 15}:length-${replyUs}`
+    } else if (routine.startsWith('receive-') && sequence <= 0x0203F924) {
+      label += `:${aidOrMask & 0xFF}:${['invalid', 'idle', 'data'][aidOrMask >>> 8] ?? 'unknown'}`
+    } else if (routine === 'network-error') label += `:${replyUs}`
+    else if (routine.startsWith('receive-')) label += `:${aidOrMask}`
+    counters[label] = (counters[label] ?? 0) + 1
+  }
+  return Object.keys(counters).length ? counters : null
+}
+
+// Match the first peer ACK ring write within each reply interval. An SDK
+// error is counted only when it occurred in that same interval before RX.
+function summarizePeerAckTiming(native) {
+  const pending = new Map()
+  const replyToAckMs = [], replyToAckDsUs = [], replyToSdkErrorMs = []
+  let sdkErrorsBeforeRing = 0
+  for (const event of native) {
+    const { kind, role, atMs, dsUs, sequence, replyUs, aidOrMask } = event
+    if (kind === 2) {
+      pending.set(role, { atMs, dsUs })
+      continue
+    }
+    const reply = pending.get(role)
+    if (!reply) continue
+    if (kind === 19 && sequence === 0x02080B2C && replyUs === 0xE &&
+        (aidOrMask & 255) === 13 && (aidOrMask >>> 8) !== 0 && reply.errorAt === undefined) {
+      reply.errorAt = atMs
+    }
+    if (kind !== 18) continue
+    replyToAckMs.push(atMs - reply.atMs)
+    replyToAckDsUs.push(dsUs - reply.dsUs)
+    if (reply.errorAt !== undefined) {
+      sdkErrorsBeforeRing++
+      replyToSdkErrorMs.push(reply.errorAt - reply.atMs)
+    }
+    pending.delete(role)
+  }
+  return {
+    sdkErrorsBeforeRing, replyToAckMs: range(replyToAckMs),
+    replyToAckDsUs: range(replyToAckDsUs), replyToSdkErrorMs: range(replyToSdkErrorMs),
+  }
+}
+
 export function summarizeGreetingTrace(traces) {
   const key = (role, id) => `${role}:${id}`
   const native = []
@@ -158,6 +218,8 @@ export function summarizeGreetingTrace(traces) {
     decisions,
     emptyFirstPolls,
     hardware: summarizeHardware(native),
+    gflCallbacks: summarizeGfl(native),
+    peerAckTiming: summarizePeerAckTiming(native),
     staleReplyMinusPollDsUs: range(staleDelta),
     matchedReplyMinusPollDsUs: range(matchedDelta),
     estimatedStaleClockOffsetUs: range(staleOffset),

@@ -1,4 +1,5 @@
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
+import { readWhite2UnionNegotiation } from './White2UnionNegotiationProbe'
 
 type WireEvent = {
   phase: 'send' | 'arrival' | 'queued' | 'rejected'
@@ -14,6 +15,8 @@ type Batch = ReturnType<MelonDsBridge['drainGreetingTrace']> & {
   afterMs: number
 }
 
+type GameSnapshot = NonNullable<Awaited<ReturnType<typeof readWhite2UnionNegotiation>>>
+const MAX_GAME_SNAPSHOTS = 512
 const MAX_WIRE_EVENTS = 65_536
 const MAX_BATCHES = 1_024
 const now = () => performance.timeOrigin + performance.now()
@@ -31,8 +34,13 @@ export class White2GreetingTrace {
   private droppedBatches = 0
   private lastDrain = 0
   private complete = false
+  private game: { atMs: number; state: GameSnapshot | null }[] = []
+  private lastGameState: string | undefined
+  private lastGameAt = 0
+  private gameReadErrors = 0
+  private samplingGame = false
 
-  constructor(private readonly bridge: MelonDsBridge, private readonly role: 1 | 2) {
+  constructor(private readonly bridge: MelonDsBridge, private readonly role: 1 | 2, private readonly traceGame = false) {
     bridge.setGreetingTrace(true)
     active = this
   }
@@ -49,6 +57,17 @@ export class White2GreetingTrace {
     const beforeMs = now()
     if (!force && beforeMs - this.lastDrain < 100) return
     this.lastDrain = beforeMs
+    if (this.traceGame && !force && !this.samplingGame && beforeMs - this.lastGameAt >= 250) {
+      this.lastGameAt = beforeMs
+      this.samplingGame = true
+      void readWhite2UnionNegotiation(this.bridge).then(state => {
+        const signature = JSON.stringify(state)
+        if (signature !== this.lastGameState && this.game.length < MAX_GAME_SNAPSHOTS) {
+          this.game.push({ atMs: beforeMs, state })
+          this.lastGameState = signature
+        }
+      }).catch(() => { this.gameReadErrors++ }).finally(() => { this.samplingGame = false })
+    }
     const batch = this.bridge.drainGreetingTrace()
     const afterMs = now()
     if (!batch.values.length && !batch.dropped) return
@@ -70,9 +89,11 @@ export class White2GreetingTrace {
     const result = {
       role: this.role, complete: this.complete, wire: this.wire, native: this.native,
       droppedWire: this.droppedWire, droppedBatches: this.droppedBatches,
+      game: this.game, gameReadErrors: this.gameReadErrors,
     }
     this.wire = []
     this.native = []
+    this.game = []
     this.droppedWire = this.droppedBatches = 0
     return result
   }

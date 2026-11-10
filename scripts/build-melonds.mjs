@@ -9,6 +9,7 @@ import { applyPrk70ReceiveDeliveryAudit } from './prk70-native-delivery-audit.mj
 import { applyPrk71FirmwareMacIdentity } from './prk71-firmware-mac-identity.mjs'
 import { applyPrk72HandshakeStageAudit } from './prk72-handshake-stage-audit.mjs'
 import { applyPrk79NativeMpReplies } from './prk79-native-mp-replies.mjs'
+import { applyGflCallbackTrace } from './prk80-gfl-callback-trace.mjs'
 import { applyHardwareDeliveryTrace } from './prk80-hardware-delivery-trace.mjs'
 import { applyDeferredReplyPoll } from './prk80-deferred-reply-poll.mjs'
 import { applyReplyScheduleTestHooks } from './prk80-reply-schedule-hooks.mjs'
@@ -211,6 +212,7 @@ try {
   applyPrk80GreetingTrace(source)
   applyDeferredReplyPoll(source)
   applyHardwareDeliveryTrace(source)
+  if (process.env.POKERUN_TRACE_ARM9_GFL === '1') applyGflCallbackTrace(source)
   if (withScheduleTestHooks) applyReplyScheduleTestHooks(source)
 
   // Apply build requirements after restoring and patching upstream.

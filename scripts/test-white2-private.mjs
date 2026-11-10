@@ -22,6 +22,7 @@ const expectedOutcome = process.env.POKERUN_EXPECT_WHITE2 ?? 'greeting-failure'
 if (mode === 'greeting') assert(['greeting-failure', 'trade-menu', 'trade-confirmed'].includes(expectedOutcome),
   'POKERUN_EXPECT_WHITE2 must be greeting-failure, trade-menu, or trade-confirmed.')
 
+const traceGameNegotiation = process.env.POKERUN_TRACE_GAME_NEGOTIATION === '1'
 const requestedPollMode = process.env.POKERUN_DEFER_HOST_POLL
 const pollModes = new Map([['1', 1], ['adaptive', 2], ['preserve-counter', 3]])
 const deferHostPoll = mode === 'greeting' ? pollModes.get(requestedPollMode) ?? 0 : 0
@@ -155,11 +156,12 @@ try {
       console.log('Prepare both slots at the fixed local origin. Close Chromium when both in-game checkpoints are saved.')
       await within(30 * 60_000, 'Checkpoint preparation exceeded 30 minutes.', () => new Promise(resolveClose => context.once('close', resolveClose)))
     } else {
-      await context.addInitScript(({ origin, tracing, deferHostPoll }) => {
+      await context.addInitScript(({ origin, tracing, deferHostPoll, traceGameNegotiation }) => {
         if (location.origin !== origin) return
         sessionStorage.setItem('pokerun:prk80-greeting-trace', tracing ? '1' : '0')
         sessionStorage.setItem('pokerun:prk80-defer-host-poll', String(deferHostPoll))
-      }, { origin, tracing, deferHostPoll })
+        sessionStorage.setItem('pokerun:prk80-trace-game-negotiation', traceGameNegotiation ? '1' : '0')
+      }, { origin, tracing, deferHostPoll, traceGameNegotiation })
       const p1 = context.pages()[0] ?? await context.newPage()
       const p2 = await context.newPage()
       pages = [p1, p2]

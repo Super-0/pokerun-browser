@@ -118,7 +118,8 @@ export class White2NativeRadioLink {
     if (this.bridge.status !== 'running') throw new Error('Native radio requires a running melonDS instance.')
     try {
       if (sessionStorage.getItem('pokerun:prk80-greeting-trace') === '1') {
-        this.trace = new White2GreetingTrace(this.bridge, this.firmwareRole)
+        this.trace = new White2GreetingTrace(this.bridge, this.firmwareRole,
+          sessionStorage.getItem('pokerun:prk80-trace-game-negotiation') === '1')
       }
     } catch (error) {
       console.warn('[PokéRun] Greeting trace could not start.', error)
