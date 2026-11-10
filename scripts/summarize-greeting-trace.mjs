@@ -8,6 +8,60 @@ function range(values) {
   return { count: sorted.length, min: sorted[0], median: sorted[Math.floor(sorted.length / 2)], max: sorted.at(-1) }
 }
 
+function summarizeHardware(native) {
+  const totals = {
+    replyAttempts: 0, replyBlocked: 0, replyStarted: 0, protectedReplyStarted: 0,
+    replyFinished: 0, replyRingCommitted: 0, replyRingMpReply: 0, replyRingOverflow: 0,
+    replyCursorAdvanced: 0, ackTx: 0, ackTxWithoutClientFailure: 0,
+    ackTxWithExpiredCommandCounter: 0, ackRingCommitted: 0, ackCursorAdvanced: 0,
+  }
+  const pendingByRole = new Map([[1, []], [2, []]])
+  let observed = false
+  for (const event of native) {
+    const { kind, role, replyUs: detail, aidOrMask: flags } = event
+    if (kind < 11 || kind > 18) continue
+    observed = true
+    const pending = pendingByRole.get(role)
+    switch (kind) {
+      case 11:
+        totals.replyAttempts++
+        if (flags) totals.replyBlocked++
+        break
+      case 12:
+        totals.replyStarted++
+        if (flags & 0x4000) totals.protectedReplyStarted++
+        break
+      case 13: totals.replyFinished++; break
+      case 14:
+        totals.replyRingCommitted++
+        if ((flags & 0x800F) === 0x800E) totals.replyRingMpReply++
+        pending.push({ kind, end: detail >>> 16 })
+        break
+      case 15: totals.replyRingOverflow++; break
+      case 16: {
+        const previous = detail & 0xFFFF
+        const next = detail >>> 16
+        pendingByRole.set(role, pending.filter(({ kind: frameKind, end }) => {
+          const advanced = previous < next ? end > previous && end <= next : end > previous || end <= next
+          if (advanced) totals[frameKind === 14 ? 'replyCursorAdvanced' : 'ackCursorAdvanced']++
+          return !advanced
+        }))
+        break
+      }
+      case 17:
+        totals.ackTx++
+        if (!flags) totals.ackTxWithoutClientFailure++
+        if (!detail) totals.ackTxWithExpiredCommandCounter++
+        break
+      case 18:
+        totals.ackRingCommitted++
+        pending.push({ kind, end: detail >>> 16 })
+        break
+    }
+  }
+  return observed ? totals : null
+}
+
 export function summarizeGreetingTrace(traces) {
   const key = (role, id) => `${role}:${id}`
   const native = []
@@ -103,6 +157,7 @@ export function summarizeGreetingTrace(traces) {
     sendsWithoutArrival,
     decisions,
     emptyFirstPolls,
+    hardware: summarizeHardware(native),
     staleReplyMinusPollDsUs: range(staleDelta),
     matchedReplyMinusPollDsUs: range(matchedDelta),
     estimatedStaleClockOffsetUs: range(staleOffset),

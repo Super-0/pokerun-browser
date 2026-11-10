@@ -106,6 +106,9 @@ export class MelonDsBridge implements EmulatorBridge {
     if (!import.meta.env.DEV) throw new Error('PRK79 radio replies are development-only.')
     return this.assertEmulator().prk79InjectReply(bytes, timestamp, aid, traceSequence)
   }
+  setPrk80DeferHostPoll(mode: number) {
+    this.assertEmulator().setPrk80DeferHostPoll(mode)
+  }
   setGreetingTrace(enabled: boolean) {
     this.assertEmulator().setGreetingTrace(enabled)
   }

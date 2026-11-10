@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { constants } from 'node:fs'
 import { cp, mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline/promises'
 import { join, resolve } from 'node:path'
@@ -16,6 +17,14 @@ const checkpoint = join(privateRoot, 'white2-checkpoint')
 const origin = 'http://127.0.0.1:4181'
 const manual = process.env.POKERUN_MANUAL === '1'
 const tracing = mode === 'greeting' && process.env.POKERUN_GREETING_TRACE !== '0'
+
+const expectedOutcome = process.env.POKERUN_EXPECT_WHITE2 ?? 'greeting-failure'
+if (mode === 'greeting') assert(['greeting-failure', 'trade-menu', 'trade-confirmed'].includes(expectedOutcome),
+  'POKERUN_EXPECT_WHITE2 must be greeting-failure, trade-menu, or trade-confirmed.')
+
+const requestedPollMode = process.env.POKERUN_DEFER_HOST_POLL
+const pollModes = new Map([['1', 1], ['adaptive', 2], ['preserve-counter', 3]])
+const deferHostPoll = mode === 'greeting' ? pollModes.get(requestedPollMode) ?? 0 : 0
 
 async function captureAfter(page) {
   const [message] = await Promise.all([
@@ -66,25 +75,43 @@ if (mode === 'greeting') {
   driver = manual ? manualDriver : await import(pathToFileURL(join(privateRoot, 'white2-greeting-driver.mjs')).href)
   assert(typeof driver.prepareGreeting === 'function' && typeof driver.attemptGreeting === 'function')
   run = await mkdtemp(join(privateRoot, 'white2-run-'))
-  await cp(checkpoint, join(run, 'profile'), { recursive: true })
+  const runProfile = join(run, 'profile', 'Default')
+  await mkdir(runProfile, { recursive: true })
+  // Chromium can rebuild its caches. Clone only the two stores that contain
+  // the cartridge, battery checkpoints, and launcher selections.
+  await Promise.all(['IndexedDB', 'Local Storage'].map(directory =>
+    cp(join(checkpoint, 'Default', directory), join(runProfile, directory), {
+      recursive: true, mode: constants.COPYFILE_FICLONE,
+    })))
 } else if (mode === 'prepare') {
   await mkdir(checkpoint, { recursive: true })
 }
 
 const server = await createServer({
+  plugins: [{
+    name: 'pokerun-native-check-page',
+    configureServer(vite) {
+      vite.middlewares.use('/__pokerun_native_check', (_request, response) => {
+        response.setHeader('Content-Type', 'text/html')
+        response.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+        response.setHeader('Cross-Origin-Embedder-Policy', 'require-corp')
+        response.end('<!doctype html><title>PokéRun native check</title>')
+      })
+    },
+  }],
   server: {
-    host: '127.0.0.1', port: 4181, strictPort: true,
+    host: '127.0.0.1', port: 4181, strictPort: true, watch: null, hmr: false,
   },
 })
 let browser, context
 let pages = []
-const report = { mode, tracing, stage: 'startup', pageErrors: [0, 0] }
+const report = { mode, tracing, deferHostPoll, expectedOutcome, stage: 'startup', pageErrors: [0, 0] }
 try {
   await server.listen()
   if (mode === 'runtime' || mode === 'schedule') {
     browser = await chromium.launch()
     const page = await browser.newPage()
-    await page.goto(origin)
+    await page.goto(origin + '/__pokerun_native_check')
     if (mode === 'schedule') {
       await within(20_000, 'Native schedule test timed out.', () => checkReplySchedules(page))
       console.log('Native reply schedules passed: early and in-flight empty, late matched, −32 µs matched, −33 µs stale.')
@@ -121,22 +148,24 @@ try {
         '--disable-backgrounding-occluded-windows', '--disable-frame-rate-limit', '--disable-gpu-vsync'],
     })
     context.setDefaultTimeout(8_000)
-    context.setDefaultNavigationTimeout(15_000)
+    context.setDefaultNavigationTimeout(60_000)
     if (mode === 'prepare') {
       const page = context.pages()[0] ?? await context.newPage()
       await page.goto(origin + '/multiplayer-dev.html')
       console.log('Prepare both slots at the fixed local origin. Close Chromium when both in-game checkpoints are saved.')
       await within(30 * 60_000, 'Checkpoint preparation exceeded 30 minutes.', () => new Promise(resolveClose => context.once('close', resolveClose)))
     } else {
-      await context.addInitScript(({ origin, tracing }) => {
-        if (location.origin === origin) sessionStorage.setItem('pokerun:prk80-greeting-trace', tracing ? '1' : '0')
-      }, { origin, tracing })
+      await context.addInitScript(({ origin, tracing, deferHostPoll }) => {
+        if (location.origin !== origin) return
+        sessionStorage.setItem('pokerun:prk80-greeting-trace', tracing ? '1' : '0')
+        sessionStorage.setItem('pokerun:prk80-defer-host-poll', String(deferHostPoll))
+      }, { origin, tracing, deferHostPoll })
       const p1 = context.pages()[0] ?? await context.newPage()
       const p2 = await context.newPage()
       pages = [p1, p2]
       for (const [index, page] of pages.entries()) page.on('pageerror', () => { report.pageErrors[index]++ })
       report.stage = 'boot'
-      await p1.goto(origin + '/multiplayer-dev.html')
+      await p1.goto(origin + '/multiplayer-dev.html', { waitUntil: 'commit' })
       const distinctSlots = await p1.evaluate(() => {
         localStorage.removeItem('pokerun-multiplayer-dev-room-v1')
         const prefix = 'pokerun-multiplayer-dev-save-player-'
@@ -145,7 +174,7 @@ try {
         return Boolean(first && second && first !== second)
       })
       assert(distinctSlots, 'Select two different save slots in the checkpoint launcher.')
-      await Promise.all(pages.map((page, i) => page.goto(`${origin}/multiplayer-dev.html?player=${i + 1}&radioIsolation=1`)))
+      await Promise.all(pages.map((page, i) => page.goto(`${origin}/multiplayer-dev.html?player=${i + 1}&radioIsolation=1`, { waitUntil: 'commit' })))
       await Promise.all(pages.map(async page => {
         await page.getByText(/PRK75 RADIO ISOLATION ACTIVE/).waitFor({ timeout: 90_000 })
         await page.getByRole('button', { name: 'PAUSE', exact: true }).waitFor()
@@ -201,11 +230,15 @@ try {
         .filter(stage => stage.label === 'Association responses')
         .reduce((sum, stage) => sum + stage.hardwareRx, 0)
       assert(report.pageErrors.every(count => count === 0), 'An uncaught browser error occurred during the run.')
-      assert(report.observation.association && report.associationFramesReceived > 0 && report.observation.greetingFailed &&
-        !report.observation.tradeMenu && !report.observation.tradeConfirmed,
-      'PRK80 greeting failure did not reproduce with the expected game-level outcome.')
-      report.stage = 'reproduced-greeting-failure'
-      console.log('Reproduced the greeting failure after native association.')
+      const { association, greetingFailed, tradeMenu, tradeConfirmed } = report.observation
+      assert(association && report.associationFramesReceived > 0, 'Native association was not verified.')
+      if (tradeConfirmed && tradeMenu && !greetingFailed) report.outcome = 'trade-confirmed'
+      else if (tradeMenu && !greetingFailed) report.outcome = 'trade-menu'
+      else if (greetingFailed && !tradeMenu && !tradeConfirmed) report.outcome = 'greeting-failure'
+      else report.outcome = 'other'
+      assert.equal(report.outcome, expectedOutcome, 'Unexpected game-level outcome.')
+      report.stage = 'complete'
+      console.log(`Verified White 2 outcome: ${report.outcome}.`)
     }
   }
 } catch (error) {
@@ -220,6 +253,11 @@ try {
       await Promise.allSettled(pages.map(async (page, index) => {
         const prefix = join(run, `p${index + 1}`)
         await page.screenshot({ path: prefix + '.png', timeout: 5_000 }).catch(() => {})
+        const canvases = await within(3_000, 'DS screen capture timed out.', () =>
+          page.locator('canvas.melonds-screen').evaluateAll(elements =>
+            elements.map(canvas => canvas.toDataURL('image/png').split(',')[1]))).catch(() => [])
+        await Promise.all(canvases.map((png, screen) =>
+          writeFile(prefix + '-ds-' + screen + '.png', Buffer.from(png, 'base64'))))
         const panel = await page.locator('.melonds-player, [role="status"]').allTextContents().catch(() => [])
         await writeFile(prefix + '-panel.txt', panel.join('\n'))
         await page.getByRole('button', { name: /STOP & CLEAR RADIO/ }).click({ timeout: 2_000 }).catch(() => {})
@@ -229,7 +267,7 @@ try {
           return takeWhite2GreetingTrace()
         })).catch(() => null)
         await writeFile(prefix + '-timing.json', JSON.stringify(trace))
-        if (report.stage === 'reproduced-greeting-failure' &&
+        if (report.stage === 'complete' &&
             (!trace?.complete || !trace.native.length || !trace.wire.length ||
               trace.droppedWire || trace.droppedBatches || trace.native.some(batch => batch.dropped))) {
           process.exitCode = 1

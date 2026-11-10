@@ -35,3 +35,26 @@ test('greeting evidence separates late arrival, native poll, and stale timestamp
   host.native[0].dropped = 1
   assert.equal(summarizeGreetingTrace([host, peer]).incomplete, true)
 })
+
+test('hardware summary distinguishes collector, RX ring, cursor, and peer ACK', () => {
+  const span = (start, end) => (end << 16) | start
+  const trace = (role, rows) => ({
+    role, complete: true, wire: [],
+    native: [{ beforeMs: 99, afterMs: 101, nativeNowMs: 100, values: rows.flat() }],
+  })
+  const event = (kind, detail, flags) => [kind, 50, 1_000, detail, 10, flags, 1]
+  const host = trace(1, [
+    event(11, 1, 0), event(12, 44, 0x4000), event(13, 44, 0x4000),
+    event(14, span(100, 124), 0x800E), event(16, span(100, 124), 124),
+    event(11, 1, 2), event(17, 0, 0),
+  ])
+  const peer = trace(2, [
+    event(18, span(4000, 10), 0x800D), event(16, span(4000, 11), 11),
+  ])
+  assert.deepEqual(summarizeGreetingTrace([host, peer]).hardware, {
+    replyAttempts: 2, replyBlocked: 1, replyStarted: 1, protectedReplyStarted: 1,
+    replyFinished: 1, replyRingCommitted: 1, replyRingMpReply: 1, replyRingOverflow: 0,
+    replyCursorAdvanced: 1, ackTx: 1, ackTxWithoutClientFailure: 1,
+    ackTxWithExpiredCommandCounter: 1, ackRingCommitted: 1, ackCursorAdvanced: 1,
+  })
+})

@@ -1,12 +1,12 @@
 export const DS_SCREEN_WIDTH = 256
 export const DS_SCREEN_HEIGHT = 192
 
-const MELONDS_RUNTIME_VERSION = 'arm9-call-v23-prk80-greeting-trace'
+const MELONDS_RUNTIME_VERSION = 'arm9-call-v26-prk80-command-counter'
 const MELONDS_RUNTIME_CACHE_TOKEN = import.meta.env.DEV
   ? `${MELONDS_RUNTIME_VERSION}-${Date.now().toString(36)}`
   : MELONDS_RUNTIME_VERSION
 
-export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B47
+export const POKERUN_MELONDS_RUNTIME_STAMP = 0x50524B4A
 export const POKERUN_ARM9_CALL_BUDGET = 1000000
 
 type WasmCart = { loadFromFile(path: string): boolean; delete?: () => void }
@@ -57,6 +57,7 @@ type WasmEmulator = {
   prk66TakeOutgoing(): { bytes: Uint8Array; timestamp: number; replyAid: number; traceTxId?: number } | null
   prk66InjectIncoming(bytes: Uint8Array, timestamp: number): boolean
   prk79InjectReply(bytes: Uint8Array, timestamp: number, aid: number, traceSequence: number): boolean
+  setPrk80DeferHostPoll(mode: number): void
   setGreetingTrace(enabled: boolean): void
   drainGreetingTrace(): { values: number[]; dropped: number; nativeNowMs: number }
   prk79ReplyTx(): number
@@ -167,7 +168,7 @@ export function loadMelonDsRuntime() {
             'prk70BeaconFilterDropped', 'prk70RxRingIrq',
             'prk71SetFirmwareMacRole', 'prk71AppliedFirmwareMacRole',
             'prk72TxKind', 'prk72RxKind',
-             'setGreetingTrace', 'drainGreetingTrace', 'prk79InjectReply', 'prk79ReplyTx', 'prk79ReplyRx', 'prk79HostPoll', 'prk79HostMatch', 'prk79Stale', 'prk79Empty',
+             'setPrk80DeferHostPoll', 'setGreetingTrace', 'drainGreetingTrace', 'prk79InjectReply', 'prk79ReplyTx', 'prk79ReplyRx', 'prk79HostPoll', 'prk79HostMatch', 'prk79Stale', 'prk79Empty',
              'prk80EmptyPoll', 'prk80MissPoll', 'prk80PendingMiss', 'prk80FutureMatch', 'prk80AckFail', 'prk80AckOk',
           ].every(key => typeof (probe as unknown as Record<string, unknown>)[key] === 'function')
           if (stamp !== POKERUN_MELONDS_RUNTIME_STAMP || budget !== POKERUN_ARM9_CALL_BUDGET || !hasAtomicStackArgs || !hasPrk63WirelessCounters) {

@@ -123,6 +123,8 @@ export class White2NativeRadioLink {
     } catch (error) {
       console.warn('[PokéRun] Greeting trace could not start.', error)
     }
+    const mode = Number(sessionStorage.getItem('pokerun:prk80-defer-host-poll'))
+    this.bridge.setPrk80DeferHostPoll(mode === 1 || mode === 2 || mode === 3 ? mode : 0)
     this.publish('waiting')
     this.sendHello()
     this.tickTimer = window.setInterval(() => this.tick(), this.pollIntervalMs)
@@ -136,6 +138,7 @@ export class White2NativeRadioLink {
     try { this.channel.postMessage(this.wrap({ kind: 'bye' })) } catch { /* page teardown */ }
     this.channel.close()
     try { this.trace?.stop() } catch { /* page teardown */ }
+    try { this.bridge.setPrk80DeferHostPoll(0) } catch { /* page teardown */ }
     if (this.radioEnabled) {
       try { this.bridge.setNativeWirelessDevLinkEnabled(false) } catch { /* page teardown */ }
       this.radioEnabled = false
@@ -274,6 +277,7 @@ export class White2NativeRadioLink {
       try { this.trace?.drainNative() } catch (error) {
         console.warn('[PokéRun] Greeting trace could not drain.', error)
         try { this.trace?.stop() } catch { /* page teardown */ }
+    try { this.bridge.setPrk80DeferHostPoll(0) } catch { /* page teardown */ }
         this.trace = null
       }
       const phase = peerPresent ? 'linked' : 'waiting'

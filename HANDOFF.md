@@ -21,9 +21,19 @@ The [earlier PRK80 experiment](docs/PRK79_NATIVE_UNION_ROOM_ACCEPTANCE.md#prk80-
 
 In Chromium with the opt-in test-hook WASM build, `npm run test:native:schedule` exercised the real command queue and native reply collector. With the same synthetic delivery and DS timestamps, polling before send or while the command was in flight produced an empty poll. Polling after enqueue matched the reply. At fixed late ordering, a 32 µs timestamp deficit matched and a 33 µs deficit was stale. This reproduces both mechanisms independently of ROMs, browser timers and live Wi-Fi.
 
+## Deferred poll experiment
+
+The opt-in `POKERUN_DEFER_HOST_POLL=1 npm run test:white2` trial added a 32 ms emulated delivery window ahead of host TX completion. The reply collector still used the original emulated timestamp and existing stale rule. At 59.97/59.98 DS frames/s before greeting, native association occurred and every first poll followed browser command send and peer arrival. The host matched 415 of 454 polls, with 39 empty polls, five stale dispositions, and 39 failed-client ACKs. The host reported that the peer did not reply while the peer displayed “Hello!” Neither reached Trade. The trace was complete and is under `local-test-assets/white2-run-bvZa1G/`.
+
+The adaptive `POKERUN_DEFER_HOST_POLL=adaptive npm run test:white2` trial used the same saved checkpoints. Both DS instances sustained about 60 frames/s. Native association occurred, then the host displayed “did not reply” while the peer displayed “Hello.” All 503 replies arrived, queued, matched, finished hardware RX as normal MP data, entered the RX ring, and were retired by host cursor advances. The peer likewise committed and retired all 503 ACKs. The native ACKs reported no failed clients, but the host command counter was zero for every ACK. The loss-free trace is under `local-test-assets/white2-run-STl9hV/`. This rules out an empty host reply queue, default replies and missing peer ACKs in that capture. It does not establish that the game accepted the response contents.
+
+PRK81I at `5815918` shows a dedicated worker can service cross-tab callbacks with shared memory while separate WASM workers boot and render ROM frames. Its probe exchanges controlled packets between game frame runs. It provides a path to avoid advancing emulated time while waiting for a browser reply, but the probe itself does not exercise the Union Room.
+
+The `POKERUN_DEFER_HOST_POLL=preserve-counter npm run test:white2` trial held the command countdown only during the added adaptive wait. Both emulators stayed near 60 frames/s. All 520 replies matched and reached the host software cursor; the peer retired all 520 ACKs. None had an expired command counter. The host still reported that the peer did not reply. This rules out counter expiry as a sufficient explanation. The loss-free trace is under `local-test-assets/white2-run-oXVMdn/`.
+
 ## Next experiment
 
-Use the same aligned position, dialogue input schedule and minimal observation for a fresh real pair. Then design an opt-in scheduling experiment around the host's first poll and command queue drain, with DS timestamp handling held fixed. The deterministic test shows what the collector does under controlled ordering; real gameplay is still needed to see whether a scheduling change advances both players' greeting and preserves the normal ACK path.
+Test the guest’s normal dialogue input while the host is waiting, keeping the same checkpoints and adaptive scheduling. If neither screen advances, prioritize PRK81I’s worker design to preserve the full emulated RF timing window. Keep the native collector, original reply timestamps, and ACK success criteria intact.
 
 ## Verification for this worktree
 

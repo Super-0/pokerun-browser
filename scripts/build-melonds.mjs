@@ -9,6 +9,8 @@ import { applyPrk70ReceiveDeliveryAudit } from './prk70-native-delivery-audit.mj
 import { applyPrk71FirmwareMacIdentity } from './prk71-firmware-mac-identity.mjs'
 import { applyPrk72HandshakeStageAudit } from './prk72-handshake-stage-audit.mjs'
 import { applyPrk79NativeMpReplies } from './prk79-native-mp-replies.mjs'
+import { applyHardwareDeliveryTrace } from './prk80-hardware-delivery-trace.mjs'
+import { applyDeferredReplyPoll } from './prk80-deferred-reply-poll.mjs'
 import { applyReplyScheduleTestHooks } from './prk80-reply-schedule-hooks.mjs'
 import { applyPrk80GreetingTrace } from './prk80-greeting-trace.mjs'
 import { applyPrk80MpTimingAudit } from './prk80-mp-timing-audit.mjs'
@@ -50,7 +52,7 @@ const requiredRuntimeSymbols = [
   'prk72TxKind', 'prk72RxKind',
   'prk79InjectReply', 'prk79ReplyTx', 'prk79ReplyRx', 'prk79HostPoll',
   'prk79HostMatch', 'prk79Stale', 'prk79Empty',
-  'setGreetingTrace', 'drainGreetingTrace',
+  'setPrk80DeferHostPoll', 'setGreetingTrace', 'drainGreetingTrace',
   'prk80EmptyPoll', 'prk80MissPoll', 'prk80PendingMiss', 'prk80FutureMatch', 'prk80AckFail', 'prk80AckOk',
 ]
 
@@ -207,6 +209,8 @@ try {
   applyPrk79NativeMpReplies(source)
   applyPrk80MpTimingAudit(source)
   applyPrk80GreetingTrace(source)
+  applyDeferredReplyPoll(source)
+  applyHardwareDeliveryTrace(source)
   if (withScheduleTestHooks) applyReplyScheduleTestHooks(source)
 
   // Apply build requirements after restoring and patching upstream.
@@ -234,7 +238,7 @@ try {
       !patchedCpp.includes('arm.R[13] = injectedSp;')) {
     throw new Error('PokéRun melonDS patch did not isolate the injected stack arguments.')
   }
-  if (!patchedCpp.includes('return 0x50524B47;')) {
+  if (!patchedCpp.includes('return 0x50524B4A;')) {
     throw new Error('PokéRun melonDS patch did not install the PRK80 greeting trace runtime stamp.')
   }
 
