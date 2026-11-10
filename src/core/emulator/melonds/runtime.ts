@@ -16,6 +16,9 @@ type WasmEmulator = {
   loadRom(cart: WasmCart, reset: boolean): boolean
   initialize(direct: boolean): void
   processFrame(hidden: boolean): void
+  pokerunStartFrame?(): boolean
+  pokerunFramePending?(): boolean
+  pokerunSetRadioWaiting?(enabled: boolean): void
   setInput(mask: number): void
   touchScreen(x: number, y: number): void
   releaseScreen(): void
@@ -120,7 +123,7 @@ declare global {
       unlink?(path: string): void
       analyzePath?(path: string): { exists: boolean }
     }
-    WebMelon?: { _internal: { events: Record<string, () => void> } }
+    WebMelon?: { _internal: { events: Record<string, (...args: number[]) => void> } }
   }
 }
 

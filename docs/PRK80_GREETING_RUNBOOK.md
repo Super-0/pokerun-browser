@@ -40,7 +40,7 @@ export async function attemptGreeting({ pages: [p1, p2] }) {
 }
 ```
 
-Run `npm.cmd run test:white2` or `npm run test:white2`. The script verifies the selected slots, waits for two running DS instances, checks 1× speed and 5 ms linked radio status, and measures a pre-greeting window of at least five seconds at 55–65 DS frames/s per page around the 60 FPS target. The driver has up to 120 seconds to prepare, up to 90 seconds for optional Union Room staging, and 45 seconds for one greeting attempt. A staged run also measures both frame rates for five seconds after entry. An optional `dispose()` export can close driver-owned resources after success or timeout. Screenshots, rendered panel counters, trace batches and stage status stay under `local-test-assets/white2-run-*/`. A link-level `LINKED` badge only confirms the browser handshake. The runner checks for a native association-response frame received by hardware. Use that evidence and both game screens to classify the attempt.
+Run `npm.cmd run test:white2` or `npm run test:white2`. The script verifies the selected slots, waits for two running DS instances, checks 1× speed and 5 ms linked radio status, and measures a pre-greeting window of at least five seconds at 55–65 DS frames/s per page around the 60 FPS target. The driver has up to 120 seconds to prepare, up to 90 seconds for optional Union Room staging, and 45 seconds for one greeting attempt, or 180 seconds when explicitly checking trade confirmation. A staged run also measures both frame rates for five seconds after entry. An optional `dispose()` export can close driver-owned resources after success or timeout. Screenshots, rendered panel counters, trace batches and stage status stay under `local-test-assets/white2-run-*/`. A link-level `LINKED` badge only confirms the browser handshake. The runner checks for a native association-response frame received by hardware. Use that evidence and both game screens to classify the attempt.
 
 Set `$env:POKERUN_GREETING_TRACE = '0'` in Windows or prefix `POKERUN_GREETING_TRACE=0` on macOS/Linux for the control run. Then remove the variable or set it to 1 and repeat once on a fresh profile copy. Compare DS health, counter deltas and both dialogs. Degraded health or trace overflow invalidates timing conclusions.
 
@@ -49,6 +49,20 @@ Set `$env:POKERUN_GREETING_TRACE = '0'` in Windows or prefix `POKERUN_GREETING_T
 The runner defaults to reproducing the historical greeting failure. Set `POKERUN_EXPECT_WHITE2=trade-menu` or `POKERUN_EXPECT_WHITE2=trade-confirmed` for a positive test. A confirmed trade requires both game screens and the driver's explicit confirmation. A native association response is required independently.
 
 For the bounded scheduling experiments, set `POKERUN_DEFER_HOST_POLL=1` for a fixed 32 ms emulated wait or `POKERUN_DEFER_HOST_POLL=adaptive` for readiness checks roughly every 1 ms up to 48 ms. Use `preserve-counter` to run the adaptive wait while holding the hardware command countdown only during that added wait. All variants retain the original DS poll timestamp for the existing reply rules. Unset the variable for the standard poll path. In PowerShell set the same variables through `$env:POKERUN_DEFER_HOST_POLL` and `$env:POKERUN_EXPECT_WHITE2` before running `npm.cmd run test:white2`.
+
+## Run the opt-in frame worker
+
+Build the worker-enabled runtime in the clean native checkout. The ARM9 option also records what the guest firmware and host game receive.
+
+```bash
+POKERUN_NATIVE_WORKER_RADIO=1 POKERUN_TRACE_ARM9_GFL=1 npm run build:melonds
+POKERUN_WORKER_RADIO=1 npm run test:native
+POKERUN_WORKER_RADIO=1 POKERUN_TRACE_GAME_NEGOTIATION=1 POKERUN_EXPECT_WHITE2=trade-menu npm run test:white2
+```
+
+On Windows, build the JS/WASM pair in WSL, copy it into the Windows checkout's ignored `public/emulators/melonds/`, set `$env:POKERUN_WORKER_RADIO = '1'`, `$env:POKERUN_TRACE_GAME_NEGOTIATION = '1'` and `$env:POKERUN_EXPECT_WHITE2 = 'trade-menu'`, then run `npm.cmd run test:native` and `npm.cmd run test:white2`. Clear `POKERUN_DEFER_HOST_POLL` before the worker experiment. The regular runtime and the regular browser path remain available with the worker option unset.
+
+The frame pthread pauses emulated execution at the native host reply poll and the guest's next host-frame receive after transmitting a reply. The existing same-origin link relays the exact frames. Its native output notification wakes the browser relay without waiting for the periodic tick. The wait is bounded in wall time and releases when the link stops. Compare pre-greeting frame health, guest ACK indications, host datasets and both screens.
 
 ## Reproduce the ordering without a ROM
 

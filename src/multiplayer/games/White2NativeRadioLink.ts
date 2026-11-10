@@ -113,6 +113,8 @@ export class White2NativeRadioLink {
     this.channel.onmessageerror = () => { this.framesRejected++; this.publish('error', 'Wireless channel could not decode an incoming message.') }
   }
 
+  private stopRadioOutput: (() => void) | null = null
+
   start() {
     if (this.stopped || this.tickTimer !== null) return
     if (this.bridge.status !== 'running') throw new Error('Native radio requires a running melonDS instance.')
@@ -128,6 +130,7 @@ export class White2NativeRadioLink {
     this.bridge.setPrk80DeferHostPoll(mode === 1 || mode === 2 || mode === 3 ? mode : 0)
     this.publish('waiting')
     this.sendHello()
+    this.stopRadioOutput = this.bridge.subscribeRadioOutput(() => this.tick())
     this.tickTimer = window.setInterval(() => this.tick(), this.pollIntervalMs)
   }
 
@@ -136,6 +139,8 @@ export class White2NativeRadioLink {
     this.stopped = true
     if (this.tickTimer !== null) window.clearInterval(this.tickTimer)
     this.tickTimer = null
+    this.stopRadioOutput?.()
+    this.stopRadioOutput = null
     try { this.channel.postMessage(this.wrap({ kind: 'bye' })) } catch { /* page teardown */ }
     this.channel.close()
     try { this.trace?.stop() } catch { /* page teardown */ }
@@ -278,7 +283,7 @@ export class White2NativeRadioLink {
       try { this.trace?.drainNative() } catch (error) {
         console.warn('[PokéRun] Greeting trace could not drain.', error)
         try { this.trace?.stop() } catch { /* page teardown */ }
-    try { this.bridge.setPrk80DeferHostPoll(0) } catch { /* page teardown */ }
+        try { this.bridge.setPrk80DeferHostPoll(0) } catch { /* page teardown */ }
         this.trace = null
       }
       const phase = peerPresent ? 'linked' : 'waiting'

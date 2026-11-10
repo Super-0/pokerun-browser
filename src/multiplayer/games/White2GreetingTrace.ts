@@ -17,8 +17,9 @@ type Batch = ReturnType<MelonDsBridge['drainGreetingTrace']> & {
 
 type GameSnapshot = NonNullable<Awaited<ReturnType<typeof readWhite2UnionNegotiation>>>
 const MAX_GAME_SNAPSHOTS = 512
-const MAX_WIRE_EVENTS = 65_536
-const MAX_BATCHES = 1_024
+// Cover checkpoint staging plus a bounded trade confirmation attempt.
+const MAX_WIRE_EVENTS = 131_072
+const MAX_BATCHES = 3_072
 const now = () => performance.timeOrigin + performance.now()
 
 let active: White2GreetingTrace | null = null

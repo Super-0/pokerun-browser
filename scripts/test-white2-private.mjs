@@ -23,6 +23,8 @@ if (mode === 'greeting') assert(['greeting-failure', 'trade-menu', 'trade-confir
   'POKERUN_EXPECT_WHITE2 must be greeting-failure, trade-menu, or trade-confirmed.')
 
 const traceGameNegotiation = process.env.POKERUN_TRACE_GAME_NEGOTIATION === '1'
+const workerRadio = mode === 'greeting' && process.env.POKERUN_WORKER_RADIO === '1'
+assert(!workerRadio || !process.env.POKERUN_DEFER_HOST_POLL, 'Worker radio and emulated poll delays are separate experiments.')
 const requestedPollMode = process.env.POKERUN_DEFER_HOST_POLL
 const pollModes = new Map([['1', 1], ['adaptive', 2], ['preserve-counter', 3]])
 const deferHostPoll = mode === 'greeting' ? pollModes.get(requestedPollMode) ?? 0 : 0
@@ -106,7 +108,7 @@ const server = await createServer({
 })
 let browser, context
 let pages = []
-const report = { mode, tracing, deferHostPoll, expectedOutcome, stage: 'startup', pageErrors: [0, 0] }
+const report = { mode, tracing, deferHostPoll, workerRadio, expectedOutcome, stage: 'startup', pageErrors: [0, 0] }
 try {
   await server.listen()
   if (mode === 'runtime' || mode === 'schedule') {
@@ -117,7 +119,8 @@ try {
       await within(20_000, 'Native schedule test timed out.', () => checkReplySchedules(page))
       console.log('Native reply schedules passed: early and in-flight empty, late matched, −32 µs matched, −33 µs stale.')
     } else {
-      const stamp = await within(20_000, 'WASM initialization timed out.', () => page.evaluate(async () => {
+      const checkWorker = process.env.POKERUN_WORKER_RADIO === '1'
+      const stamp = await within(20_000, 'WASM initialization or worker frame timed out.', () => page.evaluate(async checkWorker => {
         const { loadMelonDsRuntime } = await import('/src/core/emulator/melonds/runtime.ts')
         const module = await loadMelonDsRuntime()
         const emu = new module.WasmEmulator()
@@ -137,10 +140,29 @@ try {
             throw new Error('Disabling observation changed the queue or continued tracing.')
           }
           emu.prk66SetEnabled(false)
+          if (checkWorker) {
+            if (!emu.pokerunStartFrame || !emu.pokerunFramePending) throw new Error('Worker frame hooks are missing.')
+            let finish
+            window.WebMelon = { _internal: { events: {
+              onWorkerFrame: elapsed => finish(elapsed),
+              onShutdown: () => {}, onSaveWrite: () => {},
+            } } }
+            emu.loadFreeBIOS()
+            emu.initialize(false)
+            for (let frame = 0; frame < 2; frame++) {
+              const completed = new Promise(resolve => { finish = resolve })
+              if (!emu.pokerunStartFrame()) throw new Error('Worker rejected an idle frame request.')
+              const elapsed = await completed
+              if (emu.pokerunFramePending() || !Number.isFinite(elapsed) || elapsed < 0) {
+                throw new Error('Worker did not publish completed frame state.')
+              }
+            }
+          }
           return emu.pokerunRuntimeVersion().toString(16)
         } finally { emu.delete() }
-      }))
+      }, checkWorker))
       console.log(`Chromium loaded melonDS runtime 0x${stamp} and verified the trace clock without a ROM.`)
+      if (checkWorker) console.log('Two worker frames completed without a ROM.')
     }
   } else {
     context = await chromium.launchPersistentContext(mode === 'prepare' ? checkpoint : join(run, 'profile'), {
@@ -156,12 +178,13 @@ try {
       console.log('Prepare both slots at the fixed local origin. Close Chromium when both in-game checkpoints are saved.')
       await within(30 * 60_000, 'Checkpoint preparation exceeded 30 minutes.', () => new Promise(resolveClose => context.once('close', resolveClose)))
     } else {
-      await context.addInitScript(({ origin, tracing, deferHostPoll, traceGameNegotiation }) => {
+      await context.addInitScript(({ origin, tracing, deferHostPoll, traceGameNegotiation, workerRadio }) => {
         if (location.origin !== origin) return
         sessionStorage.setItem('pokerun:prk80-greeting-trace', tracing ? '1' : '0')
         sessionStorage.setItem('pokerun:prk80-defer-host-poll', String(deferHostPoll))
+        sessionStorage.setItem('pokerun:prk80-worker-radio', workerRadio ? '1' : '0')
         sessionStorage.setItem('pokerun:prk80-trace-game-negotiation', traceGameNegotiation ? '1' : '0')
-      }, { origin, tracing, deferHostPoll, traceGameNegotiation })
+      }, { origin, tracing, deferHostPoll, traceGameNegotiation, workerRadio })
       const p1 = context.pages()[0] ?? await context.newPage()
       const p2 = await context.newPage()
       pages = [p1, p2]
@@ -215,7 +238,8 @@ try {
       await Promise.all(pages.map(page => page.getByRole('button', { name: before }).click()))
       let result
       try {
-        result = await within(45_000, 'One greeting attempt exceeded 45 seconds.', () => driver.attemptGreeting({ pages }))
+        const attemptMs = expectedOutcome === 'trade-confirmed' ? 180_000 : 45_000
+        result = await within(attemptMs, 'The paired gameplay attempt timed out.', () => driver.attemptGreeting({ pages }))
       } catch (error) {
         report.greetingCounters = await Promise.all(pages.map(captureAfter)).catch(() => undefined)
         throw error
@@ -264,11 +288,15 @@ try {
         await writeFile(prefix + '-panel.txt', panel.join('\n'))
         await page.getByRole('button', { name: /STOP & CLEAR RADIO/ }).click({ timeout: 2_000 }).catch(() => {})
         if (!tracing) return
-        const trace = await within(5_000, 'Trace extraction timed out.', () => page.evaluate(async () => {
+        const serialized = await within(15_000, 'Trace extraction timed out.', () => page.evaluate(async () => {
           const { takeWhite2GreetingTrace } = await import('/src/multiplayer/games/White2GreetingTrace.ts')
-          return takeWhite2GreetingTrace()
-        })).catch(() => null)
-        await writeFile(prefix + '-timing.json', JSON.stringify(trace))
+          return JSON.stringify(takeWhite2GreetingTrace() ?? null)
+        })).catch(async error => {
+          await writeFile(prefix + '-timing-error.txt', String(error.stack ?? error))
+          return 'null'
+        })
+        await writeFile(prefix + '-timing.json', serialized)
+        const trace = JSON.parse(serialized)
         if (report.stage === 'complete' &&
             (!trace?.complete || !trace.native.length || !trace.wire.length ||
               trace.droppedWire || trace.droppedBatches || trace.native.some(batch => batch.dropped))) {

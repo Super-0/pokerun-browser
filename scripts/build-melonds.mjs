@@ -1,3 +1,4 @@
+import { applyWorkerRadio } from './prk80-worker-radio.mjs'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { resolve } from 'node:path'
@@ -30,8 +31,10 @@ const patches = [
 const build = resolve(source, 'build-pokerun-wasm')
 const output = resolve(root, 'public/emulators/melonds')
 const expectedRevision = '53c7c6cb362560a9e362ae754a162f638fa3cd64'
+const withWorkerRadio = process.env.POKERUN_NATIVE_WORKER_RADIO === '1'
 const withScheduleTestHooks = process.env.POKERUN_NATIVE_TEST_HOOKS === '1'
 const requiredRuntimeSymbols = [
+  ...(withWorkerRadio ? ['pokerunStartFrame', 'pokerunFramePending', 'pokerunSetRadioWaiting'] : []),
   ...(withScheduleTestHooks ? ['pokerunTestSendMpCommand', 'pokerunTestPollMpReplies'] : []),
   'writeArm9U8', 'writeArm9U16', 'writeArm9U32',
   'getArm9Sp', 'callArm9Thumb4', 'callArm9Thumb8Atomic', 'arm9CallStatus',
@@ -214,6 +217,7 @@ try {
   applyHardwareDeliveryTrace(source)
   if (process.env.POKERUN_TRACE_ARM9_GFL === '1') applyGflCallbackTrace(source)
   if (withScheduleTestHooks) applyReplyScheduleTestHooks(source)
+  if (withWorkerRadio) applyWorkerRadio(source)
 
   // Apply build requirements after restoring and patching upstream.
   const wasmCmake = resolve(source, 'wasmelonDS/src/frontend/wasm/CMakeLists.txt')

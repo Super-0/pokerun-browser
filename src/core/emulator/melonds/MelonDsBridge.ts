@@ -51,6 +51,12 @@ export class MelonDsBridge implements EmulatorBridge {
   private saveFlushTimer: number | null = null
   private saveDirty = false
   private savePath = '/pokerun/saves/game.sav'
+  private workerFrameTimer: number | null = null
+  private workerNextFrameAt = 0
+  private readonly radioOutputListeners = new Set<() => void>()
+  private readonly workerRadioRequested = import.meta.env.DEV &&
+    sessionStorage.getItem('pokerun:prk80-worker-radio') === '1'
+  private get workerRadio() { return this.workerRadioRequested && this.devWirelessFirmwareRole !== 0 }
   private devWirelessFirmwareRole: 0 | 1 | 2 = 0
 
   /** PRK71: assign before loadRom. Applies only to in-memory firmware of a
@@ -100,20 +106,26 @@ export class MelonDsBridge implements EmulatorBridge {
    */
   setNativeWirelessDevLinkEnabled(enabled: boolean) {
     if (!import.meta.env.DEV) throw new Error('PRK66 radio bridge is development-only.')
-    this.assertEmulator().prk66SetEnabled(enabled)
+    const emulator = this.assertEmulator()
+    if (this.workerRadio) emulator.pokerunSetRadioWaiting?.(enabled)
+    emulator.prk66SetEnabled(enabled)
   }
   receiveNativeWirelessDevReply(bytes: Uint8Array, timestamp: number, aid: number, traceSequence = 0) {
     if (!import.meta.env.DEV) throw new Error('PRK79 radio replies are development-only.')
     return this.assertEmulator().prk79InjectReply(bytes, timestamp, aid, traceSequence)
   }
   setPrk80DeferHostPoll(mode: number) {
-    this.assertEmulator().setPrk80DeferHostPoll(mode)
+    if (!this.workerRadio) this.assertEmulator().setPrk80DeferHostPoll(mode)
   }
   setGreetingTrace(enabled: boolean) {
     this.assertEmulator().setGreetingTrace(enabled)
   }
   drainGreetingTrace() {
     return this.assertEmulator().drainGreetingTrace()
+  }
+  subscribeRadioOutput(listener: () => void) {
+    this.radioOutputListeners.add(listener)
+    return () => this.radioOutputListeners.delete(listener)
   }
   takeNativeWirelessOutgoingFrame() {
     if (!import.meta.env.DEV) throw new Error('PRK66 radio bridge is development-only.')
@@ -225,6 +237,11 @@ export class MelonDsBridge implements EmulatorBridge {
       throw new Error(`Unexpected melonDS runtime stamp 0x${(stamp ?? 0).toString(16).toUpperCase()}; expected PokéRun ARM9 native-call runtime 0x${POKERUN_MELONDS_RUNTIME_STAMP.toString(16).toUpperCase()}.`)
     }
 
+    if (this.workerRadio && (!crossOriginIsolated || !emulator.pokerunStartFrame ||
+        !emulator.pokerunFramePending || !emulator.pokerunSetRadioWaiting)) {
+      emulator.delete?.()
+      throw new Error('Worker radio requires cross-origin isolation and POKERUN_NATIVE_WORKER_RADIO=1 at native build time.')
+    }
     this.emulator = emulator
     this.cart = new module.WasmNdsCart()
     if (!this.cart.loadFromFile('/pokerun/roms/game.nds')) throw new Error('melonDS rejected this .nds ROM.')
@@ -258,12 +275,20 @@ export class MelonDsBridge implements EmulatorBridge {
       this.lastFrameAt = 0
       this.frameAccumulator = 0
       this.status = 'paused'
+      if (this.workerRadio) {
+        if (this.workerFrameTimer !== null) window.clearTimeout(this.workerFrameTimer)
+        this.workerFrameTimer = null
+        this.workerNextFrameAt = 0
+        this.emulator?.pokerunSetRadioWaiting?.(false)
+        await this.waitForWorkerFrame()
+      }
     }
   }
   async resume() { if (this.status === 'paused') { this.running = true; this.status = 'running'; this.scheduleFrame() } }
   async reset() { if (!this.emulator) return; await this.pause(); this.emulator.initialize(true); await this.resume() }
 
   async exportBatterySave() {
+    if (this.emulator?.pokerunFramePending?.()) await this.waitForWorkerFrame()
     try {
       const fs = window.FS
       if (!fs) return null
@@ -279,8 +304,8 @@ export class MelonDsBridge implements EmulatorBridge {
   }
 
   async dispose() {
-    await this.flushBatterySave()
     await this.pause()
+    await this.flushBatterySave()
     if (this.saveFlushTimer !== null) window.clearTimeout(this.saveFlushTimer)
     this.saveFlushTimer = null
     this.emulatedFrameListeners.clear()
@@ -298,9 +323,9 @@ export class MelonDsBridge implements EmulatorBridge {
   releaseTouch() { this.emulator?.releaseScreen() }
 
   async readMemory(address: number, length: number) { return this.readBytes(address, length) }
-  async read8(address: number) { return this.assertEmulator().readArm9U8(this.assertAddress(address)) >>> 0 }
-  async read16(address: number) { return this.assertEmulator().readArm9U16(this.assertAddress(address)) >>> 0 }
-  async read32(address: number) { return this.assertEmulator().readArm9U32(this.assertAddress(address)) >>> 0 }
+  async read8(address: number) { if (this.emulator?.pokerunFramePending?.()) await this.waitForWorkerFrame(); return this.assertEmulator().readArm9U8(this.assertAddress(address)) >>> 0 }
+  async read16(address: number) { if (this.emulator?.pokerunFramePending?.()) await this.waitForWorkerFrame(); return this.assertEmulator().readArm9U16(this.assertAddress(address)) >>> 0 }
+  async read32(address: number) { if (this.emulator?.pokerunFramePending?.()) await this.waitForWorkerFrame(); return this.assertEmulator().readArm9U32(this.assertAddress(address)) >>> 0 }
   async readBytes(address: number, length: number) {
     if (!Number.isInteger(length) || length < 0 || length > 0x10000) throw new Error('DS memory reads must be 0–65536 bytes.')
     this.assertAddress(address); const bytes = new Uint8Array(length)
@@ -310,14 +335,17 @@ export class MelonDsBridge implements EmulatorBridge {
 
   async write8(address: number, value: number) {
     if (!Number.isInteger(value) || value < 0 || value > 0xff) throw new Error('ARM9 8-bit writes require a value from 0 to 255.')
+    if (this.emulator?.pokerunFramePending?.()) await this.waitForWorkerFrame()
     this.assertEmulator().writeArm9U8(this.assertAddress(address), value)
   }
   async write16(address: number, value: number) {
     if (!Number.isInteger(value) || value < 0 || value > 0xffff) throw new Error('ARM9 16-bit writes require a value from 0 to 65535.')
+    if (this.emulator?.pokerunFramePending?.()) await this.waitForWorkerFrame()
     this.assertEmulator().writeArm9U16(this.assertAddress(address), value)
   }
   async write32(address: number, value: number) {
     if (!Number.isInteger(value) || value < 0 || value > 0xffffffff) throw new Error('ARM9 32-bit writes require an unsigned 32-bit value.')
+    if (this.emulator?.pokerunFramePending?.()) await this.waitForWorkerFrame()
     this.assertEmulator().writeArm9U32(this.assertAddress(address), value >>> 0)
   }
   async writeBytes(address: number, bytes: Uint8Array) {
@@ -327,6 +355,7 @@ export class MelonDsBridge implements EmulatorBridge {
   }
 
   async getArm9Sp() {
+    if (this.emulator?.pokerunFramePending?.()) await this.waitForWorkerFrame()
     return this.assertEmulator().getArm9Sp() >>> 0
   }
 
@@ -335,6 +364,7 @@ export class MelonDsBridge implements EmulatorBridge {
     const args = [r0, r1, r2, r3]
     if (args.some(value => !Number.isInteger(value) || value < 0 || value > 0xffffffff)) throw new Error('ARM9 native-call arguments must be unsigned 32-bit values.')
     if (!Number.isInteger(stackReserve) || stackReserve < 0x100 || stackReserve > 0x4000 || stackReserve % 8 !== 0) throw new Error('ARM9 native-call stack reserve must be 0x100–0x4000 bytes and 8-byte aligned.')
+    if (this.emulator?.pokerunFramePending?.()) await this.waitForWorkerFrame()
     const emulator = this.assertEmulator()
     const result = emulator.callArm9Thumb4(functionAddress >>> 0, r0 >>> 0, r1 >>> 0, r2 >>> 0, r3 >>> 0, stackReserve) >>> 0
     const status = emulator.arm9CallStatus() as Arm9NativeCallStatus
@@ -351,7 +381,42 @@ export class MelonDsBridge implements EmulatorBridge {
 
   private assertEmulator() { if (!this.emulator || this.status === 'idle' || this.status === 'stopped') throw new Error('melonDS is not running.'); return this.emulator }
   private assertAddress(address: number) { if (!Number.isInteger(address) || address < 0 || address > 0xffffffff) throw new Error('Invalid ARM9 bus address.'); return address >>> 0 }
+  private async waitForWorkerFrame() {
+    while (this.emulator?.pokerunFramePending?.()) {
+      await new Promise<void>(resolve => window.setTimeout(resolve, 0))
+    }
+  }
+  private scheduleWorkerFrame() {
+    if (!this.running || !this.emulator || this.workerFrameTimer !== null) return
+    const interval = 1000 / 60
+    const now = performance.now()
+    this.workerNextFrameAt = Math.max(this.workerNextFrameAt, now - interval)
+    this.workerFrameTimer = window.setTimeout(() => {
+      this.workerFrameTimer = null
+      if (!this.running || !this.emulator) return
+      this.emulator.setInput(this.inputMask)
+      if (this.emulator.pokerunStartFrame?.()) this.workerNextFrameAt += interval
+    }, Math.max(0, this.workerNextFrameAt - now))
+  }
+
+  private completeWorkerFrame(elapsed: number) {
+    if (!this.running || !this.workerRadio || this.emulator?.pokerunFramePending?.()) return
+    this.frameStats.frames++
+    this.frameStats.visibleFrames++
+    this.frameStats.batches++
+    this.frameStats.processMs += elapsed
+    this.frameStats.visibleProcessMs += elapsed
+    this.frameStats.batchMs += elapsed
+    this.draw()
+    this.notifyEmulatedFrame()
+    this.scheduleWorkerFrame()
+  }
   private scheduleFrame() {
+    if (this.workerRadio) {
+      this.workerNextFrameAt = performance.now()
+      this.scheduleWorkerFrame()
+      return
+    }
     this.frame = requestAnimationFrame(now => {
       if (!this.running || !this.emulator) return
       this.frameStats.rafCallbacks += 1
@@ -420,7 +485,7 @@ export class MelonDsBridge implements EmulatorBridge {
   }
 
   private installRuntimeCallbacks() {
-    window.WebMelon = { _internal: { events: { onEmulatorFrameUpdate: () => { this.draw(); this.notifyEmulatedFrame() }, onSaveWrite: () => this.scheduleBatterySaveExport(), onRumbleStart: () => undefined, onRumbleStop: () => undefined, onShutdown: () => { void this.pause() } } } }
+    window.WebMelon = { _internal: { events: { onEmulatorFrameUpdate: () => { this.draw(); this.notifyEmulatedFrame() }, onSaveWrite: () => this.scheduleBatterySaveExport(), onWorkerFrame: (elapsed: number) => this.completeWorkerFrame(elapsed), onRadioOutput: () => { for (const listener of this.radioOutputListeners) listener() }, onRumbleStart: () => undefined, onRumbleStop: () => undefined, onShutdown: () => { void this.pause() } } } }
   }
   private draw() {
     if (!this.module || !this.emulator || !this.topCanvas || !this.bottomCanvas) return
