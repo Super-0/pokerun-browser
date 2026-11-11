@@ -85,6 +85,8 @@ POKERUN_WHITE2_UNATTENDED=1 POKERUN_WORKER_RADIO=1 \
 POKERUN_TRACE_GAME_NEGOTIATION=1 POKERUN_EXPECT_WHITE2=trade-confirmed npm run test:white2
 ```
 
+Set `POKERUN_WHITE2_RECONNECT=1` to stop and rejoin local wireless before entering the Union Room. Set `POKERUN_WHITE2_INVITING_PLAYER=2` to reverse the in-game invitation, and `POKERUN_WHITE2_TRADES_PER_SESSION=2` to verify a second persisted exchange in the same session. The private driver supplies both invitation orientations and an `attemptAnotherTrade` callback for the second exchange.
+
 ## Repeat fresh-session trades
 
 The local streak command starts a new Chromium profile from the same disposable checkpoint for each attempt. It uses the private driver in unattended mode. The driver must throw when it cannot complete a step without intervention. It returns `exchangeSubmitted: true` only after both normal in-game confirmations. The runner verifies the resulting exchange from the saved batteries. The batch keeps a private result ledger and per-attempt logs. A failed attempt resets the streak. Two consecutive failures at the same stage end the batch so that stage can be diagnosed.

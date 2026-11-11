@@ -30,6 +30,13 @@ assert(!unattended || (mode === 'greeting' && !manual && expectedOutcome === 'tr
 const normalUi = process.env.POKERUN_WHITE2_NORMAL_UI === '1'
 assert(!normalUi || (unattended && process.env.VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER === '1'),
   'The normal UI test requires unattended mode and the local wireless feature flag.')
+const reconnect = process.env.POKERUN_WHITE2_RECONNECT === '1'
+const tradesPerSession = Number(process.env.POKERUN_WHITE2_TRADES_PER_SESSION ?? 1)
+const invitingPlayer = Number(process.env.POKERUN_WHITE2_INVITING_PLAYER ?? 1)
+assert([1, 2].includes(tradesPerSession) && [1, 2].includes(invitingPlayer),
+  'White 2 trade count and inviting player must be 1 or 2.')
+assert(unattended || (!reconnect && tradesPerSession === 1 && invitingPlayer === 1),
+  'Reconnect, reverse invitations, and repeat trades require unattended mode.')
 
 const traceGameNegotiation = process.env.POKERUN_TRACE_GAME_NEGOTIATION === '1'
 const workerRadio = mode === 'greeting' && process.env.POKERUN_WORKER_RADIO === '1'
@@ -152,6 +159,8 @@ if (mode === 'greeting') {
   await stat(join(checkpoint, 'Default', 'IndexedDB'))
   driver = manual ? manualDriver : await import(pathToFileURL(join(privateRoot, 'white2-greeting-driver.mjs')).href)
   assert(typeof driver.prepareGreeting === 'function' && typeof driver.attemptGreeting === 'function')
+  assert(tradesPerSession === 1 || typeof driver.attemptAnotherTrade === 'function',
+    'The private driver must implement attemptAnotherTrade for a second exchange.')
   run = await mkdtemp(join(privateRoot, 'white2-run-'))
   const runProfile = join(run, 'profile', 'Default')
   await mkdir(runProfile, { recursive: true })
@@ -183,7 +192,7 @@ const server = await createServer({
 })
 let browser, context
 let pages = []
-const report = { mode, tracing, deferHostPoll, workerRadio, expectedOutcome, normalUi, stage: 'startup', pageErrors: [0, 0] }
+const report = { mode, tracing, deferHostPoll, workerRadio, expectedOutcome, invitingPlayer, tradesPerSession, normalUi, stage: 'startup', pageErrors: [0, 0] }
 try {
   await server.listen()
   if (mode === 'runtime' || mode === 'schedule') {
@@ -296,6 +305,14 @@ try {
         else await Promise.all(pages.map((page, i) => page.getByText(/LINKED\s*•\s*5 ms host poll/).filter({ hasText: `PLAYER ${i + 1}` }).waitFor()))
       }
       await startRadio()
+      if (reconnect) {
+        report.stage = 'radio-reconnect'
+        await Promise.all(pages.map(page => page.getByRole('button', { name: normalUi ? 'DISCONNECT LOCAL WIRELESS' : /STOP & CLEAR RADIO/ }).click()))
+        await startRadio()
+        report.reconnectVerified = true
+        await Promise.all(pages.map(page => page.getByRole('button', { name: before }).click()))
+        report.stage = 'health'
+      }
       await delay(5_000)
       report.baselineCounters = await Promise.all(pages.map(captureAfter))
       report.health = report.baselineCounters.map(sample => sample.emulatedFrames * 1000 / sample.elapsedMs)
@@ -324,7 +341,7 @@ try {
       let result
       try {
         const attemptMs = expectedOutcome === 'trade-confirmed' ? 180_000 : 45_000
-        result = await within(attemptMs, 'The paired gameplay attempt timed out.', () => driver.attemptGreeting({ pages }))
+        result = await within(attemptMs, 'The paired gameplay attempt timed out.', () => driver.attemptGreeting({ pages, invitingPlayer }))
       } catch (error) {
         report.greetingCounters = await Promise.all(pages.map(captureAfter)).catch(() => undefined)
         throw error
@@ -337,6 +354,14 @@ try {
         'The private driver did not reach and submit the reciprocal trade confirmation.')
         report.integrity = await verifyTradeIntegrity(pages, savesBefore)
         report.verifiedTrades = 1
+        if (tradesPerSession === 2) {
+          const betweenTrades = await Promise.all(pages.map((page, index) => readCheckpointSave(page, index + 1)))
+          report.stage = 'second-trade'
+          const repeat = await within(180_000, 'The second trade timed out.', () => driver.attemptAnotherTrade({ pages, invitingPlayer }))
+          assert(repeat?.exchangeSubmitted === true, 'The private driver did not submit the second trade.')
+          report.secondTradeIntegrity = await verifyTradeIntegrity(pages, betweenTrades)
+          report.verifiedTrades++
+        }
         tradeConfirmed = true
       }
       report.observation = {

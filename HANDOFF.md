@@ -71,6 +71,8 @@ The default-off `VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER=1` feature gives a real l
 
 The first normal-interface run passed with `POKERUN_WHITE2_NORMAL_UI=1`. It used the normal lobby, distinct saved slots, Ready and Start Game, and **Connect Local Wireless** on both tabs. The reciprocal exchange was verified from both persisted parties. Both emulators held 60.00 DS frames/s during gameplay and both timing traces were complete, with 10,324 guest firmware ACK successes and zero SDK ACK errors before ring arrival. The evidence is under `local-test-assets/white2-run-W5GkAK/`.
 
+A follow-up normal-interface session disconnected both local radios and reconnected them before entering the Union Room. Player 2 then sent the invitation and both consoles completed two trades in the same session. Both persisted parties and both save checksums passed after each exchange. The paired traces were complete and gameplay stayed at 59.99/59.95 DS frames/s. The run is under `local-test-assets/white2-run-k1Z5Sm/`.
+
 ## Verification for this worktree
 
 On macOS with Node.js 24.13.0, `npm ci` and `npm run verify` passed (8 unit tests, production build with the bundle-size warning, and 5 Chromium tests). A second `npm run test:browser` passed on the same port. The clean pinned melonDS build passed with Emscripten 3.1.74, and `npm run test:native` verified stamp `0x50524B4A`, queue observation and monotonic clock alignment in Chromium. The optional worker build also completed two ROM-free worker frames with `POKERUN_WORKER_RADIO=1 npm run test:native`. The updated branch was not run on Windows or WSL. The real White 2 greeting captures are described above. Hosted CI remains unverified.
