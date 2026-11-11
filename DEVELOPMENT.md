@@ -32,6 +32,8 @@ To run the standard checks separately in Windows, use `npm.cmd run test:unit`, `
 | Native schedule regression | `npm run test:native:schedule` after a test-hook native build | Fixed virtual delivery and DS times on the real collector. Checks poll-before-send, in-flight, queued and stale boundary cases. See the [runbook](docs/PRK80_GREETING_RUNBOOK.md#reproduce-the-ordering-without-a-rom). |
 | Private real gameplay | `npm run test:white2:prepare`, then `npm run test:white2:local-trade` | Verified White 2, two real emulators, distinct trainer IDs and disposable battery slots, 1× DS frame health, native association and a complete trade with paired evidence. The command refuses to run when private checkpoint or driver fixtures are absent. Follow the [runbook](docs/PRK80_GREETING_RUNBOOK.md). |
 
+Completed private gameplay runs remove only their disposable Chromium `profile` after evidence capture and browser shutdown. To inspect old profiles without changing anything, run `node scripts/cleanup-white2-runs.mjs --dry-run`; add `--apply` to remove eligible profiles. The cleanup skips profiles with Chromium lock files and never removes run evidence or the verified checkpoint.
+
 Use a targeted command while iterating, such as `npm.cmd run test:browser -- -g "legacy"`. Browser tests should wait for observable conditions. A feature test should exercise its normal entry point, distinguish the two clients, and assert state before and after the action. Use short synthetic byte arrays when testing storage rather than copying actual saves.
 
 ## Clean WSL/Linux native build

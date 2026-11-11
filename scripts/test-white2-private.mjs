@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { constants } from 'node:fs'
-import { cp, mkdir, mkdtemp, stat, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline/promises'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -18,6 +18,22 @@ const checkpoint = join(privateRoot, 'white2-checkpoint')
 const origin = 'http://127.0.0.1:4181'
 const manual = process.env.POKERUN_MANUAL === '1'
 const tracing = mode === 'greeting' && process.env.POKERUN_GREETING_TRACE !== '0'
+
+async function removeDisposableProfile(run) {
+  if (!run || !/^white2-run-[A-Za-z0-9]+$/.test(run.split('/').pop())) return
+  const profile = join(run, 'profile')
+  for (const lock of ['SingletonCookie', 'SingletonLock', 'SingletonSocket']) {
+    try {
+      await lstat(join(profile, lock))
+      console.warn(`Preserving active disposable profile because ${lock} exists: ${profile}`)
+      return
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+  }
+  await rm(profile, { recursive: true, force: true })
+  console.log(`Removed disposable browser profile: ${profile}`)
+}
 
 const unattended = process.env.POKERUN_WHITE2_UNATTENDED === '1'
 const expectedOutcome = process.env.POKERUN_EXPECT_WHITE2 ?? 'greeting-failure'
@@ -499,9 +515,13 @@ try {
           await within(2_000, 'Private driver cleanup timed out.', () => driver.dispose())
         }
       } finally {
-        await context?.close()
+        try {
+          await context?.close()
+        } finally {
+          await browser?.close()
+          await removeDisposableProfile(run)
+        }
       }
-      await browser?.close()
     } finally { await server.close() }
   }
 }
