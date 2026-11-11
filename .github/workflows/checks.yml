@@ -21,3 +21,25 @@ jobs:
           name: rom-free-playwright
           path: playwright-report/
           if-no-files-found: ignore
+  native-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Build worker-enabled melonDS with Emscripten 3.1.74
+        run: |
+          git clone --depth 1 https://github.com/emscripten-core/emsdk.git "$RUNNER_TEMP/pokerun-emsdk"
+          "$RUNNER_TEMP/pokerun-emsdk/emsdk" install 3.1.74
+          "$RUNNER_TEMP/pokerun-emsdk/emsdk" activate 3.1.74
+          source "$RUNNER_TEMP/pokerun-emsdk/emsdk_env.sh"
+          emcc --version
+          POKERUN_NATIVE_WORKER_RADIO=1 npm run build:melonds
+      - run: POKERUN_WORKER_RADIO=1 npm run test:native

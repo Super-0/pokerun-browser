@@ -12,7 +12,7 @@ import { checkReplySchedules } from '../tests/native/reply-schedule.mjs'
 
 const mode = process.argv[2]
 assert(['prepare', 'greeting', 'runtime', 'schedule'].includes(mode), 'Use prepare, greeting, runtime, or schedule.')
-assert(!process.env.CI, 'This runner is local only.')
+assert(!process.env.CI || mode === 'runtime' || mode === 'schedule', 'Private White 2 gameplay runs are local only.')
 const privateRoot = resolve('local-test-assets')
 const checkpoint = join(privateRoot, 'white2-checkpoint')
 const origin = 'http://127.0.0.1:4181'
@@ -214,20 +214,41 @@ try {
       console.log('Native reply schedules passed: early and in-flight empty, late matched, −32 µs matched, −33 µs stale.')
     } else {
       const checkWorker = process.env.POKERUN_WORKER_RADIO === '1'
-      const stamp = await within(20_000, 'WASM initialization or worker frame timed out.', () => page.evaluate(async checkWorker => {
+      const { stamp, queueTrace } = await within(20_000, 'WASM initialization or worker frame timed out.', () => page.evaluate(async checkWorker => {
         const { loadMelonDsRuntime } = await import('/src/core/emulator/melonds/runtime.ts')
         const module = await loadMelonDsRuntime()
         const emu = new module.WasmEmulator()
         try {
+          const stamp = `0x${emu.pokerunRuntimeVersion().toString(16)}`
+          if (checkWorker) {
+            const hooks = ['pokerunStartFrame', 'pokerunFramePending', 'pokerunSetRadioWaiting']
+            const missing = hooks.filter(hook => typeof emu[hook] !== 'function')
+            if (missing.length) {
+              throw new Error(`melonDS ${stamp} is missing worker radio hooks: ${missing.join(', ')}. Rebuild with POKERUN_NATIVE_WORKER_RADIO=1 npm run build:melonds.`)
+            }
+          }
           emu.prk66SetEnabled(true)
           emu.setGreetingTrace(true)
+          const now = () => performance.timeOrigin + performance.now()
+          const before = now()
           if (!emu.prk79InjectReply(new Uint8Array(), 123, 1, 42)) throw new Error('Synthetic reply was rejected.')
-          const before = performance.timeOrigin + performance.now()
-          const batch = emu.drainGreetingTrace()
-          const after = performance.timeOrigin + performance.now()
-          if (batch.values.length !== 7 || batch.values[0] !== 10 || batch.values[2] !== 123 ||
-              batch.values[4] !== 42 || batch.values[5] !== 1 || batch.dropped || batch.nativeNowMs < before - 1 || batch.nativeNowMs > after + 1) {
-            throw new Error('Unexpected native queue trace or clock domain.')
+          const beforeDrain = now()
+          const { values, nativeNowMs, dropped } = emu.drainGreetingTrace()
+          const afterDrain = now()
+          const evidence = JSON.stringify({
+            stamp, workerRequested: checkWorker, crossOriginIsolated, timeOrigin: performance.timeOrigin,
+            before, beforeDrain, afterDrain, nativeNowMs, dropped, values,
+          })
+          const expected = [10, null, 123, 0, 42, 1, 0]
+          if (values.length !== expected.length || expected.some((value, index) => value !== null && values[index] !== value) ||
+              dropped !== 0) {
+            throw new Error(`Unexpected native queue trace fields. Expected ${JSON.stringify(expected)} (null is the event timestamp) and zero dropped rows. Observed ${evidence}`)
+          }
+          const eventMs = values[1]
+          const inClockRange = (value, lower, upper) => Number.isFinite(value) && value >= lower - 1 && value <= upper + 1
+          if (!inClockRange(nativeNowMs, beforeDrain, afterDrain) ||
+              !inClockRange(eventMs, before, beforeDrain) || eventMs > nativeNowMs) {
+            throw new Error(`Native trace timestamps do not match the browser performance.timeOrigin + performance.now() clock within 1 ms. Observed ${evidence}`)
           }
           emu.setGreetingTrace(false)
           if (!emu.prk79InjectReply(new Uint8Array(), 124, 1, 43) || emu.drainGreetingTrace().values.length) {
@@ -235,7 +256,6 @@ try {
           }
           emu.prk66SetEnabled(false)
           if (checkWorker) {
-            if (!emu.pokerunStartFrame || !emu.pokerunFramePending) throw new Error('Worker frame hooks are missing.')
             let finish
             window.WebMelon = { _internal: { events: {
               onWorkerFrame: elapsed => finish(elapsed),
@@ -252,10 +272,11 @@ try {
               }
             }
           }
-          return emu.pokerunRuntimeVersion().toString(16)
+          return { stamp, queueTrace: JSON.parse(evidence) }
         } finally { emu.delete() }
       }, checkWorker))
-      console.log(`Chromium loaded melonDS runtime 0x${stamp} and verified the trace clock without a ROM.`)
+      console.log(`Chromium loaded melonDS runtime ${stamp} and verified the trace clock without a ROM.`)
+      console.log('Synthetic queue trace:', JSON.stringify(queueTrace))
       if (checkWorker) console.log('Two worker frames completed without a ROM.')
     }
   } else {
