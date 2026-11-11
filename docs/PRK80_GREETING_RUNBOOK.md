@@ -77,6 +77,24 @@ On Windows build the worker runtime in WSL and copy the generated JS/WASM pair i
 
 Open two tabs in the same browser profile. In each tab open **Multiplayer** and choose White 2. Create the room in the first tab and join with its code in the second. Continue a different verified save in each tab, ready both players, and start the game. Choose **Connect Local Wireless** on both tabs and enter the Union Room in the game. Use the in-game menus for the trade. Keep the saves in their own slots and allow the game save to finish before leaving.
 
+### Manual testing in GitHub Codespaces
+
+From the Codespace checkout with Node.js 24, dependencies installed, and Emscripten 3.1.74 activated, run:
+
+```bash
+git submodule update --init --recursive
+POKERUN_NATIVE_WORKER_RADIO=1 npm run build:melonds
+npx playwright install --with-deps chromium
+POKERUN_WORKER_RADIO=1 npm run test:native
+VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER=1 \
+__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS="${CODESPACE_NAME}-5173.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}" \
+npm run dev -- --host 0.0.0.0 --port 5173 --strictPort
+```
+
+The native check reports the runtime stamp, the synthetic queue row, and the browser time bounds. It checks all queue fields, the clock for both the enqueue and drain, and two completed worker frames without a ROM. It runs inside the Codespace and does not use the forwarded port.
+
+Open the private HTTPS forwarded port at `/` in two separate windows of the same Chromium profile. Keep both windows visible side by side at 1× to avoid browser background throttling. Both should show `[true, "function"]` for `[crossOriginIsolated, typeof SharedArrayBuffer]` in DevTools. Use **Multiplayer → White 2** and look for **Connect Local Wireless** in both sessions. The older `/multiplayer-dev.html` harness has separate worker opt-in controls. The normal lobby enables the worker before the emulator starts.
+
 The private normal-interface regression uses those same controls and checks both persisted parties.
 
 ```bash
