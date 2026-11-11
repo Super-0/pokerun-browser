@@ -6,6 +6,7 @@ import { White2LocalWirelessControls } from '../components/White2LocalWirelessCo
 import { white2LocalWirelessEnabled } from '../multiplayer/games/white2LocalWirelessFeature'
 import { White2MemoryResearchPanel } from '../components/White2MemoryResearchPanel'
 import { White2NativeWirelessResearchPanel } from '../components/White2NativeWirelessResearchPanel'
+import { ManualTradeDiagnostic } from '../multiplayer/debug/ManualTradeDiagnostic'
 import { PixelButton } from '../components/PixelButton'
 import { loadRomFile } from '../core/rom/RomLoader'
 import type { MelonDsBridge } from '../core/emulator/melonds/MelonDsBridge'
@@ -347,6 +348,7 @@ function MultiplayerGame({ roomGame, session, state, onHome, right }: { roomGame
       </section>
 
       {nativeOptions && <White2LocalWirelessControls bridge={bridge} options={nativeOptions}/>}
+      {import.meta.env.DEV && nativeRole && <ManualTradeDiagnostic bridge={bridge} playerRole={nativeRole}/>}
       {import.meta.env.DEV && <>
         <details className="multiplayer-session-debug pixel-border" style={{ padding: 12, marginBottom: 12 }}>
           <summary style={{ cursor: 'pointer', fontWeight: 700 }}>ADVANCED • SAVE BACKUP</summary>

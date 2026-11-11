@@ -7,6 +7,7 @@ import { white2LocalWirelessEnabled } from '../multiplayer/games/white2LocalWire
 import { TESTED_WHITE2_SHA256 } from '../multiplayer/games/White2LiveStateAdapter'
 import { White2RemoteTrainerRuntime } from '../multiplayer/games/White2RemoteTrainerRuntime'
 import { DevConsolePanel } from '../multiplayer/debug/DevConsolePanel'
+import { MANUAL_TRADE_INPUT_EVENT, MANUAL_TRADE_RUNTIME_ERROR_EVENT } from '../multiplayer/debug/manualTradeDiagnosticEvents'
 import type { GameDefinition, RunState } from '../types'
 
 type PlayerStatus = 'booting' | 'running' | 'error'
@@ -236,6 +237,9 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
       if (!button) return
       event.preventDefault()
       bridge.press(button, pressed)
+      window.dispatchEvent(new CustomEvent(MANUAL_TRADE_INPUT_EVENT, {
+        detail: { code: event.code, button, pressed, at: performance.now() },
+      }))
     }
     const keyDown = (event: KeyboardEvent) => onKey(event, true)
     const keyUp = (event: KeyboardEvent) => onKey(event, false)
@@ -267,6 +271,13 @@ export function MelonDsPlayer({ game, run, rom: suppliedRom, onBridgeReady, save
       } catch (error) {
         if (!cancelled) {
           console.error('melonDS failed to boot.', error)
+          window.dispatchEvent(new CustomEvent(MANUAL_TRADE_RUNTIME_ERROR_EVENT, {
+            detail: {
+              source: 'boot',
+              message: error instanceof Error ? error.message : String(error),
+              at: performance.now(),
+            },
+          }))
           setStatus('error')
           setStatusText(error instanceof Error ? error.message : 'melonDS failed to start.')
         }

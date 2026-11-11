@@ -77,6 +77,31 @@ On Windows build the worker runtime in WSL and copy the generated JS/WASM pair i
 
 Open two tabs in the same browser profile. In each tab open **Multiplayer** and choose White 2. Create the room in the first tab and join with its code in the second. Continue a different verified save in each tab, ready both players, and start the game. Choose **Connect Local Wireless** on both tabs and enter the Union Room in the game. Use the in-game menus for the trade. Keep the saves in their own slots and allow the game save to finish before leaving.
 
+### Manual trade-selection diagnostic
+
+For a manual run that reaches the trade-selection screen, use the normal
+multiplayer interface and open **MANUAL TRADE DIAGNOSTIC** in each player
+session. After Player 1 offers a Pokémon while Player 2 cannot select one,
+click **DOWNLOAD DIAGNOSTIC JSON** in both tabs. The JSON contains only
+timestamps, DS frame rates, page focus/visibility, input button events,
+runtime errors, firmware roles, worker status, and scalar native TX/RX,
+reply, poll, and ACK counters. It does not contain ROM bytes, save bytes, or
+radio packet payloads.
+
+Interpret the capture as follows:
+
+- Player 2 has no `input` events and is `UNFOCUSED`: the browser window/tab
+  focus is the failure boundary; focus Player 2 and repeat once.
+- Player 2 has input events but DS FPS stops: investigate emulator/frame
+  scheduling rather than radio delivery.
+- Both players continue at roughly 60 DS FPS, input events are present, and
+  native counters advance without corresponding reply/ACK progress: the
+  failure is at wireless/game synchronization.
+- `WORKER OFF`, a firmware role other than the displayed player, or a legacy
+  `/multiplayer-dev.html?player=...` path invalidates the normal-interface
+  comparison. Reopen both players from `/` with the local multiplayer feature
+  enabled.
+
 ### Manual testing in GitHub Codespaces
 
 From the Codespace checkout with Node.js 24, dependencies installed, and Emscripten 3.1.74 activated, run:

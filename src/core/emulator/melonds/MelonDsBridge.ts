@@ -84,6 +84,16 @@ export class MelonDsBridge implements EmulatorBridge {
   setSpeedMultiplier(multiplier: DsSpeedMultiplier) { this.speedMultiplier = multiplier }
   getSpeedMultiplier() { return this.speedMultiplier }
   getFrameStats(): MelonDsFrameStats { return { ...this.frameStats } }
+  getRuntimeDiagnostics() {
+    return {
+      status: this.status,
+      speedMultiplier: this.speedMultiplier,
+      workerRadio: this.workerRadio,
+      nativeLocalRadio: this.nativeLocalRadio,
+      firmwareRole: this.devWirelessFirmwareRole,
+      runtimeStamp: this.emulator?.pokerunRuntimeVersion?.() ?? null,
+    }
+  }
 
   /** PRK63: read-only counters from the native Wi-Fi callback boundary.
    * No raw packets or emulator memory are read, and no transport is enabled.

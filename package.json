@@ -20,6 +20,7 @@
     "test:native": "node scripts/test-white2-private.mjs runtime",
     "test:white2:prepare": "node scripts/test-white2-private.mjs prepare",
     "test:white2": "node scripts/test-white2-private.mjs greeting",
+    "test:white2:local-trade": "node scripts/test-white2-local-trade.mjs",
     "test:native:schedule": "node scripts/test-white2-private.mjs schedule",
     "test:white2:streak": "node scripts/test-white2-streak.mjs"
   },
