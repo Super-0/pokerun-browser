@@ -87,6 +87,22 @@ POKERUN_TRACE_GAME_NEGOTIATION=1 POKERUN_EXPECT_WHITE2=trade-confirmed npm run t
 
 Set `POKERUN_WHITE2_RECONNECT=1` to stop and rejoin local wireless before entering the Union Room. Set `POKERUN_WHITE2_INVITING_PLAYER=2` to reverse the in-game invitation, and `POKERUN_WHITE2_TRADES_PER_SESSION=2` to verify a second persisted exchange in the same session. The private driver supplies both invitation orientations and an `attemptAnotherTrade` callback for the second exchange.
 
+## Observe a native Single Battle turn
+
+Use the same worker runtime and saved Union Room checkpoints. The runner clones both checkpoint stores before opening the normal lobby. The manual scenario runs in headed Chromium and asks for observations in the terminal.
+
+```bash
+VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER=1 POKERUN_WHITE2_NORMAL_UI=1 \
+POKERUN_MANUAL=1 POKERUN_WORKER_RADIO=1 POKERUN_GREETING_TRACE=0 \
+POKERUN_EXPECT_WHITE2=battle-turn npm run test:white2
+```
+
+On PowerShell, set the same names with `$env:NAME = 'value'` and run `npm.cmd run test:white2`. Use trace-off for a slow manual attempt because the greeting trace has a finite event budget. DS frame health, hardware association counters and screen captures are still recorded.
+
+In the native Union Room, greet the peer and choose **Battle**, **Battles for two**, and **Single Battle**. Accept on the other console, dismiss both acknowledgments and walk onto the two Colosseum entry spots at (3, 5) and (9, 5). On each console choose a Pokémon, select **Enter**, and tap **Confirm**. Confirm the first terminal prompt only when both consoles show the initial **Fight** menu. Pick one move per console and wait for both to display the same resolved turn with corresponding HP changes before confirming the second prompt. The scenario has an eight-minute gameplay window after staging. The private driver can use the same evidence path by calling `captureBattle('before')` and `captureBattle('after')` in `attemptGreeting`.
+
+A pass requires both before-and-after DS screen pairs, native association, both consoles within 55–65 DS frames/s, and no uncaught browser errors. The terminal confirmations identify the game state in those captures. This scenario covers one resolved turn. The full match and post-battle recovery need their own observations.
+
 ## Repeat fresh-session trades
 
 The local streak command starts a new Chromium profile from the same disposable checkpoint for each attempt. It uses the private driver in unattended mode. The driver must throw when it cannot complete a step without intervention. It returns `exchangeSubmitted: true` only after both normal in-game confirmations. The runner verifies the resulting exchange from the saved batteries. The batch keeps a private result ledger and per-attempt logs. A failed attempt resets the streak. Two consecutive failures at the same stage end the batch so that stage can be diagnosed.

@@ -21,15 +21,16 @@ const tracing = mode === 'greeting' && process.env.POKERUN_GREETING_TRACE !== '0
 
 const unattended = process.env.POKERUN_WHITE2_UNATTENDED === '1'
 const expectedOutcome = process.env.POKERUN_EXPECT_WHITE2 ?? 'greeting-failure'
-if (mode === 'greeting') assert(['greeting-failure', 'trade-menu', 'trade-confirmed'].includes(expectedOutcome),
-  'POKERUN_EXPECT_WHITE2 must be greeting-failure, trade-menu, or trade-confirmed.')
+const battleTurn = expectedOutcome === 'battle-turn'
+if (mode === 'greeting') assert(['greeting-failure', 'trade-menu', 'trade-confirmed', 'battle-turn'].includes(expectedOutcome),
+  'POKERUN_EXPECT_WHITE2 must be greeting-failure, trade-menu, trade-confirmed, or battle-turn.')
 
 assert(!unattended || (mode === 'greeting' && !manual && expectedOutcome === 'trade-confirmed'),
   'Unattended mode requires the private trade driver and a trade-confirmed expectation.')
 
 const normalUi = process.env.POKERUN_WHITE2_NORMAL_UI === '1'
-assert(!normalUi || (unattended && process.env.VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER === '1'),
-  'The normal UI test requires unattended mode and the local wireless feature flag.')
+assert(!normalUi || ((unattended || battleTurn) && process.env.VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER === '1'),
+  'The normal UI test requires the local wireless feature flag and an unattended trade or observed battle.')
 const reconnect = process.env.POKERUN_WHITE2_RECONNECT === '1'
 const tradesPerSession = Number(process.env.POKERUN_WHITE2_TRADES_PER_SESSION ?? 1)
 const invitingPlayer = Number(process.env.POKERUN_WHITE2_INVITING_PLAYER ?? 1)
@@ -150,7 +151,16 @@ const manualDriver = {
     assert(await confirm('Enter both Union Rooms, verify the other trainer appears, and position the host to greet. Ready?'),
       'The paired Union Room setup was not confirmed.')
   },
-  async attemptGreeting() {
+  async attemptGreeting({ captureBattle }) {
+    if (battleTurn) {
+      const started = await confirm('Start a native Single Battle. Do both DS screens show the opposing Pokémon and the first Fight menu?')
+      if (!started) return null
+      await captureBattle('before')
+      const resolved = await confirm('Choose a move on each console. Did both screens show the same resolved turn and matching HP changes?')
+      if (!resolved) return null
+      await captureBattle('after')
+      return { association: true, battleStarted: true, battleTurnResolved: true }
+    }
     const reproduced = await confirm('Attempt one normal greeting. Did you observe native association, a greeting failure, and no Trade menu or confirmation on either player?')
     return reproduced ? { association: true, greetingFailed: true, tradeMenu: false, tradeConfirmed: false } : null
   },
@@ -339,9 +349,22 @@ try {
       await Promise.all(pages.map((page, i) => page.screenshot({ path: join(run, `p${i + 1}-before.png`), timeout: 5_000 })))
       await Promise.all(pages.map(page => page.getByRole('button', { name: before }).click()))
       let result
+      const battleScreens = new Map()
+      async function captureBattle(phase) {
+        assert(battleTurn && phase === (battleScreens.has('before') ? 'after' : 'before') &&
+          !battleScreens.has(phase), 'Capture the battle before and after one resolved turn.')
+        const screens = await Promise.all(pages.map(page =>
+          page.locator('canvas.melonds-screen').evaluateAll(elements =>
+            elements.map(canvas => canvas.toDataURL('image/png').split(',')[1]))))
+        assert(screens.every(pair => pair.length === 2 && pair.every(Boolean)), 'Expected both DS screens from each console.')
+        battleScreens.set(phase, screens)
+        await Promise.all(screens.flatMap((pair, player) => pair.map((png, screen) =>
+          writeFile(join(run, `p${player + 1}-battle-${phase}-${screen}.png`), Buffer.from(png, 'base64')))))
+      }
       try {
-        const attemptMs = expectedOutcome === 'trade-confirmed' ? 180_000 : 45_000
-        result = await within(attemptMs, 'The paired gameplay attempt timed out.', () => driver.attemptGreeting({ pages, invitingPlayer }))
+        const attemptMs = battleTurn ? 480_000 :
+          expectedOutcome === 'trade-confirmed' ? 180_000 : 45_000
+        result = await within(attemptMs, 'The paired gameplay attempt timed out.', () => driver.attemptGreeting({ pages, invitingPlayer, captureBattle }))
       } catch (error) {
         report.greetingCounters = await Promise.all(pages.map(captureAfter)).catch(() => undefined)
         throw error
@@ -369,6 +392,8 @@ try {
         greetingFailed: result?.greetingFailed === true,
         tradeMenu: result?.tradeMenu === true,
         tradeConfirmed,
+        battleStarted: result?.battleStarted === true,
+        battleTurnResolved: result?.battleTurnResolved === true,
       }
       report.greetingCounters = await Promise.all(pages.map(captureAfter))
       report.associationFramesReceived = [...report.baselineCounters, ...(report.stagingCounters ?? []), ...(report.readyCounters ?? []), ...report.greetingCounters]
@@ -378,16 +403,23 @@ try {
       assert(report.pageErrors.every(count => count === 0), 'An uncaught browser error occurred during the run.')
       const { association, greetingFailed, tradeMenu } = report.observation
       assert(association && report.associationFramesReceived > 0, 'Native association was not verified.')
-      if (tradeConfirmed && tradeMenu && !greetingFailed) report.outcome = 'trade-confirmed'
+      if (report.observation.battleStarted && report.observation.battleTurnResolved &&
+          !tradeMenu && !tradeConfirmed && !greetingFailed) {
+        const beforeScreens = battleScreens.get('before')
+        const afterScreens = battleScreens.get('after')
+        assert(beforeScreens && afterScreens && beforeScreens.every((pair, player) => pair[0] !== afterScreens[player][0]),
+          'A battle result requires changed top screens from both consoles after the observed turn.')
+        report.outcome = 'battle-turn'
+      } else if (tradeConfirmed && tradeMenu && !greetingFailed) report.outcome = 'trade-confirmed'
       else if (tradeMenu && !greetingFailed) report.outcome = 'trade-menu'
       else if (greetingFailed && !tradeMenu && !tradeConfirmed) report.outcome = 'greeting-failure'
       else report.outcome = 'other'
       assert.equal(report.outcome, expectedOutcome, 'Unexpected game-level outcome.')
-      if (unattended) {
+      if (unattended || battleTurn) {
         assert(report.greetingCounters.every(sample => {
           const fps = sample.emulatedFrames * 1000 / sample.elapsedMs
           return fps >= 55 && fps <= 65
-        }), 'DS frame health fell outside 55–65 frames/s during the trade.')
+        }), 'DS frame health fell outside 55–65 frames/s during gameplay.')
       }
       report.stage = 'complete'
       console.log(`Verified White 2 outcome: ${report.outcome}.`)
