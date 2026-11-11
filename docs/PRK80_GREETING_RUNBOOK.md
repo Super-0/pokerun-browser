@@ -113,6 +113,8 @@ npm run test:white2:streak -- 10 16
 
 On Windows use `npm.cmd run test:white2:streak -- 10 16` with the worker JS/WASM installed. The two numbers are the required consecutive successes and the overall attempt limit. Keep the original checkpoint closed while the batch runs.
 
+If both consoles remain on **Hello!**, check for the completed dialogue and its advance marker. A button press while text is still drawing can leave the prompt open. Retry the host input only while that greeting remains visible, and bound the retries before capturing the failure.
+
 A pass requires the normal in-game confirmations, a reciprocal exchange in both disposable IndexedDB batteries, 55–65 DS frames/s on both consoles, and two complete timing traces. The verifier checks the save footer and CRC table, the referenced party block CRC, and each party member’s checksum. It compares species and levels as a multiset so party reordering does not cause a failure. Rebooting the ROM to verify the new parties in-game is a separate scenario. [White 2 save block directory](https://github.com/kwsch/PKHeX/blob/master/PKHeX.Core/Saves/Access/SaveBlockAccessor5B2W2.cs) · [Game save copy selection](https://github.com/fuddlesworth/pokebw2/blob/588c0b937229f5c5cb7abad9bf8070dd2c7d97eb/src/gfl/backup_system.c)
 
 ## Reproduce the ordering without a ROM

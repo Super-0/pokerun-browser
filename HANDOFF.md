@@ -73,11 +73,15 @@ The first normal-interface run passed with `POKERUN_WHITE2_NORMAL_UI=1`. It used
 
 A follow-up normal-interface session disconnected both local radios and reconnected them before entering the Union Room. Player 2 then sent the invitation and both consoles completed two trades in the same session. Both persisted parties and both save checksums passed after each exchange. The paired traces were complete and gameplay stayed at 59.99/59.95 DS frames/s. The run is under `local-test-assets/white2-run-k1Z5Sm/`.
 
+The replay after adding battle capture first stopped on the visible Hello prompt on both consoles, before an invitation. The private driver now retries a missed host input only while that prompt remains visible. The next fresh normal-interface trade verified both persisted batteries, no browser errors, complete traces, and 59.99/60.00 DS frames/s. The private run is `local-test-assets/white2-run-9JdmhC/`.
+
 ## Native Union Room battle
 
-Two fresh normal-interface sessions accepted a real Single Battle, reached the Colosseum, and resolved a turn on both consoles. The first produced paired HP screenshots but exceeded the runner's five-minute window. Its browser event buffers also reached capacity, so those traces are incomplete.
+The first two fresh normal-interface battle sessions accepted a real Single Battle, reached the Colosseum, and resolved a turn on both consoles. The first produced paired HP screenshots but exceeded the runner's five-minute window. Its browser event buffers also reached capacity, so those traces are incomplete.
 
-The bounded retry captured both DS screen pairs at the initial Fight menu and after Cut and Earthquake had resolved. The player and opponent HP bars agreed across consoles. It exited zero as `battle-turn` with complete paired traces, no browser errors and 60.00 DS frames/s on each console. The runner used fresh copies of the checkpoints. Its private evidence is in `local-test-assets/white2-run-yYw1bB/`. See the [battle procedure](docs/PRK80_GREETING_RUNBOOK.md#observe-a-native-single-battle-turn) for a repeat. A full match and post-battle return to the overworld remain to be verified.
+The bounded retry captured both DS screen pairs at the initial Fight menu and after Cut and Earthquake had resolved. The player and opponent HP bars agreed across consoles. It exited zero as `battle-turn` with complete paired traces, no browser errors and 60.00 DS frames/s on each console. The host matched all 16,309 replies in the paired trace, and the guest recorded zero SDK ACK errors before ring arrival. The runner used fresh copies of the checkpoints. Its private evidence is in `local-test-assets/white2-run-yYw1bB/`. See the [battle procedure](docs/PRK80_GREETING_RUNBOOK.md#observe-a-native-single-battle-turn) for a repeat.
+
+A third fresh session completed the match in two turns. Both DS screens showed the same knockout and complementary loss and victory messages. After declining the Battle Video, both games returned to the Colosseum and went back into team selection for a rematch. The private runner still reported a timeout while the session stayed open to test leaving the Colosseum. Its paired result screenshots are under `local-test-assets/white2-run-VeswLe/`. Exiting the Colosseum back to the Union Room or overworld remains to be verified.
 
 ## Verification for this worktree
 
