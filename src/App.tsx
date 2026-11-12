@@ -9,6 +9,7 @@ import { MyRunsScreen } from './screens/MyRunsScreen'
 import { MultiplayerScreen } from './screens/MultiplayerScreen'
 import { NewRunScreen } from './screens/NewRunScreen'
 import { SettingsScreen } from './screens/SettingsScreen'
+import { SaveEditorScreen } from './screens/SaveEditorScreen'
 import { createRun, loadRuns, saveRuns } from './store/runStore'
 import type { GameDefinition, RunSettings, RunState } from './types'
 
@@ -19,12 +20,14 @@ export default function App() {
   const [showMyRuns, setShowMyRuns] = useState(false)
   const [showGameLibrary, setShowGameLibrary] = useState(false)
   const [showMultiplayer, setShowMultiplayer] = useState(false)
+  const [showSaveEditor, setShowSaveEditor] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const activeRun = useMemo(() => runs.find(run => run.id === activeRunId) ?? null, [runs, activeRunId])
 
   useEffect(() => saveRuns(runs), [runs])
 
   function chooseGame(game: GameDefinition) {
+    setShowSaveEditor(false)
     setShowGameLibrary(false)
     setShowSettings(false)
     setShowMyRuns(false)
@@ -34,6 +37,7 @@ export default function App() {
   }
 
   function openRun(run: RunState) {
+    setShowSaveEditor(false)
     setShowGameLibrary(false)
     setShowSettings(false)
     setShowMyRuns(false)
@@ -43,6 +47,7 @@ export default function App() {
   }
 
   function goHome() {
+    setShowSaveEditor(false)
     setShowGameLibrary(false)
     setShowSettings(false)
     setShowMyRuns(false)
@@ -52,6 +57,7 @@ export default function App() {
   }
 
   function openMyRuns() {
+    setShowSaveEditor(false)
     setShowGameLibrary(false)
     setShowSettings(false)
     setSelectedGame(null)
@@ -61,6 +67,7 @@ export default function App() {
   }
 
   function openMultiplayer() {
+    setShowSaveEditor(false)
     setShowGameLibrary(false)
     setShowSettings(false)
     setShowMyRuns(false)
@@ -70,12 +77,23 @@ export default function App() {
   }
 
   function openGameLibrary() {
+    setShowSaveEditor(false)
     setShowSettings(false)
     setShowMyRuns(false)
     setShowMultiplayer(false)
     setSelectedGame(null)
     setActiveRunId(null)
     setShowGameLibrary(true)
+  }
+
+  function openSaveEditor() {
+    setShowGameLibrary(false)
+    setShowSettings(false)
+    setShowMyRuns(false)
+    setShowMultiplayer(false)
+    setSelectedGame(null)
+    setActiveRunId(null)
+    setShowSaveEditor(true)
   }
 
   function openSettings() {
@@ -113,6 +131,10 @@ export default function App() {
     return <MultiplayerScreen onHome={goHome} onMyRuns={openMyRuns} onSettings={openSettings} />
   }
 
+  if (showSaveEditor) {
+    return <SaveEditorScreen onHome={goHome} onSettings={openSettings} />
+  }
+
   if (showGameLibrary) {
     return <GameLibraryScreen
       runs={runs}
@@ -127,6 +149,7 @@ export default function App() {
       runs={runs}
       onNewRun={openGameLibrary}
       onOpenRun={openRun}
+      onSaveEditor={openSaveEditor}
       onMultiplayer={openMultiplayer}
       onMyRuns={openMyRuns}
       onSettings={openSettings}

@@ -38,6 +38,16 @@ Then open the localhost URL Vite prints.
 5. Active Run opens with mGBA for GB/GBC/GBA games and the experimental melonDS bridge for `.nds` games.
 6. Open **DEV GAME STATE SIMULATOR** at the bottom to simulate route changes, encounters, damage, deaths, and badges.
 
+## Save Editor (experimental)
+
+The **SAVE EDITOR** link on Home is immediately before **MULTIPLAYER**. Import an exported battery-save file (not a ROM or emulator save state). PokéRun inspects the file bytes locally and automatically selects a supported save layout. Filenames do **not** determine the game type.
+
+- **Editable now:** 128 KiB Generation III Pokémon Ruby/Sapphire, Emerald, and FireRed/LeafGreen saves with valid sector signatures/checksums. Editing currently supports money only, including the variant-specific XOR security keys. Identical-layout pairs cannot be differentiated reliably from the save alone and are labeled as pairs.
+- **Read-only:** Other or ambiguous formats (including common GB/GBC- and DS-sized saves), corrupted Gen III sectors, and DeSmuME saves. File-size recognition is only a hint, **not** proof of which game created a save. PokéRun does not guess or write unsupported formats.
+- **Safety:** The source bytes remain untouched, an explicit backup can be downloaded, and edited exports are validated before download. Neither local PokéRun runs nor multiplayer battery-save storage are changed. To use an export, import it separately into your emulator.
+
+This is a deliberately limited, safe first version. Generation I/II, Generation IV/V, full Pokémon editing, and direct-in-app save replacement require game-specific parsers and tests.
+
 ## Core architecture
 
 The UI does not know emulator memory addresses or ROM structures. The intended pipeline is:
