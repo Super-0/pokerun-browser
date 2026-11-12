@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
+import { BagEditor } from './save-editor/BagEditor'
+import { PokemonDetailPanel } from './save-editor/PokemonDetailPanel'
+import { TrainerProgressPanel } from './save-editor/TrainerProgressPanel'
 import type { PokemonSummary } from '@pkhex-everywhere/engine'
 import { AppHeader } from '../components/AppHeader'
 import { PixelButton } from '../components/PixelButton'
 import {
-  closeEditorSave, editPokemon, editTrainer, exportEditorSave,
+  closeEditorSave, editTrainer, exportEditorSave, setTrainerBattlePoints,
   loadEditorSave, type EditorSnapshot,
 } from '../core/save-editor/pkhexEditor'
 import '../styles/save-editor.css'
@@ -12,7 +15,7 @@ interface Props {
   onHome: () => void
   onSettings: () => void
 }
-type EditorTab = 'trainer' | 'party' | 'boxes'
+type EditorTab = 'trainer' | 'party' | 'boxes' | 'bag'
 
 function editedName(name: string) {
   return name.replace(/(\.[^.]+)?$/, '-edited$1')
@@ -52,10 +55,9 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
   const [tab, setTab] = useState<EditorTab>('trainer')
   const [boxIndex, setBoxIndex] = useState(0)
   const [selected, setSelected] = useState<PokemonSummary | null>(null)
-  const [nickname, setNickname] = useState('')
-  const [level, setLevel] = useState('')
   const [trainerName, setTrainerName] = useState('')
   const [money, setMoney] = useState('')
+  const [battlePoints, setBattlePoints] = useState('')
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -86,6 +88,7 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
       setBoxIndex(loaded.boxes[0]?.box ?? 0)
       setTrainerName(loaded.trainer.name)
       setMoney(loaded.trainer.money === null ? '' : String(loaded.trainer.money))
+      setBattlePoints(loaded.trainer.battlePoints === null ? '' : String(loaded.trainer.battlePoints))
     } catch (reason) {
       setError(failureMessage(reason))
     } finally {
@@ -119,17 +122,18 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
     }
   }
 
-  async function applyPokemon() {
-    if (!selected || !snapshot || busy) return
+  async function applyBattlePoints() {
+    if (!snapshot || snapshot.trainer.battlePoints === null || busy) return
     setBusy(true)
     setError('')
     setMessage('')
     try {
-      const next = await editPokemon(selected.at, { nickname, level: Number(level) })
+      if (battlePoints.trim() === '') throw new Error('Enter a Battle Points value.')
+      const next = await setTrainerBattlePoints(Number(battlePoints))
       setSnapshot(next)
-      setSelected(null)
+      setBattlePoints(next.trainer.battlePoints === null ? '' : String(next.trainer.battlePoints))
       setDirty(true)
-      setMessage('Pokémon changes applied to the in-memory copy. Export to save them.')
+      setMessage('Battle Points updated in memory. Export to keep them.')
     } catch (reason) {
       setError(failureMessage(reason))
     } finally {
@@ -156,8 +160,6 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
 
   function selectPokemon(pokemon: PokemonSummary) {
     setSelected(pokemon)
-    setNickname(pokemon.nickname)
-    setLevel(String(pokemon.level))
     setMessage('')
     setError('')
   }
@@ -207,12 +209,20 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
               onClick={() => originalBytes && originalFile && download(originalBytes, backupName(originalFile.name))}>
               DOWNLOAD BACKUP
             </PixelButton>
+            <PixelButton tone="ghost" disabled={!originalFile || !dirty || busy} onClick={() => {
+              if (originalFile && window.confirm('Discard all changes since this save was imported?')) {
+                void load(originalFile)
+              }
+            }}>DISCARD EDITS</PixelButton>
             <PixelButton disabled={!snapshot || !dirty || busy} onClick={() => void exportEdited()}>
               EXPORT EDITED SAVE
             </PixelButton>
           </div>
         </section>
 
+        {snapshot && <div className="save-editor-edit-status" role="status">
+          {dirty ? 'UNEXPORTED CHANGES — DOWNLOAD THE EDITED SAVE TO KEEP THEM' : 'NO UNEXPORTED CHANGES'}
+        </div>}
         {error && <p className="save-editor-error pixel-border" role="alert">{error}</p>}
         {message && <p className="save-editor-success pixel-border" role="status">{message}</p>}
 
@@ -229,7 +239,7 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
         ) : (
           <>
             <nav className="save-editor-tabs pixel-border" aria-label="Save editor sections">
-              {(['trainer', 'party', 'boxes'] as const).map(option => (
+              {(['trainer', 'party', 'boxes', 'bag'] as const).map(option => (
                 <button key={option} type="button"
                   className={tab === option ? 'selected' : ''}
                   onClick={() => { setTab(option); setSelected(null); setMessage('') }}
@@ -263,7 +273,25 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
                 <PixelButton disabled={busy || (trainerName === snapshot.trainer.name &&
                   money === (snapshot.trainer.money === null ? '' : String(snapshot.trainer.money)))}
                   onClick={() => void applyTrainer()}>APPLY TRAINER CHANGES</PixelButton>
+                {snapshot.trainer.battlePoints !== null && (
+                  <div className="save-editor-bp-field">
+                    <label className="save-editor-field" htmlFor="trainer-bp">
+                      <strong>BATTLE POINTS</strong>
+                      <input id="trainer-bp" type="number" value={battlePoints} min="0" max="65535" step="1"
+                        disabled={busy} onChange={event => setBattlePoints(event.target.value)} />
+                    </label>
+                    <PixelButton disabled={busy || battlePoints === String(snapshot.trainer.battlePoints)}
+                      onClick={() => void applyBattlePoints()}>APPLY BATTLE POINTS</PixelButton>
+                  </div>
+                )}
               </section>
+            )}
+
+            {tab === 'trainer' && (
+              <TrainerProgressPanel onChanged={() => {
+                setDirty(true)
+                setMessage('Badges updated in memory. Export to keep your changes.')
+              }} />
             )}
 
             {tab === 'party' && (
@@ -313,26 +341,28 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
               </section>
             )}
 
+            {tab === 'bag' && (
+              <BagEditor onChanged={() => {
+                setDirty(true)
+                setError('')
+                setMessage('Inventory updated in memory. Export to keep the changes.')
+              }} />
+            )}
+
             {selected && (tab === 'party' || tab === 'boxes') && (
-              <section className="save-editor-panel save-editor-selected pixel-border">
-                <span className="eyebrow">{selected.species.toUpperCase()} • {selected.isEgg ? 'EGG' : 'POKÉMON'}</span>
-                {selected.editable && !selected.isUnknown ? (
-                  <div className="save-editor-fields">
-                    <label className="save-editor-field" htmlFor="pokemon-nickname">
-                      <strong>NICKNAME</strong>
-                      <input id="pokemon-nickname" maxLength={10} value={nickname} disabled={busy}
-                        onChange={event => setNickname(event.target.value)}/>
-                    </label>
-                    <label className="save-editor-field" htmlFor="pokemon-level">
-                      <strong>LEVEL</strong>
-                      <input id="pokemon-level" type="number" min="1" max="100" step="1" value={level}
-                        disabled={busy} onChange={event => setLevel(event.target.value)}/>
-                    </label>
-                    <PixelButton disabled={busy || (nickname === selected.nickname && level === String(selected.level))}
-                      onClick={() => void applyPokemon()}>APPLY POKÉMON CHANGES</PixelButton>
-                  </div>
-                ) : <p>This Pokémon's data cannot safely be edited.</p>}
-              </section>
+              <PokemonDetailPanel
+                key={JSON.stringify(selected.at)}
+                pokemon={selected}
+                generation={snapshot.save.generation}
+                onSaved={next => {
+                  setSnapshot(next)
+                  setSelected(null)
+                  setDirty(true)
+                  setError('')
+                  setMessage('Pokémon updated in memory. Export to keep the changes.')
+                }}
+                onClose={() => setSelected(null)}
+              />
             )}
           </>
         )}

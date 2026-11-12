@@ -5,7 +5,7 @@
  * Dependency: @pkhex-everywhere/engine, GPL-3.0-or-later. See docs/SAVE_EDITOR.md.
  */
 import { createEngine, draftHandle } from '@pkhex-everywhere/engine'
-import type { BoxEntry, PokemonHandle, PokemonSummary, SaveSummary, TrainerCard } from '@pkhex-everywhere/engine'
+import type { Badge, BoxEntry, Choice, EditablePokemon, GameProgress, PokemonHandle, PokemonOptions, PokemonPatch, PokemonSummary, Pouch, SaveSummary, TrainerCard } from '@pkhex-everywhere/engine'
 
 let engine: ReturnType<typeof createEngine> | null = null
 
@@ -98,6 +98,136 @@ export async function editPokemon(
     level: changes.level,
   })
   await current.pokemon.commit()
+  return readEditorSnapshot()
+}
+
+
+export interface PokemonEditorDetails {
+  details: EditablePokemon
+  options: PokemonOptions
+  natures: Choice[]
+}
+
+export async function readPokemonEditorDetails(handle: PokemonHandle, generation: number): Promise<PokemonEditorDetails> {
+  const current = client()
+  const [details, options, natures] = await Promise.all([
+    current.pokemon.details(handle),
+    current.pokemon.options(handle),
+    generation >= 3 ? current.game.natures() : Promise.resolve([] as Choice[]),
+  ])
+  return { details, options, natures }
+}
+
+/**
+ * Limit writable fields to the ones this UI exposes. PKHeX checks the
+ * per-game allowed values; this additional gate catches malformed UI input
+ * before opening the draft.
+ */
+export async function applyPokemonPatch(handle: PokemonHandle, patch: PokemonPatch): Promise<EditorSnapshot> {
+  const current = client()
+  const editable = await current.pokemon.details(handle)
+  const options = await current.pokemon.options(handle)
+  if (!editable.editable || editable.isUnknown) throw new Error('This Pokémon cannot be edited.')
+  const locked = new Set<string>(options.locked)
+  const keys = Object.keys(patch)
+  const permitted = new Set(['nickname', 'level', 'nature', 'ability', 'heldItem', 'moves', 'ivs', 'evs', 'friendship'])
+  if (!keys.length || keys.some(key => !permitted.has(key) || locked.has(key))) {
+    throw new Error('This game does not permit one of the requested Pokémon changes.')
+  }
+  if (patch.level != null && (!Number.isSafeInteger(patch.level) || patch.level < 1 || patch.level > 100)) {
+    throw new Error('Level must be from 1 to 100.')
+  }
+  if (patch.friendship != null && (!Number.isSafeInteger(patch.friendship) || patch.friendship < 0 || patch.friendship > 255)) {
+    throw new Error('Friendship must be from 0 to 255.')
+  }
+  if (patch.nickname !== undefined && patch.nickname !== null && patch.nickname.length > 10) {
+    throw new Error('Nickname cannot exceed 10 characters.')
+  }
+  const allowedChoices: Array<[string, number | null | undefined, number[]]> = [
+    ['ability', patch.ability, options.abilities.map(choice => choice.id)],
+    ['heldItem', patch.heldItem, options.heldItems.map(choice => choice.id)],
+  ]
+  // Gen I–II have no natures; don't query that catalog unless it is edited.
+  if (patch.nature !== undefined && patch.nature !== null) {
+    allowedChoices.push(['nature', patch.nature, (await current.game.natures()).map(choice => choice.id)])
+  }
+  for (const [field, value, ids] of allowedChoices) {
+    if (value !== undefined && value !== null && !ids.includes(value)) {
+      throw new Error('Invalid ' + field + ' for this game.')
+    }
+  }
+  if (patch.moves && (patch.moves.length !== 4 || patch.moves.some(id =>
+    !Number.isSafeInteger(id) || (id !== 0 && !options.moves.some(move => move.id === id))
+  ))) throw new Error('Selected moves are not available for this Pokémon.')
+  const validateStats = (stats: PokemonPatch['ivs'] | PokemonPatch['evs'], max: number, label: string) => {
+    if (!stats) return
+    for (const value of Object.values(stats)) {
+      if (value == null) continue
+      if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+        throw new Error(label + ' must be whole numbers from 0 to ' + max + '.')
+      }
+    }
+  }
+  const generation = (await current.game.get())?.generation ?? 3
+  validateStats(patch.ivs, generation <= 2 ? 15 : 31, 'IVs')
+  validateStats(patch.evs, generation <= 2 ? 65535 : 255, 'EVs')
+  await current.pokemon.edit(handle)
+  await current.pokemon.update(draftHandle, patch)
+  await current.pokemon.commit()
+  return readEditorSnapshot()
+}
+
+export async function readSaveProgress(): Promise<GameProgress> {
+  return client().game.progress()
+}
+
+export async function readTrainerBadges(): Promise<Badge[] | null> {
+  return client().trainer.badges()
+}
+
+export async function setTrainerBadges(earned: boolean[]): Promise<Badge[]> {
+  const current = client()
+  const existing = await current.trainer.badges()
+  if (!existing || existing.length !== earned.length) {
+    throw new Error('Badge editing is not available for this save.')
+  }
+  if (!earned.every(value => typeof value === 'boolean')) {
+    throw new Error('Invalid badge selection.')
+  }
+  await current.trainer.setBadges(earned)
+  const after = await current.trainer.badges()
+  if (!after || after.length !== earned.length || after.some((badge, i) => badge.earned !== earned[i])) {
+    throw new Error('Badge changes could not be verified.')
+  }
+  return after
+}
+
+export async function readSaveBag(): Promise<Pouch[]> {
+  return client().inventory.get()
+}
+
+export async function setSaveBagItem(pouchName: string, itemId: number, count: number): Promise<Pouch[]> {
+  const current = client()
+  const bag = await current.inventory.get()
+  const pouch = bag.find(item => item.name === pouchName)
+  const entry = pouch?.items.find(item => item.id === itemId) ??
+    pouch?.addable.find(item => item.id === itemId)
+  if (!entry) throw new Error('This item is not available in the selected pouch.')
+  if (!Number.isSafeInteger(count) || count < 0 || count > entry.maxCount) {
+    throw new Error('Quantity must be between 0 and ' + entry.maxCount + '.')
+  }
+  await current.inventory.setItem({ pouch: pouchName, itemId }, count)
+  return current.inventory.get()
+}
+
+export async function setTrainerBattlePoints(points: number): Promise<EditorSnapshot> {
+  const current = client()
+  const before = await current.trainer.get()
+  if (before.battlePoints === null) throw new Error('This game does not store Battle Points.')
+  if (!Number.isSafeInteger(points) || points < 0 || points > 65535) {
+    throw new Error('Battle Points must be between 0 and 65535.')
+  }
+  await current.trainer.setBattlePoints(points)
   return readEditorSnapshot()
 }
 

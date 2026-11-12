@@ -297,3 +297,63 @@ p.save-editor-error, p.save-editor-success {
   .save-editor-top { flex-direction: column; align-items: stretch; }
   .save-editor-box-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
+
+
+/* Detailed single-player tools; uses the established square pixel panels. */
+.save-editor-selected h2 { margin: 10px 0 4px; }
+.save-editor-selected h2 small { font-family: 'IBM Plex Mono', monospace; font-size: 11px; }
+.save-detail-heading { display: flex; align-items: start; justify-content: space-between; gap: 16px; }
+.save-editor-detail-stats { display: flex; flex-wrap: wrap; gap: 8px; margin: 15px 0; }
+.save-editor-detail-stats > span { padding: 6px 9px; border: 2px solid var(--ink); background: var(--panel-blue); font-size: 10px; font-weight: 700; }
+.save-detail-group { padding: 20px 0; border-top: 2px dashed #91a8b9; }
+.save-detail-group h3 { margin: 0 0 12px; font-size: 16px; }
+.save-detail-group .save-editor-fields { align-items: end; }
+.save-detail-group .save-editor-field { flex: 1 1 150px; min-width: 130px; font-family: 'Silkscreen', sans-serif; font-size: 11px; }
+.save-editor-field select { width: min(100%, 315px); min-height: 44px; padding: 8px 10px; border: 3px solid var(--ink); border-radius: 0; background: var(--panel-blue); color: var(--ink); font-family: 'IBM Plex Mono', monospace; font-size: 12px; }
+.save-editor-field input[type="search"] { font-size: 12px; }
+.save-editor-move-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px 15px; }
+.save-editor-move-grid .save-editor-field select { width: 100%; }
+.save-editor-help { margin: 10px 0 18px; font-size: 10px; line-height: 1.6; color: #4e6b86; }
+.save-editor-stat-table { display: grid; grid-template-columns: 100px repeat(2, minmax(0, 160px)); align-items: center; gap: 10px; }
+.save-editor-stat-table > span { font-family: 'Silkscreen', sans-serif; font-size: 11px; }
+.save-editor-stat-row { display: contents; }
+.save-editor-stat-row strong { font-family: 'Silkscreen', sans-serif; font-size: 11px; }
+.save-editor-stat-row input { width: 100%; min-width: 0; border: 3px solid var(--ink); border-radius: 0; background: var(--panel-blue); padding: 8px; }
+.save-editor-legality { padding: 12px; margin: 12px 0; border: 2px solid #b27855; background: #fff4e8; font-size: 11px; }
+.save-editor-legality summary { font-family: 'Silkscreen', sans-serif; cursor: pointer; }
+.save-editor-legality p { line-height: 1.5; }
+.save-editor-bp-field { display: flex; align-items: flex-end; gap: 14px; margin-top: 10px; border-top: 2px dashed #91a8b9; padding-top: 12px; }
+.save-editor-bp-field .save-editor-field { margin-bottom: 0; }
+.save-editor-bp-field .pixel-button { margin-bottom: 0; }
+.save-editor-inventory-layout { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); gap: 25px; margin-top: 14px; }
+.save-editor-inventory-layout .save-editor-field { font-size: 11px; font-family: 'Silkscreen', sans-serif; margin: 0 0 12px; }
+.save-editor-inventory-layout .save-editor-field select, .save-editor-inventory-layout .save-editor-field input { width: 100%; }
+.save-editor-inventory-list { max-height: 420px; overflow-y: auto; border: 3px solid var(--ink); background: #fff; }
+.save-editor-inventory-list button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 0; border-bottom: 2px dashed #91a8b9; background: #f8fcf7; text-align: left; cursor: pointer; }
+.save-editor-inventory-list button:hover, .save-editor-inventory-list button.active { background: var(--panel-blue); }
+.save-editor-inventory-list button span { font-size: 11px; }
+.save-editor-inventory-list button small { font-family: 'Silkscreen', sans-serif; flex-shrink: 0; }
+.save-editor-inventory-list p { margin: 12px; font-size: 11px; }
+.save-editor-inventory-detail { padding: 20px; border: 3px solid var(--ink); background: var(--panel-blue); align-self: start; }
+.save-editor-inventory-detail h3 { margin: 10px 0; font-size: 17px; overflow-wrap: anywhere; }
+.save-editor-inventory-detail p { font-size: 11px; line-height: 1.6; }
+.save-editor-inventory-detail .save-editor-field { margin: 12px 0; }
+@media (max-width: 1050px) {
+  .save-editor-inventory-layout { grid-template-columns: 1fr; }
+  .save-editor-move-grid { grid-template-columns: 1fr; }
+}
+
+
+.save-editor-progress { margin-top: 14px; }
+.save-editor-progress-summary { display: flex; flex-wrap: wrap; gap: 10px; margin: 15px 0; }
+.save-editor-progress-summary > div { display: flex; flex-direction: column; gap: 6px; min-width: 130px; border: 3px solid var(--ink); padding: 10px 12px; background: var(--panel-blue); }
+.save-editor-progress-summary span { font-family: 'Silkscreen', sans-serif; font-size: 10px; }
+.save-editor-progress-summary strong { font-size: 13px; }
+.save-editor-progress h3 { font-size: 15px; margin: 18px 0 12px; }
+.save-editor-badges { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 9px; margin-bottom: 15px; }
+.save-editor-badges label { display: flex; align-items: center; gap: 8px; padding: 10px; background: var(--panel-blue); border: 3px solid var(--ink); font-family: 'Silkscreen', sans-serif; font-size: 10px; cursor: pointer; }
+.save-editor-badges label.earned { background: #d7ecbb; }
+.save-editor-badges input { width: 16px; height: 16px; flex: 0 0 16px; accent-color: #477a41; }
+@media(max-width: 1100px) { .save-editor-badges { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+
+.save-editor-edit-status { margin-top: 12px; padding: 7px 12px; font-family: 'Silkscreen', sans-serif; font-size: 10px; background: rgba(248,252,247,.95); border: 2px solid var(--ink); }
