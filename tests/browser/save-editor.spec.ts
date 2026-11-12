@@ -196,3 +196,84 @@ test('Discard Edits restores original save without exporting @integration', asyn
   await expect(page.locator('#trainer-money')).toHaveValue(originalMoney)
   await expect(page.getByRole('button', { name: 'EXPORT EDITED SAVE' })).toBeDisabled()
 })
+
+
+test('advanced PC tools are exposed for a recognized save @integration', async ({ page }) => {
+  test.setTimeout(90000)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'SAVE EDITOR' }).click()
+  await page.evaluate(async () => {
+    const { createBlankBlackSave } = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    const bytes = await createBlankBlackSave()
+    const input = document.querySelector<HTMLInputElement>('input[type=file]')!
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([new Uint8Array(bytes)], 'Black.sav', { type: 'application/octet-stream' }))
+    input.files = transfer.files
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await expect(page.getByText('GEN 5', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'BOXES', exact: true }).click()
+  await expect(page.getByText('PC BOX TOOLS')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'CLONE TO PC' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'EXPORT .PK FILE' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'CHOOSE POKÉMON FILE', exact: true })).toBeVisible()
+  await expect(page.getByText('CREATE FROM AN ENCOUNTER')).toBeVisible()
+  await expect(page.getByPlaceholder('Search species or nickname across every PC box...')).toBeVisible()
+})
+
+test('Gen V encounter creation, PC cloning and Pokémon-file export survive reload @integration', async ({ page }) => {
+  test.setTimeout(120000)
+  await page.goto('/')
+  const result = await page.evaluate(async () => {
+    const { verifyBlackBoxToolsRoundTrip } = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    return verifyBlackBoxToolsRoundTrip()
+  })
+  expect(result.individualBytes).toBeGreaterThan(0)
+  expect(result.distinctSlots).toBe(true)
+  expect(result.beforeCount).toBe(2)
+  expect(result.afterCount).toBe(2)
+})
+
+
+test('Gen V Wonder Cards tab is available for an imported Black save @integration', async ({ page }) => {
+  test.setTimeout(90000)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'SAVE EDITOR' }).click()
+  await page.evaluate(async () => {
+    const { createBlankBlackSave } = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    const bytes = await createBlankBlackSave()
+    const input = document.querySelector<HTMLInputElement>('input[type=file]')!
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([new Uint8Array(bytes)], 'Black.sav', { type: 'application/octet-stream' }))
+    input.files = transfer.files
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await expect(page.getByText('GEN 5', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'GIFTS', exact: true }).click()
+  await expect(page.getByText('MYSTERY GIFT / WONDER CARDS')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'LOAD EVENT CATALOG' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'CHOOSE WONDER CARD FILE', exact: true })).toBeVisible()
+})
+
+test('Gen V shiny and original trainer fields persist through save export @integration', async ({ page }) => {
+  test.setTimeout(120000)
+  await page.goto('/')
+  const result = await page.evaluate(async () => {
+    const { verifyBlackAdvancedPokemonRoundTrip } = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    return verifyBlackAdvancedPokemonRoundTrip()
+  })
+  expect(result.changedShiny).toBe(!result.originalShiny)
+  expect(result.reloadShiny).toBe(result.changedShiny)
+  expect(result.reloadTrainer).toBe('POKERUN')
+})
+
+test('Gen V Wonder Card insertion persists through save export @integration', async ({ page }) => {
+  test.setTimeout(120000)
+  await page.goto('/')
+  const result = await page.evaluate(async () => {
+    const { verifyBlackWonderCardRoundTrip } = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    return verifyBlackWonderCardRoundTrip()
+  })
+  expect(result.inserted).toBe(result.initial + 1)
+  expect(result.reloaded).toBe(result.inserted)
+})

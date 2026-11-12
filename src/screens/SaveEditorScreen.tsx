@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { BagEditor } from './save-editor/BagEditor'
 import { PokemonDetailPanel } from './save-editor/PokemonDetailPanel'
 import { TrainerProgressPanel } from './save-editor/TrainerProgressPanel'
+import { BoxToolsPanel } from './save-editor/BoxToolsPanel'
+import { MysteryGiftPanel } from './save-editor/MysteryGiftPanel'
 import type { PokemonSummary } from '@pkhex-everywhere/engine'
 import { AppHeader } from '../components/AppHeader'
 import { PixelButton } from '../components/PixelButton'
@@ -15,7 +17,7 @@ interface Props {
   onHome: () => void
   onSettings: () => void
 }
-type EditorTab = 'trainer' | 'party' | 'boxes' | 'bag'
+type EditorTab = 'trainer' | 'party' | 'boxes' | 'bag' | 'gifts'
 
 function editedName(name: string) {
   return name.replace(/(\.[^.]+)?$/, '-edited$1')
@@ -54,6 +56,7 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
   const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null)
   const [tab, setTab] = useState<EditorTab>('trainer')
   const [boxIndex, setBoxIndex] = useState(0)
+  const [pcSearch, setPcSearch] = useState('')
   const [selected, setSelected] = useState<PokemonSummary | null>(null)
   const [trainerName, setTrainerName] = useState('')
   const [money, setMoney] = useState('')
@@ -86,6 +89,7 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
       setSnapshot(loaded)
       setTab('trainer')
       setBoxIndex(loaded.boxes[0]?.box ?? 0)
+      setPcSearch('')
       setTrainerName(loaded.trainer.name)
       setMoney(loaded.trainer.money === null ? '' : String(loaded.trainer.money))
       setBattlePoints(loaded.trainer.battlePoints === null ? '' : String(loaded.trainer.battlePoints))
@@ -164,6 +168,12 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
     setError('')
   }
 
+  const pcMatches = pcSearch.trim().length > 0 ? (snapshot?.boxed ?? []).filter(pokemon =>
+    (pokemon.nickname + ' ' + pokemon.species + ' ' + (pokemon.speciesId ?? '')).toLowerCase()
+      .includes(pcSearch.trim().toLowerCase()),
+  ).slice(0, 75) : []
+  const tabs: EditorTab[] = ['trainer', 'party', 'boxes', 'bag']
+  if (snapshot?.save.hasMysteryGift) tabs.push('gifts')
   const activeBox = snapshot?.boxes.find(box => box.box === boxIndex)
   const boxPokemon = snapshot?.boxed.filter(pokemon =>
     pokemon.at.source === 'box' && pokemon.at.box === boxIndex,
@@ -239,7 +249,7 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
         ) : (
           <>
             <nav className="save-editor-tabs pixel-border" aria-label="Save editor sections">
-              {(['trainer', 'party', 'boxes', 'bag'] as const).map(option => (
+              {tabs.map(option => (
                 <button key={option} type="button"
                   className={tab === option ? 'selected' : ''}
                   onClick={() => { setTab(option); setSelected(null); setMessage('') }}
@@ -324,6 +334,26 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
                     ))}
                   </select>
                 </label>
+                <label className="save-editor-field save-editor-pc-search">SEARCH ALL BOXES
+                  <input type="search" value={pcSearch} placeholder="Search species or nickname across every PC box..."
+                    onChange={event => setPcSearch(event.target.value)}/>
+                </label>
+                {pcSearch.trim() && (
+                  <div className="save-editor-pc-results">
+                    <strong>{pcMatches.length} matching Pokémon{pcMatches.length === 75 ? ' (first 75)' : ''}</strong>
+                    <div>
+                      {pcMatches.map(pokemon => (
+                        <button type="button" key={JSON.stringify(pokemon.at)}
+                          onClick={() => {
+                            setBoxIndex(pokemon.at.box ?? 0)
+                            setSelected(pokemon)
+                          }}>
+                          {pokemon.species} / {pokemon.nickname} · BOX {(pokemon.at.box ?? 0) + 1}, SLOT {pokemon.at.slot + 1}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 <div className="save-editor-pokemon-grid save-editor-box-grid">
                   {Array.from({ length: activeBox?.slots ?? 0 }, (_, index) => {
                     const pokemon = boxPokemon.find(p =>
@@ -339,6 +369,23 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
                   })}
                 </div>
               </section>
+            )}
+
+            {tab === 'boxes' && (
+              <BoxToolsPanel selected={selected} onSaved={(nextSnapshot, boxNumber) => {
+                setSnapshot(nextSnapshot)
+                if (boxNumber !== undefined) setBoxIndex(boxNumber)
+                setSelected(null)
+                setDirty(true)
+                setMessage('PC storage updated in memory. Export to keep the changes.')
+              }} />
+            )}
+
+            {tab === 'gifts' && snapshot.save.hasMysteryGift && (
+              <MysteryGiftPanel onChanged={() => {
+                setDirty(true)
+                setMessage('Mystery Gift album updated in memory. Export to keep the changes.')
+              }} />
             )}
 
             {tab === 'bag' && (

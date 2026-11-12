@@ -5,7 +5,7 @@
  * Dependency: @pkhex-everywhere/engine, GPL-3.0-or-later. See docs/SAVE_EDITOR.md.
  */
 import { createEngine, draftHandle } from '@pkhex-everywhere/engine'
-import type { Badge, BoxEntry, Choice, EditablePokemon, GameProgress, PokemonHandle, PokemonOptions, PokemonPatch, PokemonSummary, Pouch, SaveSummary, TrainerCard } from '@pkhex-everywhere/engine'
+import type { AddedPokemon, Badge, BoxEntry, Choice, EditablePokemon, EncounterRow, EncounterVersions, ExportedPokemon, FilePreview, GiftAlbum, GiftEvent, WonderCardPreview, GameProgress, PokemonHandle, PokemonOptions, PokemonPatch, PokemonSummary, Pouch, SaveSummary, SpeciesEntry, TrainerCard } from '@pkhex-everywhere/engine'
 
 let engine: ReturnType<typeof createEngine> | null = null
 
@@ -106,16 +106,18 @@ export interface PokemonEditorDetails {
   details: EditablePokemon
   options: PokemonOptions
   natures: Choice[]
+  balls: Choice[]
 }
 
 export async function readPokemonEditorDetails(handle: PokemonHandle, generation: number): Promise<PokemonEditorDetails> {
   const current = client()
-  const [details, options, natures] = await Promise.all([
+  const [details, options, natures, balls] = await Promise.all([
     current.pokemon.details(handle),
     current.pokemon.options(handle),
     generation >= 3 ? current.game.natures() : Promise.resolve([] as Choice[]),
+    current.game.balls(),
   ])
-  return { details, options, natures }
+  return { details, options, natures, balls }
 }
 
 /**
@@ -130,7 +132,7 @@ export async function applyPokemonPatch(handle: PokemonHandle, patch: PokemonPat
   if (!editable.editable || editable.isUnknown) throw new Error('This Pokémon cannot be edited.')
   const locked = new Set<string>(options.locked)
   const keys = Object.keys(patch)
-  const permitted = new Set(['nickname', 'level', 'nature', 'ability', 'heldItem', 'moves', 'ivs', 'evs', 'friendship'])
+  const permitted = new Set(['nickname', 'level', 'nature', 'ability', 'heldItem', 'moves', 'ivs', 'evs', 'friendship', 'species', 'form', 'gender', 'isShiny', 'isEgg', 'ball', 'originalTrainerName', 'trainerId', 'secretId', 'metLevel', 'metLocation', 'metDate', 'fatefulEncounter'])
   if (!keys.length || keys.some(key => !permitted.has(key) || locked.has(key))) {
     throw new Error('This game does not permit one of the requested Pokémon changes.')
   }
@@ -143,9 +145,43 @@ export async function applyPokemonPatch(handle: PokemonHandle, patch: PokemonPat
   if (patch.nickname !== undefined && patch.nickname !== null && patch.nickname.length > 10) {
     throw new Error('Nickname cannot exceed 10 characters.')
   }
+  if (patch.species != null && !options.species.some(choice => choice.id === patch.species)) {
+    throw new Error('Species changes are limited to this Pokémon’s evolution family.')
+  }
+  if (patch.form != null && !options.forms.some(choice => choice.id === patch.form)) {
+    throw new Error('Form is not valid for this Pokémon.')
+  }
+  if (patch.gender !== undefined && !['male', 'female', 'genderless'].includes(patch.gender ?? '')) {
+    throw new Error('Invalid Pokémon gender.')
+  }
+  if (patch.isShiny !== undefined && typeof patch.isShiny !== 'boolean') {
+    throw new Error('Shiny status must be enabled or disabled.')
+  }
+  if (patch.isEgg !== undefined && typeof patch.isEgg !== 'boolean') {
+    throw new Error('Egg status must be enabled or disabled.')
+  }
+  for (const key of ['trainerId', 'secretId'] as const) {
+    const value = patch[key]
+    if (value !== undefined && value !== null &&
+      (!Number.isSafeInteger(value) || value < 0 || value > 65535)) {
+      throw new Error('Trainer IDs must be whole numbers between 0 and 65535.')
+    }
+  }
+  if (patch.originalTrainerName != null && patch.originalTrainerName.length > 12) {
+    throw new Error('Original trainer name is too long.')
+  }
+  if (patch.metLevel != null &&
+    (!Number.isSafeInteger(patch.metLevel) || patch.metLevel < 0 || patch.metLevel > 100)) {
+    throw new Error('Met level must be from 0 to 100.')
+  }
+  if (patch.metDate && !/^20\d{2}-\d{2}-\d{2}$/.test(patch.metDate)) {
+    throw new Error('Met date must use YYYY-MM-DD between 2000 and 2099.')
+  }
   const allowedChoices: Array<[string, number | null | undefined, number[]]> = [
     ['ability', patch.ability, options.abilities.map(choice => choice.id)],
     ['heldItem', patch.heldItem, options.heldItems.map(choice => choice.id)],
+    ['ball', patch.ball, (await current.game.balls()).map(choice => choice.id)],
+    ['metLocation', patch.metLocation, options.metLocations.map(choice => choice.id)],
   ]
   // Gen I–II have no natures; don't query that catalog unless it is edited.
   if (patch.nature !== undefined && patch.nature !== null) {
@@ -233,4 +269,112 @@ export async function setTrainerBattlePoints(points: number): Promise<EditorSnap
 
 export async function exportEditorSave() {
   return client().game.export()
+}
+
+/** Pokémon storage operations. Original save stays untouched until export. */
+export async function clonePokemonIntoBox(handle: PokemonHandle): Promise<{ added: AddedPokemon, snapshot: EditorSnapshot }> {
+  const current = client()
+  const original = await current.pokemon.get(handle)
+  if (!original.editable || original.isUnknown) throw new Error('Unknown Pokémon cannot be cloned.')
+  await current.pokemon.clone(handle)
+  const added = await current.pokemon.addToBox()
+  return { added, snapshot: await readEditorSnapshot() }
+}
+
+export async function exportSinglePokemon(handle: PokemonHandle): Promise<ExportedPokemon> {
+  return client().pokemon.export(handle)
+}
+
+export interface EncounterCatalog {
+  species: SpeciesEntry[]
+  versions: EncounterVersions
+}
+
+export async function getEncounterCatalog(): Promise<EncounterCatalog> {
+  const current = client()
+  const [species, versions] = await Promise.all([
+    current.species.list(),
+    current.encounters.versions(),
+  ])
+  return { species, versions }
+}
+
+export async function findBoxEncounters(version: number, speciesId: number): Promise<EncounterRow[]> {
+  if (!Number.isSafeInteger(version) || !Number.isSafeInteger(speciesId)) {
+    throw new Error('Select a valid game and species.')
+  }
+  return client().encounters.search(version, speciesId)
+}
+
+/** Encounter indexes are valid only for the most recent encounter search. */
+export async function addEncounterToBox(index: number): Promise<{ added: AddedPokemon, snapshot: EditorSnapshot }> {
+  if (!Number.isSafeInteger(index) || index < 0) throw new Error('Select a valid encounter.')
+  const added = await client().box.addEncounter(index)
+  return { added, snapshot: await readEditorSnapshot() }
+}
+
+export async function inspectPokemonFile(bytes: Uint8Array): Promise<FilePreview> {
+  if (!bytes.length || bytes.length > 1024 * 1024) throw new Error('Choose a Pokémon file smaller than 1 MiB.')
+  return client().box.previewFile(bytes)
+}
+
+export async function addPokemonFileToBox(bytes: Uint8Array, allowUnofficial: boolean): Promise<{ added: AddedPokemon, snapshot: EditorSnapshot }> {
+  if (!bytes.length || bytes.length > 1024 * 1024) throw new Error('Choose a Pokémon file smaller than 1 MiB.')
+  // Verify again at commit time so the user cannot bypass preview restrictions.
+  const preview = await client().box.previewFile(bytes)
+  if (preview.unofficial && !allowUnofficial) throw new Error('This conversion requires explicit permission.')
+  const added = await client().box.addFromFile(bytes, { allowUnofficial: preview.unofficial && allowUnofficial })
+  return { added, snapshot: await readEditorSnapshot() }
+}
+
+
+/** Generation IV/V Wonder Cards (where this save reports support). */
+export async function readGiftAlbum(): Promise<GiftAlbum> {
+  return client().mysteryGift.status()
+}
+export async function listKnownGifts(): Promise<GiftEvent[]> {
+  return client().mysteryGift.events()
+}
+export async function previewKnownGift(id: string): Promise<WonderCardPreview> {
+  if (!id) throw new Error('Choose a Mystery Gift event.')
+  return client().mysteryGift.previewEvent(id)
+}
+export async function insertKnownGift(id: string, slot: number): Promise<GiftAlbum> {
+  const current = client()
+  const album = await current.mysteryGift.status()
+  if (!album.slots.some(entry => entry.index === slot && !entry.card)) {
+    throw new Error('Choose an empty Mystery Gift album slot.')
+  }
+  await current.mysteryGift.insertEvent(id, slot)
+  return current.mysteryGift.status()
+}
+export async function previewGiftFile(bytes: Uint8Array): Promise<WonderCardPreview> {
+  if (!bytes.length || bytes.length > 1024 * 1024) throw new Error('Wonder Card file must be smaller than 1 MiB.')
+  return client().mysteryGift.previewFile(bytes)
+}
+export async function insertGiftFile(bytes: Uint8Array, slot: number): Promise<GiftAlbum> {
+  if (!bytes.length || bytes.length > 1024 * 1024) throw new Error('Wonder Card file must be smaller than 1 MiB.')
+  const current = client()
+  const album = await current.mysteryGift.status()
+  if (!album.slots.some(entry => entry.index === slot && !entry.card)) {
+    throw new Error('Choose an empty Mystery Gift album slot.')
+  }
+  await current.mysteryGift.insertFile(bytes, slot)
+  return current.mysteryGift.status()
+}
+export async function removeGift(slot: number): Promise<GiftAlbum> {
+  const current = client()
+  const album = await current.mysteryGift.status()
+  if (!album.slots.some(entry => entry.index === slot && entry.card)) {
+    throw new Error('No Wonder Card is stored in this album slot.')
+  }
+  await current.mysteryGift.remove(slot)
+  return current.mysteryGift.status()
+}
+export async function unlockMysteryGift(unlocked: boolean): Promise<GiftAlbum> {
+  const current = client()
+  const album = await current.mysteryGift.status()
+  if (album.unlocked === null) throw new Error('This game does not use a Mystery Gift unlock flag.')
+  await current.mysteryGift.setUnlocked(unlocked)
+  return current.mysteryGift.status()
 }

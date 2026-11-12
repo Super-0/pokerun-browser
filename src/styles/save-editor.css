@@ -357,3 +357,54 @@ p.save-editor-error, p.save-editor-success {
 @media(max-width: 1100px) { .save-editor-badges { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 
 .save-editor-edit-status { margin-top: 12px; padding: 7px 12px; font-family: 'Silkscreen', sans-serif; font-size: 10px; background: rgba(248,252,247,.95); border: 2px solid var(--ink); }
+
+
+/* Advanced editor: box tools and Pokémon encounter metadata */
+.save-editor-toggle .save-editor-check {display:flex;align-items:center;width:min(100%,315px);min-height:44px;gap:10px;padding:7px 10px;border:3px solid var(--ink);background:var(--panel-blue);font-family:'IBM Plex Mono',monospace;font-size:11px}
+.save-editor-check input {width:18px;height:18px;accent-color:#347b52}
+.save-editor-box-tools {margin-top:14px}
+.save-editor-box-tools h2 {margin:10px 0;font-size:18px}
+.save-editor-tool-row {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin:16px 0}
+.save-editor-tool-card {border:3px solid var(--ink);padding:16px;background:var(--panel-blue);min-width:0}
+.save-editor-tool-card h3 {margin:0 0 8px;font-family:'Silkscreen',sans-serif;font-size:12px}
+.save-editor-tool-card p {color:#35546a;font-size:11px;line-height:1.6}
+.save-editor-tool-card .save-editor-fields {align-items:stretch;margin:14px 0}
+.save-editor-tool-card .save-editor-field {flex:1 1 180px;min-width:0;margin:0;font-family:'Silkscreen',sans-serif;font-size:10px}
+.save-editor-tool-card .save-editor-field input,.save-editor-tool-card .save-editor-field select {width:100%;max-width:none;background:#fff}
+.save-editor-file-preview {border-top:2px dashed #91a8b9;padding-top:12px;margin-top:12px}
+.save-editor-file-preview strong {font-family:'Silkscreen',sans-serif;font-size:12px}
+.save-editor-encounter-builder {margin-top:18px}
+.save-editor-species-results {display:flex;flex-wrap:wrap;gap:6px;max-height:160px;overflow:auto;margin:12px 0}
+.save-editor-species-results button {border:2px solid var(--ink);background:#f8fcf7;padding:7px 10px;font-size:10px;cursor:pointer}
+.save-editor-species-results button.selected {background:#d7ecbb}
+.save-editor-encounter-results {max-height:380px;overflow-y:auto;margin-top:16px;border:3px solid var(--ink);background:#f8fcf7}
+.save-editor-encounter {display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px;border-bottom:2px dashed #91a8b9}
+.save-editor-encounter>div {display:flex;flex-direction:column;gap:5px;min-width:0}
+.save-editor-encounter strong {font-size:11px}
+.save-editor-encounter span {font-size:10px;color:#35546a}
+.save-editor-pc-search {margin:16px 0 0;font-family:'Silkscreen',sans-serif;font-size:11px}
+.save-editor-pc-search input {max-width:480px;width:100%}
+.save-editor-pc-results {padding:12px;margin:8px 0;border:3px solid var(--ink);background:#f8fcf7}
+.save-editor-pc-results strong {font-family:'Silkscreen',sans-serif;font-size:11px}
+.save-editor-pc-results>div {display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.save-editor-pc-results button {background:var(--panel-blue);padding:7px 9px;border:2px solid var(--ink);font-size:10px;cursor:pointer}
+@media (max-width:900px) {.save-editor-tool-row {grid-template-columns:1fr}.save-editor-encounter {align-items:stretch;flex-direction:column}}
+
+
+/* Game-aware Gen IV/V Wonder Card management */
+.save-editor-gifts h2 { margin:12px 0;font-size:19px }
+.save-editor-gift-meta {display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin:18px 0;font-family:'Silkscreen',sans-serif;font-size:11px}
+.save-editor-gift-meta .save-editor-check {display:flex;align-items:center;gap:10px}
+.save-editor-gift-meta .save-editor-check input {width:18px;height:18px}
+.save-editor-gift-slots {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin:15px 0}
+.save-editor-gift-slot {min-height:106px;display:flex;flex-direction:column;align-items:flex-start;gap:9px;padding:13px;border:3px solid var(--ink);background:var(--panel-blue)}
+.save-editor-gift-slot small {font-family:'Silkscreen',sans-serif;font-size:10px;color:#4e6b86}
+.save-editor-gift-slot strong {font-size:11px;overflow-wrap:anywhere}
+.save-editor-gift-slot span {font-size:10px}
+.save-editor-gift-slot .pixel-button {margin-top:auto;font-size:10px}
+.save-editor-gift-results {max-height:320px;overflow:auto;margin-top:12px;border:3px solid var(--ink)}
+.save-editor-gift-results button {display:flex;flex-direction:column;gap:5px;width:100%;padding:11px;background:#f8fcf7;border:0;border-bottom:2px dashed #91a8b9;cursor:pointer;text-align:left}
+.save-editor-gift-results button.selected,.save-editor-gift-results button:hover {background:#d7ecbb}
+.save-editor-gift-results strong {font-size:11px}
+.save-editor-gift-results small {font-size:10px;color:#4e6b86}
+@media(max-width:900px){.save-editor-gift-slots{grid-template-columns:repeat(2,minmax(0,1fr))}}
