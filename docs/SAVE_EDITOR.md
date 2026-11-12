@@ -4,7 +4,7 @@ This branch replaces the Emerald-only editor UI with a Generation I–V editor p
 
 ## Scope
 
-The PKHeX engine detects files and reads game-specific formats for Generations I–V. Current controls cover trainer name and money (where available), party and PC-box inspection, and editing existing Pokémon nicknames and levels. Moves, IVs, EVs, items, Pokémon creation/deletion, transfers and box reordering are not exposed yet. Ambiguous or invalid saves remain uneditable.
+The PKHeX engine detects files and reads game-specific formats for Generations I–V. Current controls cover trainer name, money, Battle Points (where available), game progress, editable badges where PKHeX supports the game's layout, inventory pouches (existing counts and allowed new items), and party/PC-box inspection. Existing Pokémon can be edited for nickname, level, friendship, nature, ability, held item, moves and IV/EVs when offered by the save's generation and per-Pokémon options. The SDK rejects unsupported fields. Pokémon creation/deletion, transfers, species replacement, event injection, box reordering and live emulator save overwrites are not exposed. Ambiguous or invalid saves remain uneditable.
 
 The original upload is retained for backup download and edits occur only in the in-memory engine. Export creates a separate '-edited' copy. No localStorage, IndexedDB, active mGBA or melonDS save is modified. Users import the edited battery save separately after leaving the game.
 
@@ -27,3 +27,9 @@ The prototype Gen III module remains for legacy regression tests, but the new ed
 6. Review licensing before merging/distributing: @pkhex-everywhere/engine and PKHeX.Core use GPL-3.0-or-later. Embedded linking can require licensing compatible source. This repository has no explicit compatible project license yet.
 
 These notes are not legal advice. Review the upstream SDK's license and third-party notices.
+
+## Depth pass verification
+
+- Browser tests cover navigation into bag/trainer progress using a synthetic Black save and a Generation V item quantity round-trip through export and reload. These synthetic tests are not substitutes for real multi-game save compatibility checks.
+- Nature and move changes, especially changes affecting Gen III/IV personality values, may alter legality. The editor displays available PKHeX legality findings when a Pokémon is opened, but cannot guarantee an edited Pokémon will be legal.
+- Always download a backup before importing an edited export back into an emulator. Some Pokémon edits need more game-specific validation, particularly Gen I/II DV/Stat Exp and Gen III/IV PID-related nature changes.
