@@ -130,19 +130,8 @@ test('Gen V Black trainer edit survives SDK export and reload @integration', asy
   test.setTimeout(100_000)
   await page.goto('/')
   const result = await page.evaluate(async () => {
-    const { createEngine } = await import('@pkhex-everywhere/engine')
-    const engine = createEngine({ lazy: true })
-    const versions = await engine.game.blankVersions()
-    const version = versions.find(item => item.name === 'Black')
-    if (!version) throw new Error('Black blank save unavailable')
-    await engine.game.loadBlank(version.id)
-    await engine.trainer.setMoney(87654)
-    const exported = await engine.game.export()
-    await engine.game.load(exported.bytes, exported.fileName || 'Black.sav')
-    const money = (await engine.trainer.get()).money
-    const generation = (await engine.game.get())?.generation
-    await engine.game.close()
-    return { money, generation, exportedBytes: exported.bytes.length }
+    const fixtures = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    return fixtures.verifyBlackTrainerRoundTrip()
   })
   expect(result).toEqual({ money: 87654, generation: 5, exportedBytes: 524288 })
 })
