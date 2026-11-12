@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react'
 import { AppHeader } from '../components/AppHeader'
 import { PixelButton } from '../components/PixelButton'
-import { changeEmeraldMoney, readEmeraldSave, type EmeraldSaveInfo } from '../core/save-editor/emeraldSave'
+import { inspectSave, type SaveInspection } from '../core/save-editor/detectSave'
+import { changeGen3Money } from '../core/save-editor/gen3Save'
 import '../styles/save-editor.css'
 
 interface Props {
@@ -21,11 +22,15 @@ function downloadSave(bytes: Uint8Array, fileName: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
+function baseName(name: string) {
+  return name.replace(/\.[^.]+$/, '')
+}
+
 export function SaveEditorScreen({ onHome, onSettings }: Props) {
   const fileInput = useRef<HTMLInputElement>(null)
   const [original, setOriginal] = useState<Uint8Array | null>(null)
   const [originalName, setOriginalName] = useState('')
-  const [info, setInfo] = useState<EmeraldSaveInfo | null>(null)
+  const [inspection, setInspection] = useState<SaveInspection | null>(null)
   const [money, setMoney] = useState('')
   const [error, setError] = useState('')
   const [exportMessage, setExportMessage] = useState('')
@@ -33,34 +38,30 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
   async function loadSave(file: File | undefined) {
     if (!file) return
     setOriginal(null)
-    setInfo(null)
+    setInspection(null)
+    setOriginalName('')
     setError('')
     setExportMessage('')
     try {
-      if (!file.name.toLowerCase().endsWith('.sav')) {
-        throw new Error('Choose an Emerald .sav battery-save file.')
-      }
       const bytes = new Uint8Array(await file.arrayBuffer())
-      const parsed = readEmeraldSave(bytes)
+      const result = inspectSave(bytes)
       setOriginal(bytes)
       setOriginalName(file.name)
-      setInfo(parsed)
-      setMoney(String(parsed.money))
+      setInspection(result)
+      setMoney(result.mode === 'editable' ? String(result.info.money) : '')
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not read this save file.')
+      setError(cause instanceof Error ? cause.message : 'Could not read this file.')
     }
   }
 
   function exportEdited() {
-    if (!original || !info) return
+    if (!original || inspection?.mode !== 'editable') return
     try {
-      const amount = Number(money)
       if (money.trim() === '') throw new Error('Enter a money amount before exporting.')
-      const edited = changeEmeraldMoney(original, amount)
-      const editedName = originalName.replace(/\.sav$/i, '') + '-edited.sav'
-      downloadSave(edited, editedName)
+      const edited = changeGen3Money(original, Number(money))
+      downloadSave(edited, baseName(originalName) + '-edited.sav')
       setError('')
-      setExportMessage('Edited copy exported. Your original save has not been changed.')
+      setExportMessage('Edited save exported. Your original file and PokéRun saves are unchanged.')
     } catch (cause) {
       setExportMessage('')
       setError(cause instanceof Error ? cause.message : 'Could not export this save.')
@@ -76,7 +77,7 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
         <section className="page-title-row">
           <div>
             <h1>SAVE EDITOR</h1>
-            <p>Make changes to a local save file without changing your PokéRun runs.</p>
+            <p>Upload a battery save. PokéRun checks the format and shows available editing tools.</p>
           </div>
           <PixelButton tone="ghost" onClick={onHome}>BACK TO HOME</PixelButton>
         </section>
@@ -84,14 +85,14 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
         <div className="save-editor-layout">
           <section className="save-editor-panel pixel-border">
             <span className="eyebrow">01 / LOAD SAVE</span>
-            <h2>POKÉMON EMERALD</h2>
-            <p>Start with a 128 KiB Emerald battery save (.sav). Other games and Pokémon editing will come later.</p>
+            <h2>AUTO-DETECT GAME</h2>
+            <p>Choose a save file from your emulator. You don't have to select a Pokémon game first.</p>
             <input
               ref={fileInput}
               className="save-editor-file-input"
               aria-label="Choose save file"
               type="file"
-              accept=".sav"
+              accept=".sav,.dsv,.srm,.dat,application/octet-stream"
               onChange={event => {
                 const file = event.currentTarget.files?.[0]
                 event.currentTarget.value = ''
@@ -99,55 +100,77 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
               }}
             />
             <PixelButton onClick={() => fileInput.current?.click()}>
-              {original ? 'CHOOSE ANOTHER SAVE' : 'CHOOSE .SAV FILE'}
+              {original ? 'CHOOSE ANOTHER SAVE' : 'CHOOSE SAVE FILE'}
             </PixelButton>
             <div className="save-editor-note">
-              Files are read locally in your browser. This editor does not overwrite the selected file, your current run, or stored multiplayer saves.
+              Supported editing: Generation III (Ruby/Sapphire, Emerald, FireRed/LeafGreen) money.
+              Other formats can be inspected, but editing stays locked until their parsers are verified.
+              Saves never leave your browser.
             </div>
           </section>
 
           <section className="save-editor-panel pixel-border">
-            <span className="eyebrow">02 / EDIT & EXPORT</span>
-            {original && info ? (
+            <span className="eyebrow">02 / DETECT & EDIT</span>
+            {original && inspection ? (
               <>
                 <div className="save-editor-record">
                   <span>FILE</span>
                   <strong title={originalName}>{originalName}</strong>
                 </div>
                 <div className="save-editor-record">
-                  <span>PLAY TIME</span>
-                  <strong>{String(info.playTimeHours).padStart(2, '0')}:{String(info.playTimeMinutes).padStart(2, '0')}</strong>
+                  <span>DETECTED</span>
+                  <strong>{inspection.label}</strong>
                 </div>
-                <div className="save-editor-record">
-                  <span>PARTY</span>
-                  <strong>{info.partyCount} / 6</strong>
-                </div>
-                <label className="save-editor-field" htmlFor="save-editor-money">
-                  <strong>MONEY</strong>
-                  <input
-                    id="save-editor-money"
-                    type="number"
-                    min="0"
-                    max="999999"
-                    step="1"
-                    value={money}
-                    onChange={event => {
-                      setMoney(event.target.value)
-                      setError('')
-                      setExportMessage('')
-                    }}
-                  />
-                  <small>0–999,999 Pokédollars</small>
-                </label>
+                <p className="save-editor-detection">{inspection.detail}</p>
+                {inspection.mode === 'editable' ? (
+                  <>
+                    <div className="save-editor-record">
+                      <span>PLAY TIME</span>
+                      <strong>{String(inspection.info.playTimeHours).padStart(2, '0')}:{String(inspection.info.playTimeMinutes).padStart(2, '0')}</strong>
+                    </div>
+                    <div className="save-editor-record">
+                      <span>PARTY</span>
+                      <strong>{inspection.info.partyCount} / 6</strong>
+                    </div>
+                    <label className="save-editor-field" htmlFor="save-editor-money">
+                      <strong>MONEY</strong>
+                      <input
+                        id="save-editor-money"
+                        type="number"
+                        min="0"
+                        max="999999"
+                        step="1"
+                        value={money}
+                        onChange={event => {
+                          setMoney(event.target.value)
+                          setError('')
+                          setExportMessage('')
+                        }}
+                      />
+                      <small>0–999,999 Pokédollars</small>
+                    </label>
+                  </>
+                ) : (
+                  <div className="save-editor-unavailable">
+                    <strong>EDITING NOT AVAILABLE</strong>
+                    <p>This save won't be modified. PokéRun needs a verified game-specific parser before it can export safe edits.</p>
+                  </div>
+                )}
                 <div className="save-editor-actions">
-                  <PixelButton tone="ghost" onClick={() => downloadSave(original, originalName.replace(/\.sav$/i, '') + '-backup.sav')}>DOWNLOAD BACKUP</PixelButton>
-                  <PixelButton onClick={exportEdited} disabled={money.trim() === String(info.money)}>EXPORT EDITED SAVE</PixelButton>
+                  <PixelButton tone="ghost" onClick={() => downloadSave(original, baseName(originalName) + '-backup' + (originalName.match(/\.[^.]+$/)?.[0] ?? '.sav'))}>
+                    DOWNLOAD BACKUP
+                  </PixelButton>
+                  {inspection.mode === 'editable' && (
+                    <PixelButton onClick={exportEdited} disabled={money.trim() === String(inspection.info.money)}>
+                      EXPORT EDITED SAVE
+                    </PixelButton>
+                  )}
                 </div>
               </>
             ) : (
               <div className="save-editor-placeholder">
                 <strong>NO SAVE LOADED</strong>
-                <p>Choose an Emerald save to inspect it and change your money.</p>
+                <p>Choose a .sav, .dsv, .srm or .dat file to inspect its format.</p>
               </div>
             )}
             {error && <p className="save-editor-error" role="alert">{error}</p>}
@@ -156,7 +179,8 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
         </div>
 
         <p className="save-editor-footnote">
-          This first version edits only the money field of a validated Emerald save. Keep a backup before importing any edited save into an emulator. Exported files must be imported into the game separately.
+          This editor works on exported copies, not live games. Keep a backup before importing edited data into an emulator.
+          Some save formats look alike; ambiguous files remain read-only instead of guessing a game.
         </p>
       </div>
     </main>
