@@ -297,8 +297,9 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
                 <button key={option} type="button"
                   className={'editor-nav-link ' + (tab === option ? 'selected' : '')}
                   aria-current={tab === option ? 'page' : undefined}
+                  aria-label={option === 'boxes' ? 'PC BOXES' : option.toUpperCase()}
                   onClick={() => { setTab(option); setSelected(null); setMessage('') }}>
-                  <span className="editor-nav-index">{sectionTitles[option].number}</span>
+                  <span className="editor-nav-index" aria-hidden="true">{sectionTitles[option].number}</span>
                   <span>{option === 'boxes' ? 'PC BOXES' : option === 'gifts' ? 'GIFTS' : option.toUpperCase()}</span>
                   <span className="editor-nav-arrow" aria-hidden="true">›</span>
                 </button>
