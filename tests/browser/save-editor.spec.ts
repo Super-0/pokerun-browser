@@ -212,7 +212,7 @@ test('advanced PC tools are exposed for a recognized save @integration', async (
     input.dispatchEvent(new Event('change', { bubbles: true }))
   })
   await expect(page.getByText('GEN 5', { exact: false })).toBeVisible()
-  await page.getByRole('button', { name: 'BOXES', exact: true }).click()
+  await page.getByRole('button', { name: 'PC BOXES', exact: true }).click()
   await expect(page.getByText('PC BOX TOOLS')).toBeVisible()
   await expect(page.getByRole('button', { name: 'CLONE TO PC' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'EXPORT .PK FILE' })).toBeDisabled()
@@ -276,4 +276,77 @@ test('Gen V Wonder Card insertion persists through save export @integration', as
   })
   expect(result.inserted).toBe(result.initial + 1)
   expect(result.reloaded).toBe(result.inserted)
+})
+
+
+test('workbench switches between PC slots and compact Pokémon inspector views @integration', async ({ page }) => {
+  test.setTimeout(90000)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'SAVE EDITOR' }).click()
+  await page.evaluate(async () => {
+    const { createBlackSaveWithPokemon } = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    const bytes = await createBlackSaveWithPokemon()
+    const input = document.querySelector<HTMLInputElement>('input[type=file]')!
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([new Uint8Array(bytes)], 'Black.sav', { type: 'application/octet-stream' }))
+    input.files = transfer.files
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await expect(page.getByText('GEN 5', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'PC BOXES', exact: true }).click()
+  await expect(page.getByText('PC INSPECTOR')).toBeVisible()
+  await page.locator('.editor-pc-slot:not(.empty)').first().click()
+  await expect(page.getByRole('heading', { name: 'SPECIES & APPEARANCE' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'ORIGINAL TRAINER & ENCOUNTER' })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'MOVES', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'MOVES' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'SPECIES & APPEARANCE' })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'STATS', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'STATS' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'ORIGIN', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'ORIGINAL TRAINER & ENCOUNTER' })).toBeVisible()
+
+  await expect(page.getByRole('button', { name: 'APPLY POKÉMON CHANGES' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'EXPORT EDITED SAVE' })).toBeDisabled()
+})
+
+test('Save Editor is usable at mobile width without document overflow @integration', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  await page.getByRole('button', { name: 'SAVE EDITOR' }).click()
+  await expect(page.getByRole('heading', { name: 'READY WHEN YOU ARE' })).toBeVisible()
+  const overflow = await page.evaluate(() => ({
+    contentWidth: document.documentElement.scrollWidth,
+    viewportWidth: document.documentElement.clientWidth,
+  }))
+  expect(overflow.contentWidth).toBeLessThanOrEqual(overflow.viewportWidth + 1)
+  await expect(page.getByRole('button', { name: 'IMPORT SAVE' })).toBeVisible()
+})
+
+
+test('Bag workbench separates owned items from items that can be added @integration', async ({ page }) => {
+  test.setTimeout(90000)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'SAVE EDITOR' }).click()
+  await page.evaluate(async () => {
+    const { createBlankBlackSave } = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    const bytes = await createBlankBlackSave()
+    const input = document.querySelector<HTMLInputElement>('input[type=file]')!
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([new Uint8Array(bytes)], 'Black.sav', { type: 'application/octet-stream' }))
+    input.files = transfer.files
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await expect(page.getByText('GEN 5', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'BAG', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'YOUR INVENTORY' })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Bag pockets' }).locator('button').first()).toBeVisible()
+  await expect(page.getByRole('button', { name: /OWNED ITEMS/ })).toBeVisible()
+  await page.getByRole('button', { name: /ADD ITEMS/ }).click()
+  await expect(page.getByText('AVAILABLE TO ADD')).toBeVisible()
+  await expect(page.getByText('SELECT AN ITEM')).toBeVisible()
+  await expect(page.getByPlaceholder('Search this pouch...')).toBeVisible()
 })

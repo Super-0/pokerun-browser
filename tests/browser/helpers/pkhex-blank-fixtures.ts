@@ -223,3 +223,19 @@ export async function verifyBlackWonderCardRoundTrip() {
     reloaded: after.slots.filter(slot => slot.card).length,
   }
 }
+
+
+/** A ROM-free Black save with one real encounter in the PC for UI regression. */
+export async function createBlackSaveWithPokemon(): Promise<Uint8Array> {
+  const engine = createEngine({ lazy: true })
+  const version = (await engine.game.blankVersions()).find(item => item.name === 'Black')
+  if (!version) throw new Error('No blank Black template')
+  await engine.game.loadBlank(version.id)
+  const versions = await engine.encounters.versions()
+  const choices = await engine.encounters.search(versions.default, 504)
+  if (!choices.length) throw new Error('No compatible Pokémon encounter')
+  await engine.box.addEncounter(choices[0].index)
+  const output = await engine.game.export()
+  await engine.game.close()
+  return output.bytes
+}
