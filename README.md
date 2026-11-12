@@ -44,7 +44,7 @@ Then open the localhost URL Vite prints.
 
 - **Generations 1–5:** trainer name/money, party Pokémon, and PC boxes are available when PKHeX recognizes the file. You can change Pokémon nicknames and levels, then export an edited copy. Unsupported/ambiguous or invalid formats fail closed.
 - **Safety:** original uploaded bytes are preserved separately, with a backup download. The Save Editor does not write into your current PokéRun run, ROM storage, or multiplayer profiles; you must import the exported save into your emulator yourself.
-- **Testing:** ROM-free blank-save round trips for generations 1–5, plus failure-path checks. Real saves from each game and actual emulator import/export require manual validation before considering the editor production-ready.
+- **Testing:** ROM-free blank-save creation/export and structure checks for generations 1–5, plus failure-path checks. Some blank templates do not round-trip as played battery saves; real-save imports remain an explicit release gate. Real saves from each game and actual emulator import/export require manual validation before considering the editor production-ready.
 - **License:** PKHeX.Everywhere and its PKHeX.Core runtime are GPL-3.0-or-later. **Do not merge this experimental branch into a proprietary/distribution build without reviewing the GPL obligations and project licensing.**
 
 See [Save Editor implementation notes](docs/SAVE_EDITOR.md) for the engine boundary, coverage and checklist.
