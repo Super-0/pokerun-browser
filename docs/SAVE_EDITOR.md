@@ -40,3 +40,18 @@ These notes are not legal advice. Review the upstream SDK's license and third-pa
 - Changing shininess, PID-dependent traits, original trainer and encounter metadata may make a Pokémon illegal or inconsistent with its origin; confirm those changes. Any editor legality result is informational, not proof that online gameplay will accept the Pokémon.
 - Generation IV and V Mystery Gift tab inserts Wonder Cards into the album, not directly into inventory or the party. Removing a card may leave its received marker set. A Gen IV unlock setting is supported; Gen V doesn't use that flag.
 - Real-save round-trip checks, emulator re-import and loading across all 20 game versions remain required. Synthetic Gen V fixtures verify a subset of these behaviors; no user save or copyrighted ROM is stored in the repository.
+
+
+## Save Workbench UI (redesign branch)
+
+The Save Editor is organized as a Pokémon-inspired **workbench**, not a long form.
+
+- A cartridge header groups game identity, file name, party/PC counts, import, backup, discard and export. Failed imports still permit downloading the untouched original file.
+- The unloaded state accepts drag/drop or file selection and explains the three-step import–edit–export process.
+- A persistent navigation rail exposes Trainer, Party, PC Boxes, Bag, and a conditional Gen IV/V Gifts section.
+- Party shows six fixed slots with an empty state. PC Boxes show the game's actual box capacity, occupied slots, cross-box search, and advanced import/clone/encounter tools.
+- Selecting a party or box Pokémon opens a side inspector. Its Identity, Moves, Stats and Origin subtabs reduce scrolling; pending edits remain in the form across subtab navigation. Apply/Reset is retained, and save export remains a separate explicit action.
+- Bag pockets are immediately selectable. Owned and Add Items are separate modes, with search and a focused quantity stepper.
+- The editor is responsive down to phone widths, with readable navigation, stacked inspectors, and keyboard-visible focus styles. CSS changes are scoped to the Save Editor to avoid altering other PokéRun pages.
+
+**Safety:** changing a save with unexported edits prompts for confirmation. The Save Editor never modifies multiplayer storage or a running ROM. A real-save emulator round-trip is still required before distribution. The PKHeX.Everywhere GPL-3.0-or-later licensing concern remains unresolved.
