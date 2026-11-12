@@ -135,3 +135,37 @@ test('Gen V Black trainer edit survives SDK export and reload @integration', asy
   })
   expect(result).toEqual({ money: 87654, generation: 5, exportedBytes: 524288 })
 })
+
+
+test('extended editor exposes trainer progress and bag for a loaded Gen V save @integration', async ({ page }) => {
+  test.setTimeout(90000)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'SAVE EDITOR' }).click()
+  await page.evaluate(async () => {
+    const { createBlankBlackSave } = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    const bytes = await createBlankBlackSave()
+    const input = document.querySelector<HTMLInputElement>('input[type=file]')!
+    const items = new DataTransfer()
+    items.items.add(new File([new Uint8Array(bytes)], 'Black.sav', { type: 'application/octet-stream' }))
+    input.files = items.files
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+
+  await expect(page.getByText('GEN 5', { exact: false })).toBeVisible()
+  await expect(page.getByText('GAME PROGRESS', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'BAG', exact: true }).click()
+  await expect(page.getByText('BAG / ITEMS')).toBeVisible()
+  await expect(page.getByText('FIND ITEM')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'EXPORT EDITED SAVE' })).toBeDisabled()
+})
+
+test('Gen V bag item additions persist through a PKHeX export and reload @integration', async ({ page }) => {
+  test.setTimeout(90000)
+  await page.goto('/')
+  const result = await page.evaluate(async () => {
+    const { verifyBlackItemRoundTrip } = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    return verifyBlackItemRoundTrip()
+  })
+  expect(result.applied).toBe(2)
+  expect(result.restored).toBe(2)
+})
