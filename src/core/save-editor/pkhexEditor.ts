@@ -185,6 +185,23 @@ export async function readTrainerBadges(): Promise<Badge[] | null> {
   return client().trainer.badges()
 }
 
+export async function setTrainerBadges(earned: boolean[]): Promise<Badge[]> {
+  const current = client()
+  const existing = await current.trainer.badges()
+  if (!existing || existing.length !== earned.length) {
+    throw new Error('Badge editing is not available for this save.')
+  }
+  if (!earned.every(value => typeof value === 'boolean')) {
+    throw new Error('Invalid badge selection.')
+  }
+  await current.trainer.setBadges(earned)
+  const after = await current.trainer.badges()
+  if (!after || after.length !== earned.length || after.some((badge, i) => badge.earned !== earned[i])) {
+    throw new Error('Badge changes could not be verified.')
+  }
+  return after
+}
+
 export async function readSaveBag(): Promise<Pouch[]> {
   return client().inventory.get()
 }
