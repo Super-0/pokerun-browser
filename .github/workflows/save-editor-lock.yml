@@ -1,0 +1,29 @@
+name: Generate PKHeX engine lockfile
+on:
+  push:
+    branches: [single-player/pkhex-gen1-gen5]
+    paths:
+      - package.json
+      - .github/workflows/save-editor-lock.yml
+permissions:
+  contents: write
+jobs:
+  generate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Lock exact engine package version
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Commit lockfile
+        run: |
+          git add package-lock.json
+          if ! git diff --cached --quiet; then
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" commit -m "Lock PKHeX save editor dependency"
+            git push origin HEAD:single-player/pkhex-gen1-gen5
+          fi
