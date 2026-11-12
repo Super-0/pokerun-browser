@@ -15,7 +15,7 @@ The prototype Gen III module remains for legacy regression tests, but the new ed
 - src/core/save-editor/pkhexEditor.ts: lazy engine session and validated commands.
 - src/screens/SaveEditorScreen.tsx: selected file, original bytes, trainer/party/PC controls.
 - vite.config.ts: self-hosts the engine's _framework files in development and production.
-- tests/browser/helpers/pkhex-blank-fixtures.ts: ROM-free generation-wide round-trip checks.
+- tests/browser/helpers/pkhex-blank-fixtures.ts: ROM-free template generation/export checks and reload diagnostics.
 
 ## Release checklist
 
