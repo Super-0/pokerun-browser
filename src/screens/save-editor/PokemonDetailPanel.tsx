@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { Choice, PokemonPatch, PokemonSummary, StatValues } from '@pkhex-everywhere/engine'
+import type { Choice, PokemonGender, PokemonPatch, PokemonSummary, StatValues } from '@pkhex-everywhere/engine'
 import { PixelButton } from '../../components/PixelButton'
 import {
   applyPokemonPatch, readPokemonEditorDetails,
@@ -13,6 +13,17 @@ const stats = [
 type StatKey = keyof StatValues
 
 interface Form {
+  species: number
+  form: number
+  gender: PokemonGender
+  isShiny: boolean
+  ball: number
+  originalTrainerName: string
+  trainerId: string
+  secretId: string
+  metLevel: string
+  metLocation: number
+  metDate: string
   nickname: string
   level: string
   nature: number
@@ -45,6 +56,17 @@ function statForm(values: StatValues): Record<StatKey, string> {
 function makeForm(info: PokemonEditorDetails): Form {
   const p = info.details
   return {
+    species: p.species ?? 0,
+    form: p.form,
+    gender: p.gender,
+    isShiny: p.isShiny,
+    ball: p.ball,
+    originalTrainerName: p.originalTrainerName,
+    trainerId: String(p.trainerId),
+    secretId: String(p.secretId),
+    metLevel: String(p.metLevel),
+    metLocation: p.metLocation,
+    metDate: p.metDate ?? '',
     nickname: p.nickname,
     level: String(p.level),
     nature: p.nature,
@@ -111,13 +133,34 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
       const p = info.details
       const locked = new Set<string>(info.options.locked)
       const patch: PokemonPatch = {}
+      const speciesChanged = form.species !== p.species
+      if (speciesChanged && !locked.has('species')) patch.species = form.species
+      // Forms/abilities and met locations are species-dependent; apply these
+      // only after the species change has been committed and options refreshed.
+      if (!speciesChanged && form.form !== p.form && !locked.has('form')) patch.form = form.form
+      if (form.gender !== p.gender && !locked.has('gender')) patch.gender = form.gender
+      if (form.isShiny !== p.isShiny && !locked.has('isShiny')) patch.isShiny = form.isShiny
+      if (form.ball !== p.ball && !locked.has('ball')) patch.ball = form.ball
+      if (form.originalTrainerName !== p.originalTrainerName && !locked.has('originalTrainerName')) {
+        patch.originalTrainerName = form.originalTrainerName
+      }
+      const trainerId = Number(form.trainerId)
+      const secretId = Number(form.secretId)
+      if (trainerId !== p.trainerId && !locked.has('trainerId')) patch.trainerId = trainerId
+      if (secretId !== p.secretId && !locked.has('secretId')) patch.secretId = secretId
+      const metLevel = Number(form.metLevel)
+      if (metLevel !== p.metLevel && !locked.has('metLevel')) patch.metLevel = metLevel
+      if (form.metLocation !== p.metLocation && !locked.has('metLocation')) patch.metLocation = form.metLocation
+      if (p.metDate !== null && form.metDate !== p.metDate && !locked.has('metDate')) {
+        patch.metDate = form.metDate
+      }
       const level = Number(form.level)
       const friendship = Number(form.friendship)
       if (form.nickname !== p.nickname && !locked.has('nickname')) patch.nickname = form.nickname
       if (level !== p.level && !locked.has('level')) patch.level = level
       if (friendship !== p.friendship && !locked.has('friendship')) patch.friendship = friendship
       if (generation >= 3 && form.nature !== p.nature && !locked.has('nature')) patch.nature = form.nature
-      if (generation >= 3 && form.ability !== p.ability && !locked.has('ability')) patch.ability = form.ability
+      if (!speciesChanged && generation >= 3 && form.ability !== p.ability && !locked.has('ability')) patch.ability = form.ability
       if (generation >= 2 && form.heldItem !== p.heldItem && !locked.has('heldItem')) patch.heldItem = form.heldItem
       if (form.moves.some((id, index) => id !== p.moves[index]?.id) && !locked.has('moves')) {
         patch.moves = form.moves
@@ -134,8 +177,13 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
         onClose()
         return
       }
-      // SDK validates game-specific restrictions before commit. Unrelated
-      // fields are omitted, rather than writing a whole reconstructed Pokémon.
+      // High-impact changes can produce nonlegal Pokémon. Require an explicit
+      // one-time confirmation before touching the in-memory save.
+      const impactful = ['species', 'isShiny', 'gender', 'trainerId', 'secretId', 'originalTrainerName', 'metLevel', 'metLocation', 'metDate', 'ball']
+      if (Object.keys(patch).some(key => impactful.includes(key)) &&
+          !window.confirm('These changes can alter Pokémon legality or encounter details. Apply them to the in-memory copy?')) {
+        return
+      }
       const next = await applyPokemonPatch(pokemon.at, patch)
       onSaved(next)
     } catch (reason) {
@@ -177,6 +225,49 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
               {info.details.legality.messages.map((message, i) => <p key={i}>{message}</p>)}
             </details>
           )}
+
+          <div className="save-detail-group">
+            <h3>SPECIES & APPEARANCE</h3>
+            <div className="save-editor-fields">
+              <label className="save-editor-field">SPECIES / EVOLUTION
+                <select aria-label="Pokémon species" value={form.species}
+                  disabled={saving || locked.has('species')}
+                  onChange={event => {
+                    update('species', Number(event.target.value))
+                  }}>
+                  {chooseNumber(info.options.species, form.species).map(choice =>
+                    <option key={choice.id} value={choice.id}>{choice.name}</option>)}
+                </select>
+              </label>
+              {info.options.forms.length > 0 && (
+                <label className="save-editor-field">FORM
+                  <select value={form.form} disabled={saving || locked.has('form') || form.species !== info.details.species}
+                    onChange={event => update('form', Number(event.target.value))}>
+                    {chooseNumber(info.options.forms, form.form).map(choice =>
+                      <option key={choice.id} value={choice.id}>{choice.name || 'DEFAULT'}</option>)}
+                  </select>
+                </label>
+              )}
+              <label className="save-editor-field">GENDER
+                <select value={form.gender} disabled={saving || locked.has('gender')}
+                  onChange={event => update('gender', event.target.value as PokemonGender)}>
+                  <option value="male">MALE</option><option value="female">FEMALE</option>
+                  <option value="genderless">GENDERLESS</option>
+                </select>
+              </label>
+              <label className="save-editor-field save-editor-toggle">SHINY
+                <label className="save-editor-check">
+                  <input type="checkbox" checked={form.isShiny} disabled={saving || locked.has('isShiny')}
+                    onChange={event => update('isShiny', event.target.checked)}/>
+                  <span>{form.isShiny ? 'SHINY ENABLED' : 'NOT SHINY'}</span>
+                </label>
+              </label>
+            </div>
+            <p className="save-editor-help">
+              Species selection follows the Pokémon's evolution line. After changing species,
+              reopen the Pokémon to adjust the new form or ability. Shiny and gender edits may affect PID legality.
+            </p>
+          </div>
 
           <div className="save-detail-group">
             <h3>IDENTITY</h3>
@@ -250,7 +341,66 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
           </div>
 
           <div className="save-detail-group">
+            <h3>ORIGINAL TRAINER & ENCOUNTER</h3>
+            <div className="save-editor-fields">
+              {info.balls.length > 0 && (
+                <label className="save-editor-field">POKÉ BALL
+                  <select value={form.ball} disabled={saving || locked.has('ball')}
+                    onChange={event => update('ball', Number(event.target.value))}>
+                    {chooseNumber(info.balls, form.ball).map(choice =>
+                      <option key={choice.id} value={choice.id}>{choice.name}</option>)}
+                  </select>
+                </label>
+              )}
+              <label className="save-editor-field">ORIGINAL TRAINER
+                <input maxLength={12} value={form.originalTrainerName}
+                  disabled={saving || locked.has('originalTrainerName')}
+                  onChange={event => update('originalTrainerName', event.target.value)}/>
+              </label>
+              <label className="save-editor-field">TRAINER ID
+                <input type="number" min="0" max="65535" value={form.trainerId}
+                  disabled={saving || locked.has('trainerId')}
+                  onChange={event => update('trainerId', event.target.value)}/>
+              </label>
+              <label className="save-editor-field">SECRET ID
+                <input type="number" min="0" max="65535" value={form.secretId}
+                  disabled={saving || locked.has('secretId')}
+                  onChange={event => update('secretId', event.target.value)}/>
+              </label>
+              {generation >= 2 && (
+                <label className="save-editor-field">MET LEVEL
+                  <input type="number" min="0" max="100" value={form.metLevel}
+                    disabled={saving || locked.has('metLevel')}
+                    onChange={event => update('metLevel', event.target.value)}/>
+                </label>
+              )}
+              {info.options.metLocations.length > 0 && (
+                <label className="save-editor-field">MET LOCATION
+                  <select value={form.metLocation} disabled={saving || locked.has('metLocation')}
+                    onChange={event => update('metLocation', Number(event.target.value))}>
+                    {chooseNumber(info.options.metLocations, form.metLocation).map(choice =>
+                      <option key={choice.id} value={choice.id}>{choice.name}</option>)}
+                  </select>
+                </label>
+              )}
+              {info.details.metDate !== null && (
+                <label className="save-editor-field">MET DATE
+                  <input type="date" min="2000-01-01" max="2099-12-31" value={form.metDate}
+                    disabled={saving || locked.has('metDate')}
+                    onChange={event => update('metDate', event.target.value)}/>
+                </label>
+              )}
+            </div>
+            <p className="save-editor-help">These fields can affect legality. PKHeX checks data structure, but gameplay and trading compatibility still need real-save testing.</p>
+          </div>
+
+          <div className="save-detail-group">
             <h3>STATS</h3>
+            <div className="save-editor-detail-stats">
+              <span>EXP: {info.details.experience.toLocaleString()}</span>
+              <span>PID: {info.details.pid.toString(16).toUpperCase().padStart(8, '0')}</span>
+              {info.details.hiddenPower && <span>HIDDEN POWER: {info.details.hiddenPower.type} {info.details.hiddenPower.power ?? ''}</span>}
+            </div>
             <p className="save-editor-help">Generation {generation}: IV maximum {generation <= 2 ? 15 : 31},
               EV maximum {generation <= 2 ? 65535 : 255} per stat.</p>
             <div className="save-editor-stat-table">
