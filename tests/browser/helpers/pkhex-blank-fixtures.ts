@@ -167,3 +167,59 @@ export async function verifyBlackBoxToolsRoundTrip() {
     afterCount: after.length,
   }
 }
+
+
+/** Gen V advanced editing: shiny and OT change, followed by save round-trip. */
+export async function verifyBlackAdvancedPokemonRoundTrip() {
+  const engine = createEngine({ lazy: true })
+  const version = (await engine.game.blankVersions()).find(item => item.name === 'Black')
+  if (!version) throw new Error('Black template unavailable.')
+  await engine.game.loadBlank(version.id)
+  const catalog = await engine.encounters.versions()
+  const encounters = await engine.encounters.search(catalog.default, 504)
+  if (!encounters.length) throw new Error('Patrat encounter unavailable.')
+  const created = await engine.box.addEncounter(encounters[0].index)
+  const original = await engine.pokemon.details(created.at)
+  await engine.pokemon.edit(created.at)
+  await engine.pokemon.update({ source: 'draft', slot: 0 }, {
+    isShiny: !original.isShiny,
+    originalTrainerName: 'POKERUN',
+  })
+  await engine.pokemon.commit()
+  const before = await engine.pokemon.details(created.at)
+  const saved = await engine.game.export()
+  await engine.game.load(saved.bytes, saved.fileName)
+  const after = await engine.pokemon.details(created.at)
+  await engine.game.close()
+  return {
+    originalShiny: original.isShiny,
+    changedShiny: before.isShiny,
+    reloadShiny: after.isShiny,
+    reloadTrainer: after.originalTrainerName,
+  }
+}
+
+/** Gen V Mystery Gift album: event insertion and save round-trip. */
+export async function verifyBlackWonderCardRoundTrip() {
+  const engine = createEngine({ lazy: true })
+  const version = (await engine.game.blankVersions()).find(item => item.name === 'Black')
+  if (!version) throw new Error('Black template unavailable.')
+  await engine.game.loadBlank(version.id)
+  const before = await engine.mysteryGift.status()
+  const events = await engine.mysteryGift.events()
+  const choice = events.find(event => !event.received)
+  if (!choice) throw new Error('No Gen V Wonder Cards are available.')
+  const empty = before.slots.find(slot => !slot.card)
+  if (!empty) throw new Error('No empty Gen V Wonder Card slots.')
+  await engine.mysteryGift.insertEvent(choice.id, empty.index)
+  const inserted = await engine.mysteryGift.status()
+  const saved = await engine.game.export()
+  await engine.game.load(saved.bytes, saved.fileName)
+  const after = await engine.mysteryGift.status()
+  await engine.game.close()
+  return {
+    initial: before.slots.filter(slot => slot.card).length,
+    inserted: inserted.slots.filter(slot => slot.card).length,
+    reloaded: after.slots.filter(slot => slot.card).length,
+  }
+}
