@@ -86,3 +86,18 @@ export async function verifyPkhexBlankSaveExports() {
   await engine.game.close()
   return results
 }
+
+export async function verifyBlackTrainerRoundTrip() {
+  const engine = createEngine({ lazy: true })
+  const versions = await engine.game.blankVersions()
+  const version = versions.find(item => item.name === 'Black')
+  if (!version) throw new Error('Black blank save unavailable')
+  await engine.game.loadBlank(version.id)
+  await engine.trainer.setMoney(87654)
+  const exported = await engine.game.export()
+  await engine.game.load(exported.bytes, exported.fileName || 'Black.sav')
+  const money = (await engine.trainer.get()).money
+  const generation = (await engine.game.get())?.generation
+  await engine.game.close()
+  return { money, generation, exportedBytes: exported.bytes.length }
+}
