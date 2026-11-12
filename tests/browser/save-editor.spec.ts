@@ -169,3 +169,30 @@ test('Gen V bag item additions persist through a PKHeX export and reload @integr
   expect(result.applied).toBe(2)
   expect(result.restored).toBe(2)
 })
+
+
+test('Discard Edits restores original save without exporting @integration', async ({ page }) => {
+  test.setTimeout(90000)
+  await page.goto('/')
+  await page.getByRole('button', { name: 'SAVE EDITOR' }).click()
+  await page.evaluate(async () => {
+    const { createBlankBlackSave } = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    const bytes = await createBlankBlackSave()
+    const input = document.querySelector<HTMLInputElement>('input[type=file]')!
+    const transfer = new DataTransfer()
+    transfer.items.add(new File([new Uint8Array(bytes)], 'Black.sav', { type: 'application/octet-stream' }))
+    input.files = transfer.files
+    input.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  const moneyField = page.locator('#trainer-money')
+  await expect(moneyField).toBeVisible()
+  const originalMoney = await moneyField.inputValue()
+  await moneyField.fill(originalMoney === '12345' ? '54321' : '12345')
+  await page.getByRole('button', { name: 'APPLY TRAINER CHANGES' }).click()
+  await expect(page.locator('.save-editor-edit-status')).toContainText('UNEXPORTED CHANGES')
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByRole('button', { name: 'DISCARD EDITS' }).click()
+  await expect(page.locator('.save-editor-edit-status')).toContainText('NO UNEXPORTED CHANGES')
+  await expect(page.locator('#trainer-money')).toHaveValue(originalMoney)
+  await expect(page.getByRole('button', { name: 'EXPORT EDITED SAVE' })).toBeDisabled()
+})
