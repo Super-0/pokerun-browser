@@ -102,6 +102,7 @@ export default function App() {
     return <MyRunsScreen
       runs={runs}
       onHome={goHome}
+      onBrowseGames={openGameLibrary}
       onOpenRun={openRun}
       onNewRun={chooseGame}
       onSettings={openSettings}
