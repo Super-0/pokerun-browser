@@ -133,3 +133,37 @@ export async function verifyBlackItemRoundTrip() {
   await engine.game.close()
   return { applied, restored, pouch: pouch.name, itemId: item.id }
 }
+
+
+/** Verifies PC creation, duplication and individual .pk export using no game ROM. */
+export async function verifyBlackBoxToolsRoundTrip() {
+  const engine = createEngine({ lazy: true })
+  const version = (await engine.game.blankVersions()).find(item => item.name === 'Black')
+  if (!version) throw new Error('Black blank-save template is missing.')
+  await engine.game.loadBlank(version.id)
+  const catalog = await engine.encounters.versions()
+  let found: Awaited<ReturnType<typeof engine.encounters.search>> = []
+  for (const id of [504, 519, 495, 506, 509, 25]) {
+    found = await engine.encounters.search(catalog.default, id)
+    if (found.length) break
+  }
+  if (!found.length) throw new Error('No Generation V encounter template was found.')
+  const created = await engine.box.addEncounter(found[0].index)
+  const original = await engine.pokemon.get(created.at)
+  const individual = await engine.pokemon.export(created.at)
+  if (!individual.bytes.length) throw new Error('Individual Pokémon export was empty.')
+  await engine.pokemon.clone(created.at)
+  const duplicated = await engine.pokemon.addToBox()
+  const before = await engine.box.get()
+  const output = await engine.game.export()
+  await engine.game.load(output.bytes, output.fileName)
+  const after = await engine.box.get()
+  await engine.game.close()
+  return {
+    createdSpecies: original.species,
+    individualBytes: individual.bytes.length,
+    distinctSlots: JSON.stringify(created.at) !== JSON.stringify(duplicated.at),
+    beforeCount: before.length,
+    afterCount: after.length,
+  }
+}
