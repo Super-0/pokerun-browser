@@ -47,7 +47,6 @@ export async function loadEditorSave(file: File): Promise<EditorSnapshot> {
     throw new Error('Choose a non-empty battery save up to 8 MiB.')
   }
   const current = client()
-  await current.ready
   await current.game.close()
   await current.game.load(file)
   try {
