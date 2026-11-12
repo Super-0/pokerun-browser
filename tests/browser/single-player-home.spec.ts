@@ -67,3 +67,28 @@ test('Home features the most recently updated run and keeps older runs accessibl
   await page.getByRole('button', { name: 'HOME', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'YOUR RUNS' })).toBeVisible()
 })
+
+
+test('shared pixel wallpaper appears across launcher and new-run flow', async ({ page }) => {
+  await page.goto('/')
+
+  async function expectHomeWallpaper() {
+    const style = await page.locator('.home-sky').evaluate(el => getComputedStyle(el).backgroundImage)
+    expect(style).toContain('pokemon-emerald-intro-wallpaper')
+    await expect(page.locator('.home-water')).toHaveCSS('display', 'none')
+    await expect(page.locator('.home-grass')).toHaveCSS('display', 'none')
+  }
+
+  await expectHomeWallpaper()
+  await page.getByRole('button', { name: '+ NEW RUN' }).click()
+  await expectHomeWallpaper()
+
+  await page.locator('.game-tile').filter({ hasText: 'EMERALD' }).click()
+  await expect(page.locator('.game-backdrop')).toHaveCSS('background-image', /pokemon-emerald-intro-wallpaper/)
+
+  await page.getByRole('button', { name: 'POKÉRUN HOME' }).click()
+  await expectHomeWallpaper()
+
+  await page.getByRole('button', { name: 'SETTINGS' }).click()
+  await expectHomeWallpaper()
+})
