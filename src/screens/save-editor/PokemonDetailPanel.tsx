@@ -98,6 +98,7 @@ function changedStats(form: Record<StatKey, string>, original: StatValues, max: 
 }
 
 export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Props) {
+  const [detailTab, setDetailTab] = useState<'identity' | 'moves' | 'stats' | 'origin'>('identity')
   const [info, setInfo] = useState<PokemonEditorDetails | null>(null)
   const [form, setForm] = useState<Form | null>(null)
   const [loading, setLoading] = useState(true)
@@ -226,6 +227,15 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
             </details>
           )}
 
+          <nav className="editor-pokemon-tabs" aria-label="Pokémon detail sections">
+            {(['identity', 'moves', 'stats', 'origin'] as const).map(view => (
+              <button key={view} type="button" className={detailTab === view ? 'selected' : ''}
+                aria-current={detailTab === view ? 'page' : undefined}
+                onClick={() => setDetailTab(view)}>{view.toUpperCase()}</button>
+            ))}
+          </nav>
+
+          {detailTab === 'identity' && (
           <div className="save-detail-group">
             <h3>SPECIES & APPEARANCE</h3>
             <div className="save-editor-fields">
@@ -268,7 +278,9 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
               reopen the Pokémon to adjust the new form or ability. Shiny and gender edits may affect PID legality.
             </p>
           </div>
+          )}
 
+          {detailTab === 'identity' && (
           <div className="save-detail-group">
             <h3>IDENTITY</h3>
             <div className="save-editor-fields">
@@ -318,7 +330,9 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
               )}
             </div>
           </div>
+          )}
 
+          {detailTab === 'moves' && (
           <div className="save-detail-group">
             <h3>MOVES</h3>
             <div className="save-editor-move-grid">
@@ -339,7 +353,9 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
             </div>
             <p className="save-editor-help">Available moves are based on the Pokémon and save's game, not a universal movelist.</p>
           </div>
+          )}
 
+          {detailTab === 'origin' && (
           <div className="save-detail-group">
             <h3>ORIGINAL TRAINER & ENCOUNTER</h3>
             <div className="save-editor-fields">
@@ -393,7 +409,9 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
             </div>
             <p className="save-editor-help">These fields can affect legality. PKHeX checks data structure, but gameplay and trading compatibility still need real-save testing.</p>
           </div>
+          )}
 
+          {detailTab === 'stats' && (
           <div className="save-detail-group">
             <h3>STATS</h3>
             <div className="save-editor-detail-stats">
@@ -418,13 +436,17 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
               ))}
             </div>
           </div>
+          )}
 
-          <div className="save-editor-actions">
+          <div className="editor-pokemon-commit">
+            <p>{noChanges ? 'NO FIELD CHANGES YET' : 'UNAPPLIED POKÉMON CHANGES'}</p>
+            <div className="save-editor-actions">
             <PixelButton disabled={saving || Boolean(noChanges)} onClick={() => void apply()}>
               {saving ? 'APPLYING...' : 'APPLY POKÉMON CHANGES'}
             </PixelButton>
             <PixelButton tone="ghost" disabled={saving}
               onClick={() => setForm(makeForm(info))}>RESET FIELDS</PixelButton>
+            </div>
           </div>
           <p className="save-editor-help">Changes remain in memory until you export an edited save. PKHeX legality findings are advisory; a successful edit does not guarantee a Pokémon is legal.</p>
         </>
