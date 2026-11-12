@@ -5,7 +5,7 @@
  * Dependency: @pkhex-everywhere/engine, GPL-3.0-or-later. See docs/SAVE_EDITOR.md.
  */
 import { createEngine, draftHandle } from '@pkhex-everywhere/engine'
-import type { AddedPokemon, Badge, BoxEntry, Choice, EditablePokemon, EncounterRow, EncounterVersions, ExportedPokemon, FilePreview, GameProgress, PokemonHandle, PokemonOptions, PokemonPatch, PokemonSummary, Pouch, SaveSummary, SpeciesEntry, TrainerCard } from '@pkhex-everywhere/engine'
+import type { AddedPokemon, Badge, BoxEntry, Choice, EditablePokemon, EncounterRow, EncounterVersions, ExportedPokemon, FilePreview, GiftAlbum, GiftEvent, WonderCardPreview, GameProgress, PokemonHandle, PokemonOptions, PokemonPatch, PokemonSummary, Pouch, SaveSummary, SpeciesEntry, TrainerCard } from '@pkhex-everywhere/engine'
 
 let engine: ReturnType<typeof createEngine> | null = null
 
@@ -325,4 +325,56 @@ export async function addPokemonFileToBox(bytes: Uint8Array, allowUnofficial: bo
   if (preview.unofficial && !allowUnofficial) throw new Error('This conversion requires explicit permission.')
   const added = await client().box.addFromFile(bytes, { allowUnofficial: preview.unofficial && allowUnofficial })
   return { added, snapshot: await readEditorSnapshot() }
+}
+
+
+/** Generation IV/V Wonder Cards (where this save reports support). */
+export async function readGiftAlbum(): Promise<GiftAlbum> {
+  return client().mysteryGift.status()
+}
+export async function listKnownGifts(): Promise<GiftEvent[]> {
+  return client().mysteryGift.events()
+}
+export async function previewKnownGift(id: string): Promise<WonderCardPreview> {
+  if (!id) throw new Error('Choose a Mystery Gift event.')
+  return client().mysteryGift.previewEvent(id)
+}
+export async function insertKnownGift(id: string, slot: number): Promise<GiftAlbum> {
+  const current = client()
+  const album = await current.mysteryGift.status()
+  if (!album.slots.some(entry => entry.index === slot && !entry.card)) {
+    throw new Error('Choose an empty Mystery Gift album slot.')
+  }
+  await current.mysteryGift.insertEvent(id, slot)
+  return current.mysteryGift.status()
+}
+export async function previewGiftFile(bytes: Uint8Array): Promise<WonderCardPreview> {
+  if (!bytes.length || bytes.length > 1024 * 1024) throw new Error('Wonder Card file must be smaller than 1 MiB.')
+  return client().mysteryGift.previewFile(bytes)
+}
+export async function insertGiftFile(bytes: Uint8Array, slot: number): Promise<GiftAlbum> {
+  if (!bytes.length || bytes.length > 1024 * 1024) throw new Error('Wonder Card file must be smaller than 1 MiB.')
+  const current = client()
+  const album = await current.mysteryGift.status()
+  if (!album.slots.some(entry => entry.index === slot && !entry.card)) {
+    throw new Error('Choose an empty Mystery Gift album slot.')
+  }
+  await current.mysteryGift.insertFile(bytes, slot)
+  return current.mysteryGift.status()
+}
+export async function removeGift(slot: number): Promise<GiftAlbum> {
+  const current = client()
+  const album = await current.mysteryGift.status()
+  if (!album.slots.some(entry => entry.index === slot && entry.card)) {
+    throw new Error('No Wonder Card is stored in this album slot.')
+  }
+  await current.mysteryGift.remove(slot)
+  return current.mysteryGift.status()
+}
+export async function unlockMysteryGift(unlocked: boolean): Promise<GiftAlbum> {
+  const current = client()
+  const album = await current.mysteryGift.status()
+  if (album.unlocked === null) throw new Error('This game does not use a Mystery Gift unlock flag.')
+  await current.mysteryGift.setUnlocked(unlocked)
+  return current.mysteryGift.status()
 }
