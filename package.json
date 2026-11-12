@@ -28,6 +28,7 @@
     "test:white2:remote-native": "node scripts/test-white2-remote-native.mjs"
   },
   "dependencies": {
+    "@pkhex-everywhere/engine": "0.31.0",
     "@thenick775/mgba-wasm": "2.5.1",
     "@vitejs/plugin-react": "latest",
     "react": "latest",

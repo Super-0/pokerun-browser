@@ -1,16 +1,28 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import type { PokemonSummary } from '@pkhex-everywhere/engine'
 import { AppHeader } from '../components/AppHeader'
 import { PixelButton } from '../components/PixelButton'
-import { inspectSave, type SaveInspection } from '../core/save-editor/detectSave'
-import { changeGen3Money } from '../core/save-editor/gen3Save'
+import {
+  closeEditorSave, editPokemon, editTrainer, exportEditorSave,
+  loadEditorSave, type EditorSnapshot,
+} from '../core/save-editor/pkhexEditor'
 import '../styles/save-editor.css'
 
 interface Props {
   onHome: () => void
   onSettings: () => void
 }
+type EditorTab = 'trainer' | 'party' | 'boxes'
 
-function downloadSave(bytes: Uint8Array, fileName: string) {
+function editedName(name: string) {
+  return name.replace(/(\.[^.]+)?$/, '-edited$1')
+}
+
+function backupName(name: string) {
+  return name.replace(/(\.[^.]+)?$/, '-backup$1')
+}
+
+function download(bytes: Uint8Array, fileName: string) {
   const blob = new Blob([new Uint8Array(bytes)], { type: 'application/octet-stream' })
   const url = URL.createObjectURL(blob)
   const anchor = document.createElement('a')
@@ -22,51 +34,138 @@ function downloadSave(bytes: Uint8Array, fileName: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
-function baseName(name: string) {
-  return name.replace(/\.[^.]+$/, '')
+function failureMessage(error: unknown) {
+  if (error instanceof Error) {
+    if (error.message.includes('format-choice-required')) {
+      return 'This save matches more than one format. PokéRun will not guess which game it belongs to.'
+    }
+    return error.message
+  }
+  return 'Could not load this save file.'
 }
 
 export function SaveEditorScreen({ onHome, onSettings }: Props) {
   const fileInput = useRef<HTMLInputElement>(null)
-  const [original, setOriginal] = useState<Uint8Array | null>(null)
-  const [originalName, setOriginalName] = useState('')
-  const [inspection, setInspection] = useState<SaveInspection | null>(null)
+  const [originalFile, setOriginalFile] = useState<File | null>(null)
+  const [originalBytes, setOriginalBytes] = useState<Uint8Array | null>(null)
+  const [snapshot, setSnapshot] = useState<EditorSnapshot | null>(null)
+  const [tab, setTab] = useState<EditorTab>('trainer')
+  const [boxIndex, setBoxIndex] = useState(0)
+  const [selected, setSelected] = useState<PokemonSummary | null>(null)
+  const [nickname, setNickname] = useState('')
+  const [level, setLevel] = useState('')
+  const [trainerName, setTrainerName] = useState('')
   const [money, setMoney] = useState('')
+  const [dirty, setDirty] = useState(false)
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [exportMessage, setExportMessage] = useState('')
+  const [message, setMessage] = useState('')
 
-  async function loadSave(file: File | undefined) {
-    if (!file) return
-    setOriginal(null)
-    setInspection(null)
-    setOriginalName('')
+  useEffect(() => () => { void closeEditorSave() }, [])
+
+  async function load(file?: File) {
+    if (!file || busy) return
+    setBusy(true)
     setError('')
-    setExportMessage('')
+    setMessage('')
+    setSelected(null)
+    setSnapshot(null)
+    setDirty(false)
+    setOriginalFile(null)
+    setOriginalBytes(null)
     try {
       const bytes = new Uint8Array(await file.arrayBuffer())
-      const result = inspectSave(bytes)
-      setOriginal(bytes)
-      setOriginalName(file.name)
-      setInspection(result)
-      setMoney(result.mode === 'editable' ? String(result.info.money) : '')
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not read this file.')
+      if (bytes.length === 0 || bytes.length > 8 * 1024 * 1024) {
+        throw new Error('Choose a non-empty battery save smaller than 8 MiB.')
+      }
+      setOriginalFile(file)
+      setOriginalBytes(bytes)
+      const loaded = await loadEditorSave(file)
+      setSnapshot(loaded)
+      setTab('trainer')
+      setBoxIndex(loaded.boxes[0]?.box ?? 0)
+      setTrainerName(loaded.trainer.name)
+      setMoney(loaded.trainer.money === null ? '' : String(loaded.trainer.money))
+    } catch (reason) {
+      setError(failureMessage(reason))
+    } finally {
+      setBusy(false)
     }
   }
 
-  function exportEdited() {
-    if (!original || inspection?.mode !== 'editable') return
+  async function applyTrainer() {
+    if (!snapshot || busy) return
+    setBusy(true)
+    setError('')
+    setMessage('')
     try {
-      if (money.trim() === '') throw new Error('Enter a money amount before exporting.')
-      const edited = changeGen3Money(original, Number(money))
-      downloadSave(edited, baseName(originalName) + '-edited.sav')
-      setError('')
-      setExportMessage('Edited save exported. Your original file and PokéRun saves are unchanged.')
-    } catch (cause) {
-      setExportMessage('')
-      setError(cause instanceof Error ? cause.message : 'Could not export this save.')
+      const edits: { name?: string, money?: number } = {}
+      if (trainerName !== snapshot.trainer.name) edits.name = trainerName
+      if (snapshot.trainer.money !== null && money !== String(snapshot.trainer.money)) {
+        if (money.trim() === '') throw new Error('Enter a money amount.')
+        edits.money = Number(money)
+      }
+      if (!Object.keys(edits).length) return
+      const next = await editTrainer(edits)
+      setSnapshot(next)
+      setTrainerName(next.trainer.name)
+      setMoney(next.trainer.money === null ? '' : String(next.trainer.money))
+      setDirty(true)
+      setMessage('Trainer changes applied to the in-memory copy. Export to save them.')
+    } catch (reason) {
+      setError(failureMessage(reason))
+    } finally {
+      setBusy(false)
     }
   }
+
+  async function applyPokemon() {
+    if (!selected || !snapshot || busy) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const next = await editPokemon(selected.at, { nickname, level: Number(level) })
+      setSnapshot(next)
+      setSelected(null)
+      setDirty(true)
+      setMessage('Pokémon changes applied to the in-memory copy. Export to save them.')
+    } catch (reason) {
+      setError(failureMessage(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function exportEdited() {
+    if (!snapshot || !originalFile || !dirty || busy) return
+    setBusy(true)
+    setError('')
+    setMessage('')
+    try {
+      const result = await exportEditorSave()
+      if (!result.bytes.length) throw new Error('Engine exported an empty save.')
+      download(result.bytes, editedName(originalFile.name))
+      setMessage('Edited copy downloaded. Your original file and PokéRun runs are unchanged.')
+    } catch (reason) {
+      setError(failureMessage(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  function selectPokemon(pokemon: PokemonSummary) {
+    setSelected(pokemon)
+    setNickname(pokemon.nickname)
+    setLevel(String(pokemon.level))
+    setMessage('')
+    setError('')
+  }
+
+  const activeBox = snapshot?.boxes.find(box => box.box === boxIndex)
+  const boxPokemon = snapshot?.boxed.filter(pokemon =>
+    pokemon.at.source === 'box' && pokemon.at.box === boxIndex,
+  ) ?? []
 
   return (
     <main className="screen home-screen">
@@ -77,110 +176,171 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
         <section className="page-title-row">
           <div>
             <h1>SAVE EDITOR</h1>
-            <p>Upload a battery save. PokéRun checks the format and shows available editing tools.</p>
+            <p>Generation I–V save editor. Import, edit and export locally.</p>
           </div>
           <PixelButton tone="ghost" onClick={onHome}>BACK TO HOME</PixelButton>
         </section>
 
-        <div className="save-editor-layout">
-          <section className="save-editor-panel pixel-border">
-            <span className="eyebrow">01 / LOAD SAVE</span>
-            <h2>AUTO-DETECT GAME</h2>
-            <p>Choose a save file from your emulator. You don't have to select a Pokémon game first.</p>
+        <section className="save-editor-top pixel-border">
+          <div>
+            <strong>{snapshot ? snapshot.save.version.toUpperCase() : 'NO SAVE LOADED'}</strong>
+            <span>{snapshot ? 'GEN ' + snapshot.save.generation + ' • ' + originalFile?.name : 'Import a battery-save file (.sav / .srm / .dsv / .dat)'}</span>
+          </div>
+          <div className="save-editor-actions">
             <input
               ref={fileInput}
               className="save-editor-file-input"
               aria-label="Choose save file"
               type="file"
-              accept=".sav,.dsv,.srm,.dat,application/octet-stream"
+              accept=".sav,.srm,.dsv,.dat,.bin"
+              disabled={busy}
               onChange={event => {
                 const file = event.currentTarget.files?.[0]
                 event.currentTarget.value = ''
-                void loadSave(file)
+                void load(file)
               }}
             />
-            <PixelButton onClick={() => fileInput.current?.click()}>
-              {original ? 'CHOOSE ANOTHER SAVE' : 'CHOOSE SAVE FILE'}
+            <PixelButton tone="ghost" disabled={busy} onClick={() => fileInput.current?.click()}>
+              {busy ? 'LOADING...' : 'IMPORT SAVE'}
             </PixelButton>
-            <div className="save-editor-note">
-              Supported editing: Generation III (Ruby/Sapphire, Emerald, FireRed/LeafGreen) money.
-              Other formats can be inspected, but editing stays locked until their parsers are verified.
-              Saves never leave your browser.
-            </div>
-          </section>
+            <PixelButton tone="ghost" disabled={!originalBytes || !originalFile || busy}
+              onClick={() => originalBytes && originalFile && download(originalBytes, backupName(originalFile.name))}>
+              DOWNLOAD BACKUP
+            </PixelButton>
+            <PixelButton disabled={!snapshot || !dirty || busy} onClick={() => void exportEdited()}>
+              EXPORT EDITED SAVE
+            </PixelButton>
+          </div>
+        </section>
 
-          <section className="save-editor-panel pixel-border">
-            <span className="eyebrow">02 / DETECT & EDIT</span>
-            {original && inspection ? (
-              <>
+        {error && <p className="save-editor-error pixel-border" role="alert">{error}</p>}
+        {message && <p className="save-editor-success pixel-border" role="status">{message}</p>}
+
+        {!snapshot ? (
+          <section className="save-editor-welcome pixel-border">
+            <span className="eyebrow">LOAD A SAVE FILE</span>
+            <h2>{busy ? 'READING SAVE...' : originalFile ? 'FORMAT NOT VERIFIED' : 'READY WHEN YOU ARE'}</h2>
+            <p>
+              PokéRun reads the file using PKHeX's generation-aware engine. If it cannot
+              confidently recognize the format, no editing is enabled.
+              The imported file stays on your device.
+            </p>
+          </section>
+        ) : (
+          <>
+            <nav className="save-editor-tabs pixel-border" aria-label="Save editor sections">
+              {(['trainer', 'party', 'boxes'] as const).map(option => (
+                <button key={option} type="button"
+                  className={tab === option ? 'selected' : ''}
+                  onClick={() => { setTab(option); setSelected(null); setMessage('') }}
+                >{option.toUpperCase()}</button>
+              ))}
+            </nav>
+
+            {tab === 'trainer' && (
+              <section className="save-editor-panel pixel-border">
+                <span className="eyebrow">TRAINER DATA</span>
                 <div className="save-editor-record">
-                  <span>FILE</span>
-                  <strong title={originalName}>{originalName}</strong>
+                  <span>GAME</span><strong>{snapshot.save.version}</strong>
                 </div>
                 <div className="save-editor-record">
-                  <span>DETECTED</span>
-                  <strong>{inspection.label}</strong>
+                  <span>TRAINER ID</span><strong>{snapshot.trainer.id}</strong>
                 </div>
-                <p className="save-editor-detection">{inspection.detail}</p>
-                {inspection.mode === 'editable' ? (
-                  <>
-                    <div className="save-editor-record">
-                      <span>PLAY TIME</span>
-                      <strong>{String(inspection.info.playTimeHours).padStart(2, '0')}:{String(inspection.info.playTimeMinutes).padStart(2, '0')}</strong>
-                    </div>
-                    <div className="save-editor-record">
-                      <span>PARTY</span>
-                      <strong>{inspection.info.partyCount} / 6</strong>
-                    </div>
-                    <label className="save-editor-field" htmlFor="save-editor-money">
+                <div className="save-editor-fields">
+                  <label className="save-editor-field" htmlFor="trainer-name">
+                    <strong>TRAINER NAME</strong>
+                    <input id="trainer-name" value={trainerName} maxLength={snapshot.trainer.maxNameLength}
+                      disabled={busy} onChange={event => setTrainerName(event.target.value)} />
+                  </label>
+                  {snapshot.trainer.money !== null && (
+                    <label className="save-editor-field" htmlFor="trainer-money">
                       <strong>MONEY</strong>
-                      <input
-                        id="save-editor-money"
-                        type="number"
-                        min="0"
-                        max="999999"
-                        step="1"
-                        value={money}
-                        onChange={event => {
-                          setMoney(event.target.value)
-                          setError('')
-                          setExportMessage('')
-                        }}
-                      />
-                      <small>0–999,999 Pokédollars</small>
+                      <input id="trainer-money" type="number" value={money} min="0" max="999999" step="1"
+                        disabled={busy} onChange={event => setMoney(event.target.value)} />
                     </label>
-                  </>
-                ) : (
-                  <div className="save-editor-unavailable">
-                    <strong>EDITING NOT AVAILABLE</strong>
-                    <p>This save won't be modified. PokéRun needs a verified game-specific parser before it can export safe edits.</p>
-                  </div>
-                )}
-                <div className="save-editor-actions">
-                  <PixelButton tone="ghost" onClick={() => downloadSave(original, baseName(originalName) + '-backup' + (originalName.match(/\.[^.]+$/)?.[0] ?? '.sav'))}>
-                    DOWNLOAD BACKUP
-                  </PixelButton>
-                  {inspection.mode === 'editable' && (
-                    <PixelButton onClick={exportEdited} disabled={money.trim() === String(inspection.info.money)}>
-                      EXPORT EDITED SAVE
-                    </PixelButton>
                   )}
                 </div>
-              </>
-            ) : (
-              <div className="save-editor-placeholder">
-                <strong>NO SAVE LOADED</strong>
-                <p>Choose a .sav, .dsv, .srm or .dat file to inspect its format.</p>
-              </div>
+                <PixelButton disabled={busy || (trainerName === snapshot.trainer.name &&
+                  money === (snapshot.trainer.money === null ? '' : String(snapshot.trainer.money)))}
+                  onClick={() => void applyTrainer()}>APPLY TRAINER CHANGES</PixelButton>
+              </section>
             )}
-            {error && <p className="save-editor-error" role="alert">{error}</p>}
-            {exportMessage && <p className="save-editor-success" role="status">{exportMessage}</p>}
-          </section>
-        </div>
+
+            {tab === 'party' && (
+              <section className="save-editor-panel pixel-border">
+                <span className="eyebrow">CURRENT PARTY</span>
+                <div className="save-editor-pokemon-grid">
+                  {snapshot.party.length === 0 && <p>No Pokémon in the party.</p>}
+                  {snapshot.party.map(pokemon => (
+                    <button type="button" key={JSON.stringify(pokemon.at)}
+                      className={'save-editor-pokemon ' + (selected?.id === pokemon.id ? 'active' : '')}
+                      onClick={() => selectPokemon(pokemon)}>
+                      <strong>{pokemon.nickname}</strong>
+                      <small>{pokemon.species} • LV {pokemon.level}</small>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {tab === 'boxes' && (
+              <section className="save-editor-panel pixel-border">
+                <span className="eyebrow">PC STORAGE</span>
+                <label className="save-editor-box-picker">BOX
+                  <select value={boxIndex} onChange={event => {
+                    setBoxIndex(Number(event.target.value))
+                    setSelected(null)
+                  }}>
+                    {snapshot.boxes.map(box => (
+                      <option key={box.box} value={box.box}>{box.name || 'BOX ' + (box.box + 1)}</option>
+                    ))}
+                  </select>
+                </label>
+                <div className="save-editor-pokemon-grid save-editor-box-grid">
+                  {Array.from({ length: activeBox?.slots ?? 0 }, (_, index) => {
+                    const pokemon = boxPokemon.find(p =>
+                      p.at.source === 'box' && p.at.slot === index,
+                    )
+                    return pokemon ? (
+                      <button type="button" className={'save-editor-pokemon ' + (selected?.id === pokemon.id ? 'active' : '')}
+                        key={index} onClick={() => selectPokemon(pokemon)}>
+                        <strong>{pokemon.nickname}</strong>
+                        <small>LV {pokemon.level}</small>
+                      </button>
+                    ) : <div key={index} className="save-editor-empty-slot" aria-label={'Empty slot ' + (index + 1)}>{index + 1}</div>
+                  })}
+                </div>
+              </section>
+            )}
+
+            {selected && (tab === 'party' || tab === 'boxes') && (
+              <section className="save-editor-panel save-editor-selected pixel-border">
+                <span className="eyebrow">{selected.species.toUpperCase()} • {selected.isEgg ? 'EGG' : 'POKÉMON'}</span>
+                {selected.editable && !selected.isUnknown ? (
+                  <div className="save-editor-fields">
+                    <label className="save-editor-field" htmlFor="pokemon-nickname">
+                      <strong>NICKNAME</strong>
+                      <input id="pokemon-nickname" maxLength={10} value={nickname} disabled={busy}
+                        onChange={event => setNickname(event.target.value)}/>
+                    </label>
+                    <label className="save-editor-field" htmlFor="pokemon-level">
+                      <strong>LEVEL</strong>
+                      <input id="pokemon-level" type="number" min="1" max="100" step="1" value={level}
+                        disabled={busy} onChange={event => setLevel(event.target.value)}/>
+                    </label>
+                    <PixelButton disabled={busy || (nickname === selected.nickname && level === String(selected.level))}
+                      onClick={() => void applyPokemon()}>APPLY POKÉMON CHANGES</PixelButton>
+                  </div>
+                ) : <p>This Pokémon's data cannot safely be edited.</p>}
+              </section>
+            )}
+          </>
+        )}
 
         <p className="save-editor-footnote">
-          This editor works on exported copies, not live games. Keep a backup before importing edited data into an emulator.
-          Some save formats look alike; ambiguous files remain read-only instead of guessing a game.
+          Edits affect only an in-memory copy until you export. Keep the untouched backup.
+          Import the edited file into your emulator separately; do not replace a save while the game is running.
+          Powered by PKHeX.Everywhere (GPL-3.0-or-later).
         </p>
       </div>
     </main>

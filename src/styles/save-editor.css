@@ -135,3 +135,165 @@
 @media (max-width: 1000px) {
   .save-editor-layout { grid-template-columns: minmax(0, 1fr); }
 }
+
+
+/* Generation-aware PKHeX editor: original PokéRun pixel language, no dashboard chrome. */
+.save-editor-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  min-height: 100px;
+  padding: 17px 20px;
+  background: rgba(248, 252, 247, .97);
+}
+
+.save-editor-top > div:first-child {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.save-editor-top strong,
+.save-editor-pokemon strong,
+.save-editor-welcome h2 {
+  font-family: 'Silkscreen', sans-serif;
+}
+
+.save-editor-top > div:first-child span {
+  color: #4e6b86;
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+.save-editor-tabs {
+  display: flex;
+  margin: 22px 0 12px;
+  background: var(--panel);
+}
+
+.save-editor-tabs button {
+  flex: 1;
+  padding: 12px;
+  min-height: 44px;
+  border: 0;
+  border-right: 3px solid var(--ink);
+  font-family: 'Silkscreen', sans-serif;
+  font-size: 12px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.save-editor-tabs button:last-child { border-right: 0; }
+.save-editor-tabs button.selected { background: var(--accent); color: white; }
+
+.save-editor-tabs + .save-editor-panel {
+  min-height: 180px;
+}
+
+.save-editor-welcome {
+  padding: 32px;
+  margin-top: 20px;
+  background: rgba(248, 252, 247, .97);
+}
+
+.save-editor-welcome h2 { margin: 12px 0; }
+.save-editor-welcome p { font-size: 12px; max-width: 690px; line-height: 1.7; margin: 0; }
+
+.save-editor-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+.save-editor-fields .save-editor-field { margin: 8px 0 16px; }
+.save-editor-fields .pixel-button { margin-bottom: 16px; }
+
+.save-editor-pokemon-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.save-editor-box-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.save-editor-pokemon {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  min-height: 64px;
+  padding: 10px;
+  border: 3px solid var(--ink);
+  background: var(--panel-blue);
+  cursor: pointer;
+  text-align: left;
+  gap: 6px;
+}
+
+.save-editor-pokemon:hover,
+.save-editor-pokemon.active {
+  background: color-mix(in srgb, var(--accent) 23%, white);
+}
+
+.save-editor-pokemon strong {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.save-editor-pokemon small {
+  font-size: 9px;
+  color: #4e6b86;
+}
+
+.save-editor-empty-slot {
+  display: grid;
+  place-items: center;
+  min-height: 64px;
+  border: 2px dashed #91a8b9;
+  color: #91a8b9;
+  font-family: 'Silkscreen', sans-serif;
+  font-size: 10px;
+}
+
+.save-editor-box-picker {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  margin-top: 20px;
+  font-family: 'Silkscreen', sans-serif;
+  font-size: 11px;
+}
+
+.save-editor-box-picker select {
+  padding: 9px;
+  min-width: 180px;
+  border: 3px solid var(--ink);
+  border-radius: 0;
+  background: var(--panel-blue);
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.save-editor-selected { margin-top: 14px; }
+
+.save-editor-top .pixel-button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+p.save-editor-error, p.save-editor-success {
+  padding: 12px 16px;
+  background: var(--panel);
+}
+
+@media(max-width: 1100px) {
+  .save-editor-top { flex-direction: column; align-items: stretch; }
+  .save-editor-box-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}

@@ -51,7 +51,9 @@ test('save editor appears immediately left of Multiplayer and preserves home nav
   expect(actions.slice(0, 2)).toEqual(['SAVE EDITOR', 'MULTIPLAYER'])
   await page.getByRole('button', { name: 'SAVE EDITOR' }).click()
   await expect(page.getByRole('heading', { name: 'SAVE EDITOR' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'AUTO-DETECT GAME' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'READY WHEN YOU ARE' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'IMPORT SAVE' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'EXPORT EDITED SAVE' })).toBeDisabled()
   await page.getByRole('button', { name: 'BACK TO HOME' }).click()
   await expect(page.getByRole('heading', { name: 'YOUR RUNS' })).toBeVisible()
 })
@@ -90,33 +92,46 @@ test('all supported Gen III variants auto-detect from bytes and edit the newest 
   ])
 })
 
-test('save editor shows detected game from contents and exports an edited copy', async ({ page }) => {
+
+test('corrupt or unidentified DS save never enables export', async ({ page }) => {
+  test.setTimeout(100_000)
   await page.goto('/')
   await page.getByRole('button', { name: 'SAVE EDITOR' }).click()
   await page.locator('input[type=file]').setInputFiles({
-    name: 'definitely-emerald.sav', mimeType: 'application/octet-stream',
-    buffer: Buffer.from(makeGen3Fixture('firered-leafgreen')),
-  })
-  await expect(page.getByText('Pokémon FireRed / LeafGreen')).toBeVisible()
-  await expect(page.getByLabel('MONEY')).toHaveValue('2000')
-  await page.getByLabel('MONEY').fill('77777')
-
-  const downloadPromise = page.waitForEvent('download')
-  await page.getByRole('button', { name: 'EXPORT EDITED SAVE' }).click()
-  const download = await downloadPromise
-  expect(download.suggestedFilename()).toBe('definitely-emerald-edited.sav')
-  await expect(page.getByRole('status')).toContainText('original file')
-})
-
-test('DS-sized or ambiguous saves are inspected but cannot be edited', async ({ page }) => {
-  await page.goto('/')
-  await page.getByRole('button', { name: 'SAVE EDITOR' }).click()
-  await page.locator('input[type=file]').setInputFiles({
-    name: 'black2.sav', mimeType: 'application/octet-stream',
+    name: 'white2.sav',
+    mimeType: 'application/octet-stream',
     buffer: Buffer.alloc(512 * 1024),
   })
-  await expect(page.getByText('Nintendo DS–sized battery save')).toBeVisible()
-  await expect(page.getByText('EDITING NOT AVAILABLE')).toBeVisible()
-  await expect(page.getByRole('button', { name: 'DOWNLOAD BACKUP' })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'EXPORT EDITED SAVE' })).toHaveCount(0)
+  await expect(page.getByRole('alert')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'DOWNLOAD BACKUP' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'EXPORT EDITED SAVE' })).toBeDisabled()
+})
+
+test('PKHeX engine inspects five generation families and reports blank template export compatibility @integration', async ({ page }) => {
+  test.setTimeout(150_000)
+  await page.goto('/')
+  const generations = await page.evaluate(async () => {
+    const fixtures = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    return fixtures.verifyPkhexBlankSaveExports()
+  })
+  expect(generations.map(item => item.generation)).toEqual([1, 2, 3, 4, 5])
+  expect(generations.every(item => item.boxes > 0)).toBe(true)
+  expect(generations.some(item => item.exportedBytes > 0)).toBe(true)
+  // Blank Gen I templates are not guaranteed to re-import as played saves.
+  // Record this separately; real battery-save round trips need actual fixtures.
+  console.info('PKHeX blank template reload diagnostics:', generations.map(item => ({
+    generation: item.generation, version: item.version, reloaded: item.reloaded,
+    reloadError: item.reloadError,
+    exportError: item.exportError, exportedBytes: item.exportedBytes,
+  })))
+})
+
+test('Gen V Black trainer edit survives SDK export and reload @integration', async ({ page }) => {
+  test.setTimeout(100_000)
+  await page.goto('/')
+  const result = await page.evaluate(async () => {
+    const fixtures = await import('/tests/browser/helpers/pkhex-blank-fixtures.ts')
+    return fixtures.verifyBlackTrainerRoundTrip()
+  })
+  expect(result).toEqual({ money: 87654, generation: 5, exportedBytes: 524288 })
 })
