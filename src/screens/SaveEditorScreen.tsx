@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { BagEditor } from './save-editor/BagEditor'
 import { PokemonDetailPanel } from './save-editor/PokemonDetailPanel'
+import { TrainerProgressPanel } from './save-editor/TrainerProgressPanel'
 import type { PokemonSummary } from '@pkhex-everywhere/engine'
 import { AppHeader } from '../components/AppHeader'
 import { PixelButton } from '../components/PixelButton'
@@ -276,6 +277,13 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
                   </div>
                 )}
               </section>
+            )}
+
+            {tab === 'trainer' && (
+              <TrainerProgressPanel onChanged={() => {
+                setDirty(true)
+                setMessage('Badges updated in memory. Export to keep your changes.')
+              }} />
             )}
 
             {tab === 'party' && (
