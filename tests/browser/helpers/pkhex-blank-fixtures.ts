@@ -23,12 +23,25 @@ export async function verifyPkhexBlankSaveExports() {
   }> = []
 
   for (const sample of samples) {
-    const version = versions.find(v => sample.matches.some(name => v.name.toLowerCase().includes(name)))
-    if (!version) throw new Error('No blank save available for Generation ' + sample.generation)
-    await engine.game.loadBlank(version.id)
-    const current = await engine.game.get()
-    if (!current || current.generation !== sample.generation) {
-      throw new Error('Generation mismatch when creating ' + version.name)
+    // Match the *beginning* of the game title: a substring match for
+    // "Diamond" accidentally selects the Generation VIII Brilliant Diamond.
+    const candidates = versions.filter(v => sample.matches.some(name => {
+      const title = v.name.toLowerCase()
+      return title === name || title.startsWith(name + ' ') || title.startsWith(name + '[')
+    }))
+    let version: typeof versions[number] | undefined
+    let current: Awaited<ReturnType<typeof engine.game.get>> = null
+    for (const candidate of candidates) {
+      await engine.game.loadBlank(candidate.id)
+      const loaded = await engine.game.get()
+      if (loaded?.generation === sample.generation) {
+        version = candidate
+        current = loaded
+        break
+      }
+    }
+    if (!version || !current) {
+      throw new Error('No matching Generation ' + sample.generation + ' blank save version found.')
     }
 
     const boxes = await engine.box.list()
