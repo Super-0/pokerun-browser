@@ -255,13 +255,13 @@ export function PokemonDetailPanel({ pokemon, generation, onSaved, onClose }: Pr
                   <option value="genderless">GENDERLESS</option>
                 </select>
               </label>
-              <label className="save-editor-field save-editor-toggle">SHINY
+              <div className="save-editor-field save-editor-toggle">SHINY
                 <label className="save-editor-check">
                   <input type="checkbox" checked={form.isShiny} disabled={saving || locked.has('isShiny')}
                     onChange={event => update('isShiny', event.target.checked)}/>
                   <span>{form.isShiny ? 'SHINY ENABLED' : 'NOT SHINY'}</span>
                 </label>
-              </label>
+              </div>
             </div>
             <p className="save-editor-help">
               Species selection follows the Pokémon's evolution line. After changing species,
