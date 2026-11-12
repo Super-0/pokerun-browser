@@ -1139,3 +1139,136 @@ p.save-editor-error, p.save-editor-success {
   .editor-pokemon-tabs button {font-size:8px;}
   .editor-pokemon-commit {margin-left:-15px;margin-right:-15px;margin-bottom:-15px;padding:12px 15px;}
 }
+
+
+/* Bag UI v2: pockets → owned/catalog → selected item */
+.editor-bag-panel .editor-section-heading {margin-bottom:18px;}
+.editor-pocket-tabs {
+  display:flex;
+  flex-wrap:wrap;
+  gap:7px;
+  padding-bottom:15px;
+  border-bottom:2px dashed var(--editor-line);
+}
+.editor-pocket-tabs button {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  min-height:44px;
+  padding:9px 11px;
+  border:2px solid #7497a6;
+  background:#e5f1f2;
+  cursor:pointer;
+}
+.editor-pocket-tabs button.selected {
+  border-color:var(--editor-ink);
+  background:#d2e8cb;
+  box-shadow:3px 3px 0 rgba(32,54,79,.14);
+}
+.editor-pocket-tabs button strong {font-family:'Silkscreen',sans-serif;font-size:10px;line-height:1.5;}
+.editor-pocket-tabs button small {
+  background:#fff;
+  border:1px solid var(--editor-ink);
+  font-size:10px;
+  padding:2px 5px;
+}
+.editor-bag-toolbar {
+  display:flex;
+  align-items:flex-end;
+  flex-wrap:wrap;
+  gap:12px 18px;
+  justify-content:space-between;
+  margin:17px 0;
+}
+.editor-bag-view-switch {
+  display:flex;
+  border:3px solid var(--editor-ink);
+  background:#dce9ed;
+}
+.editor-bag-view-switch button {
+  min-height:39px;
+  padding:8px 12px;
+  border:0;
+  border-right:2px solid var(--editor-ink);
+  background:transparent;
+  font-family:'Silkscreen',sans-serif;
+  font-size:10px;
+  cursor:pointer;
+}
+.editor-bag-view-switch button:last-child {border-right:0;}
+.editor-bag-view-switch button.selected {background:var(--editor-dark-blue);color:#fff;}
+.editor-bag-toolbar .save-editor-field {
+  margin:0;
+  flex:1 1 250px;
+  max-width:365px;
+  font-family:'Silkscreen',sans-serif;
+  font-size:10px;
+}
+.editor-bag-toolbar .save-editor-field input {width:100%;max-width:none;background:#fff;}
+.save-editor-screen .save-editor-inventory-layout.editor-bag-layout {
+  display:grid;
+  grid-template-columns:minmax(0,1.1fr) minmax(255px,.9fr);
+  gap:13px;
+  margin-top:0;
+}
+.editor-bag-list-caption {
+  display:flex;
+  justify-content:space-between;
+  padding:10px 12px;
+  background:var(--editor-dark-blue);
+  color:#fff;
+  font-family:'Silkscreen',sans-serif;
+  font-size:10px;
+}
+.editor-bag-list-caption small {font-family:'IBM Plex Mono',monospace;font-size:10px;opacity:.8;}
+.editor-bag-list-column .save-editor-inventory-list {max-height:390px;border-top:0;}
+.editor-bag-list-column .save-editor-inventory-list button {
+  min-height:45px;
+  padding:11px 13px;
+  font-size:11px;
+}
+.editor-bag-list-column .save-editor-inventory-list button.active {background:#d0e9c9;}
+.editor-bag-inspector {
+  background:#e6f1ed;
+  min-height:252px;
+  padding:19px;
+}
+.editor-bag-inspector h3 {font-size:19px;margin:11px 0 7px;}
+.editor-bag-inspector .save-editor-field {margin:16px 0 11px;}
+.editor-bag-inspector .save-editor-field input {font-size:16px;min-height:44px;}
+.editor-quantity-shortcuts {display:flex;gap:7px;margin:0 0 15px;}
+.editor-quantity-shortcuts button {
+  flex:1;
+  min-height:34px;
+  border:2px solid var(--editor-ink);
+  background:#fff;
+  font-family:'Silkscreen',sans-serif;
+  font-size:11px;
+  cursor:pointer;
+}
+.editor-quantity-shortcuts button:hover {background:#dcebcf;}
+.editor-bag-inspector .pixel-button {max-width:100%;}
+.editor-bag-inspector-empty {
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  align-items:center;
+  gap:10px;
+  min-height:205px;
+  text-align:center;
+}
+.editor-bag-inspector-empty strong,.editor-bag-empty strong {font-family:'Silkscreen',sans-serif;font-size:11px;}
+.editor-bag-inspector-empty p,.editor-bag-empty p {font-size:11px;line-height:1.7;color:var(--editor-muted);}
+.editor-bag-empty {padding:28px 16px;text-align:center;}
+.editor-bag-more {margin:12px;font-size:10px;color:var(--editor-muted);}
+@media(max-width:1160px) {
+  .save-editor-screen .save-editor-inventory-layout.editor-bag-layout {grid-template-columns:1fr;}
+  .editor-bag-inspector {min-height:0;}
+}
+@media(max-width:610px) {
+  .editor-pocket-tabs button {flex:1 1 135px;}
+  .editor-bag-toolbar .save-editor-field {max-width:none;flex-basis:100%;}
+  .editor-bag-view-switch {width:100%;}
+  .editor-bag-view-switch button {flex:1;font-size:9px;}
+}
