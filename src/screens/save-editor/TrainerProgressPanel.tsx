@@ -60,7 +60,7 @@ export function TrainerProgressPanel({ onChanged }: Props) {
             <div><span>GYM BADGES</span><strong>{progress.badges.earned} / {progress.badges.total}</strong></div>
           )}
           {progress.pokedex && (
-            <div><span>POKÉDEX</span><strong>{JSON.stringify(progress.pokedex)}</strong></div>
+            <div><span>POKÉDEX</span><strong>{progress.pokedex.caught} CAUGHT / {progress.pokedex.seen} SEEN</strong></div>
           )}
         </div>
       )}
