@@ -1,10 +1,11 @@
 import type { MelonDsBridge } from '../../core/emulator/melonds/MelonDsBridge'
 import { white2LocalWirelessEnabled } from './white2LocalWirelessFeature'
 import { White2GreetingTrace } from './White2GreetingTrace'
+import { acceptsWhite2RadioSequence, createWhite2RadioTransport, type White2RadioTransport, type White2RadioTransportMessage } from '../transports/White2RadioTransport'
 
-// PRK66: ephemeral BroadcastChannel-only experiment. It connects two real
-// melonDS instances in separate tabs of the same browser origin. It is NOT
-// production networking, an Internet relay, or the simulated second trainer.
+// PRK66/PRK81: ephemeral local or opt-in development relay. It connects two
+// real melonDS instances without sending ROM or save bytes. The relay is not a
+// production networking service or proof that WAN timing is RF-safe.
 const PROTOCOL = 'pokerun-prk79-radio-v2'
 const HELLO_INTERVAL_MS = 750
 const PEER_EXPIRY_MS = 2500
@@ -62,7 +63,7 @@ type Message = Hello | Frame
  * Packet content is deliberately not logged, displayed or persisted.
  */
 export class White2NativeRadioLink {
-  private readonly channel: BroadcastChannel
+  private readonly transport: White2RadioTransport
   private readonly localNonce = crypto.randomUUID()
   private readonly firmwareRole: 1 | 2
   private readonly options: NativeRadioLinkOptions
@@ -87,7 +88,6 @@ export class White2NativeRadioLink {
   constructor(bridge: MelonDsBridge, options: NativeRadioLinkOptions,
     onStatus: (status: NativeRadioLinkStatus) => void) {
     if (!import.meta.env.DEV && !(white2LocalWirelessEnabled && options.firmwareRole)) throw new Error('White 2 local wireless is disabled.')
-    if (!('BroadcastChannel' in window)) throw new Error('This browser does not support same-origin BroadcastChannel.')
     if (!options.roomCode || !options.startId || !options.localPlayerId ||
         !options.remotePlayerId || options.localPlayerId === options.remotePlayerId ||
         !options.saveProfileId || !/^[0-9a-f]{64}$/i.test(options.romSha256)) {
@@ -112,9 +112,8 @@ export class White2NativeRadioLink {
     this.onStatus = onStatus
     const key = [options.roomCode, options.startId].map(value =>
       value.replace(/[^a-z0-9_-]/gi, '').slice(0, 64)).join('-')
-    this.channel = new BroadcastChannel(`${PROTOCOL}-${key}`)
-    this.channel.onmessage = event => this.handleMessage(event.data as unknown)
-    this.channel.onmessageerror = () => { this.framesRejected++; this.publish('error', 'Wireless channel could not decode an incoming message.') }
+    this.transport = createWhite2RadioTransport(`${PROTOCOL}-${key}`)
+    this.transport.onMessage(message => this.handleMessage(message))
   }
 
   private stopRadioOutput: (() => void) | null = null
@@ -145,8 +144,8 @@ export class White2NativeRadioLink {
     this.tickTimer = null
     this.stopRadioOutput?.()
     this.stopRadioOutput = null
-    try { this.channel.postMessage(this.wrap({ kind: 'bye' })) } catch { /* page teardown */ }
-    this.channel.close()
+    try { this.transport.send(this.wrap({ kind: 'bye' })) } catch { /* page teardown */ }
+    this.transport.close()
     try { this.trace?.stop() } catch { /* page teardown */ }
     try { this.bridge.setPrk80DeferHostPoll(0) } catch { /* page teardown */ }
     if (this.radioEnabled) {
@@ -171,7 +170,7 @@ export class White2NativeRadioLink {
   }
 
   private sendHello() {
-    this.channel.postMessage(this.wrap({ kind: 'hello' }))
+    this.transport.send(this.wrap({ kind: 'hello' }))
     this.lastHelloSentAt = performance.now()
   }
 
@@ -188,7 +187,7 @@ export class White2NativeRadioLink {
       typeof v.sessionNonce === 'string' && v.sessionNonce.length >= 12
   }
 
-  private handleMessage(value: unknown) {
+  private handleMessage(value: White2RadioTransportMessage) {
     if (this.stopped || !this.isPeerMessage(value)) return
     if (value.kind === 'hello') {
       if (this.peerNonce !== value.sessionNonce) {
@@ -215,7 +214,7 @@ export class White2NativeRadioLink {
       this.framesRejected++
       return
     }
-    if (!Number.isSafeInteger(value.sequence) || value.sequence <= this.lastSequence ||
+    if (!acceptsWhite2RadioSequence(this.lastSequence, value.sequence) ||
         !Number.isInteger(value.replyAid) || value.replyAid < 0 || value.replyAid > 15 ||
         !(value.bytes instanceof Uint8Array) ||
         (value.replyAid === 0 && value.bytes.byteLength < MIN_FRAME_BYTES) ||
@@ -280,7 +279,7 @@ export class White2NativeRadioLink {
             replyAid,
           }
           this.trace?.wireEvent('send', this.firmwareRole, frame.sequence, frame.timestamp, replyAid, outgoing.traceTxId)
-          this.channel.postMessage(frame)
+          this.transport.send(frame)
           this.framesSent++
         }
       }

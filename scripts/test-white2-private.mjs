@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import { constants } from 'node:fs'
-import { cp, lstat, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
+import { access, cp, lstat, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -61,6 +63,27 @@ assert(!workerRadio || !process.env.POKERUN_DEFER_HOST_POLL, 'Worker radio and e
 const requestedPollMode = process.env.POKERUN_DEFER_HOST_POLL
 const pollModes = new Map([['1', 1], ['adaptive', 2], ['preserve-counter', 3]])
 const deferHostPoll = mode === 'greeting' ? pollModes.get(requestedPollMode) ?? 0 : 0
+const execFileAsync = promisify(execFile)
+
+async function verifyPrivateOcrPrerequisites() {
+  const helper = join(privateRoot, 'read-ds-screen')
+  await access(helper)
+  const python = process.platform === 'win32' ? 'python' : 'python3'
+  try {
+    const { stdout } = await execFileAsync(python, ['-c', 'import PIL, sys; print(sys.executable); print(PIL.__version__)'], {
+      env: process.env,
+      timeout: 5_000,
+    })
+    console.log(`Private OCR ready: ${stdout.trim().replace(/\n/g, ' / ')}`)
+  } catch (error) {
+    const virtualEnv = process.env.VIRTUAL_ENV ?? 'not set'
+    throw new Error(
+      `Private OCR prerequisite failed: ${python} cannot import Pillow (VIRTUAL_ENV=${virtualEnv}). ` +
+      'Run with VIRTUAL_ENV="$PWD/local-test-assets/.venv" PATH="$PWD/local-test-assets/.venv/bin:$PATH".',
+      { cause: error },
+    )
+  }
+}
 
 async function launchFromNormalUi(pages) {
   const [host, guest] = pages
@@ -183,6 +206,7 @@ const manualDriver = {
 }
 if (mode === 'greeting') {
   await stat(join(checkpoint, 'Default', 'IndexedDB'))
+  if (!manual) await verifyPrivateOcrPrerequisites()
   driver = manual ? manualDriver : await import(pathToFileURL(join(privateRoot, 'white2-greeting-driver.mjs')).href)
   assert(typeof driver.prepareGreeting === 'function' && typeof driver.attemptGreeting === 'function')
   assert(tradesPerSession === 1 || typeof driver.attemptAnotherTrade === 'function',

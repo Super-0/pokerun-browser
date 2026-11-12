@@ -3,6 +3,7 @@ import { createServer } from 'vite'
 
 const MULTIPLAYER_PORT = Number(process.env.POKERUN_MULTIPLAYER_PORT ?? 5173)
 const NETWORK_RELAY_EVENT = 'pokerun:multiplayer'
+const RADIO_RELAY_EVENT = 'pokerun:radio'
 
 function openBrowser(url) {
   let command
@@ -65,6 +66,9 @@ const server = await createServer({
 server.ws.on(NETWORK_RELAY_EVENT, data => {
   server.ws.send(NETWORK_RELAY_EVENT, data)
 })
+server.ws.on(RADIO_RELAY_EVENT, data => {
+  server.ws.send(RADIO_RELAY_EVENT, data)
+})
 
 await server.listen()
 server.printUrls()
@@ -72,5 +76,6 @@ server.printUrls()
 const harnessUrl = `http://localhost:${MULTIPLAYER_PORT}/multiplayer-dev.html`
 console.log(`\nPokéRun multiplayer harness:\n${harnessUrl}\n`)
 console.log(`Cross-device mode: append ?transport=network to a player URL served by this dev server.\n`)
+console.log('Experimental native radio relay: set VITE_POKERUN_REMOTE_MULTIPLAYER=1 and append ?transport=network.\n')
 console.log('Opening the Codespaces port preview at / now redirects to the multiplayer launcher. For the normal app, use /?app=1.\n')
 openBrowser(harnessUrl)

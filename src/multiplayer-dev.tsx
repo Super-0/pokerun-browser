@@ -100,7 +100,8 @@ function MultiplayerPlayer({ player }: { player: 1 | 2 }) {
       }
 
       const now = Date.now()
-      const sharedRoomCode = localStorage.getItem(DEV_ROOM_KEY)?.trim().toUpperCase() ?? ''
+      const requestedRoomCode = new URLSearchParams(window.location.search).get('room')?.trim().toUpperCase() ?? ''
+      const sharedRoomCode = requestedRoomCode || (localStorage.getItem(DEV_ROOM_KEY)?.trim().toUpperCase() ?? '')
       const roomCodeElement = document.querySelector<HTMLElement>('.lobby-room-code strong')
       const visibleRoomCode = roomCodeElement?.textContent?.trim().toUpperCase() ?? ''
 

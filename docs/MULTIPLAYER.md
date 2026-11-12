@@ -84,6 +84,61 @@ only generic `MultiplayerPlayerState` data to the multiplayer layer. The game
 screen displays local and remote map/X/Y/direction values; if map IDs differ it
 marks the remote player as being in a different location.
 
+## Experimental isolated-process radio relay
+
+The default native White 2 link remains an ephemeral, same-origin
+`BroadcastChannel`. For a development-only proof of concept, the native frame
+boundary can instead use Vite's existing HMR WebSocket relay:
+
+```sh
+VITE_POKERUN_REMOTE_MULTIPLAYER=1 npm run dev:multiplayer
+```
+
+Open each player from the same dev server with `?transport=network`. The relay
+serializes radio bytes as base64 and forwards only the existing hello/bye/frame
+envelopes; ROMs, saves, and player data are not transmitted. The server does
+not persist packets or provide authentication, room authority, replay
+protection, or reconnection recovery. Malformed payloads are discarded, and
+the native link still enforces peer identity, nonce, sequence, frame-size, and
+timestamp checks.
+
+This is a transport proof of concept, not a remote-trade claim. Vite/HMR
+WebSocket delivery can add latency and jitter, while the worker-radio runtime
+waits only within its existing bounded local timing model. A genuine
+two-computer White 2 trade requires measured latency/jitter evidence and a
+dedicated authenticated relay/session service before this flag should be used
+outside development.
+
+`npm run test:remote:radio` verifies binary frame-envelope delivery between two
+isolated Chromium processes and reports observed relay latency. Its synthetic
+payloads exercise serialization and ordering only; passing it does not prove
+native association or a remote trade.
+
+The private checkpoint harness goes one stage further:
+
+```sh
+VITE_POKERUN_REMOTE_MULTIPLAYER=1 \
+VITE_POKERUN_WHITE2_LOCAL_MULTIPLAYER=1 \
+POKERUN_MULTIPLAYER_PORT=4181 \
+npm run dev:multiplayer
+
+VIRTUAL_ENV="$PWD/local-test-assets/.venv" \
+PATH="$PWD/local-test-assets/.venv/bin:$PATH" \
+npm run test:white2:remote-native
+```
+
+It uses two isolated Chromium profiles and the existing verified checkpoints.
+The highest verified stage is native link/association setup with both emulators
+at roughly 59–61 FPS and zero browser-frame rejection; the current bounded run
+does not yet complete the in-game greeting or a trade. Evidence remains under
+the ignored `local-test-assets/` directory.
+
+When browser storage is intentionally isolated, pass the host's displayed room
+code explicitly to the guest, for example
+`?transport=network&player=2&room=ABC123`. This avoids relying on shared
+`localStorage`; `npm run test:remote:pairing` automates room creation, joining,
+and host/guest role assertions.
+
 ## Next milestone
 
 Manually verify two-tab live state exchange in the Codespace, including movement
