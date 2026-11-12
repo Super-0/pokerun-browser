@@ -144,10 +144,13 @@ export async function applyPokemonPatch(handle: PokemonHandle, patch: PokemonPat
     throw new Error('Nickname cannot exceed 10 characters.')
   }
   const allowedChoices: Array<[string, number | null | undefined, number[]]> = [
-    ['nature', patch.nature, (await current.game.natures()).map(choice => choice.id)],
     ['ability', patch.ability, options.abilities.map(choice => choice.id)],
     ['heldItem', patch.heldItem, options.heldItems.map(choice => choice.id)],
   ]
+  // Gen I–II have no natures; don't query that catalog unless it is edited.
+  if (patch.nature !== undefined && patch.nature !== null) {
+    allowedChoices.push(['nature', patch.nature, (await current.game.natures()).map(choice => choice.id)])
+  }
   for (const [field, value, ids] of allowedChoices) {
     if (value !== undefined && value !== null && !ids.includes(value)) {
       throw new Error('Invalid ' + field + ' for this game.')
