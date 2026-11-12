@@ -994,6 +994,7 @@ p.save-editor-error, p.save-editor-success {
 .save-editor-screen .pixel-button:hover:not(:disabled) {transform:translate(-1px,-1px);}
 
 @media (max-width:1320px) {
+  body:has(.save-editor-screen) {min-width:320px;}
   .editor-command-bar {grid-template-columns:58px minmax(0,1fr);}
   .editor-main-actions {grid-column:1/-1;justify-content:flex-start;margin-top:4px;}
 }
