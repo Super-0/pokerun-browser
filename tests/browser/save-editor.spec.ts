@@ -212,7 +212,7 @@ test('advanced PC tools are exposed for a recognized save @integration', async (
     input.dispatchEvent(new Event('change', { bubbles: true }))
   })
   await expect(page.getByText('GEN 5', { exact: false })).toBeVisible()
-  await page.getByRole('button', { name: 'BOXES', exact: true }).click()
+  await page.getByRole('button', { name: 'PC BOXES', exact: true }).click()
   await expect(page.getByText('PC BOX TOOLS')).toBeVisible()
   await expect(page.getByRole('button', { name: 'CLONE TO PC' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'EXPORT .PK FILE' })).toBeDisabled()
