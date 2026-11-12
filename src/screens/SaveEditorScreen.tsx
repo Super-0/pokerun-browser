@@ -3,6 +3,7 @@ import { BagEditor } from './save-editor/BagEditor'
 import { PokemonDetailPanel } from './save-editor/PokemonDetailPanel'
 import { TrainerProgressPanel } from './save-editor/TrainerProgressPanel'
 import { BoxToolsPanel } from './save-editor/BoxToolsPanel'
+import { MysteryGiftPanel } from './save-editor/MysteryGiftPanel'
 import type { PokemonSummary } from '@pkhex-everywhere/engine'
 import { AppHeader } from '../components/AppHeader'
 import { PixelButton } from '../components/PixelButton'
@@ -16,7 +17,7 @@ interface Props {
   onHome: () => void
   onSettings: () => void
 }
-type EditorTab = 'trainer' | 'party' | 'boxes' | 'bag'
+type EditorTab = 'trainer' | 'party' | 'boxes' | 'bag' | 'gifts'
 
 function editedName(name: string) {
   return name.replace(/(\.[^.]+)?$/, '-edited$1')
@@ -171,6 +172,8 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
     (pokemon.nickname + ' ' + pokemon.species + ' ' + (pokemon.speciesId ?? '')).toLowerCase()
       .includes(pcSearch.trim().toLowerCase()),
   ).slice(0, 75) : []
+  const tabs: EditorTab[] = ['trainer', 'party', 'boxes', 'bag']
+  if (snapshot?.save.hasMysteryGift) tabs.push('gifts')
   const activeBox = snapshot?.boxes.find(box => box.box === boxIndex)
   const boxPokemon = snapshot?.boxed.filter(pokemon =>
     pokemon.at.source === 'box' && pokemon.at.box === boxIndex,
@@ -246,7 +249,7 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
         ) : (
           <>
             <nav className="save-editor-tabs pixel-border" aria-label="Save editor sections">
-              {(['trainer', 'party', 'boxes', 'bag'] as const).map(option => (
+              {tabs.map(option => (
                 <button key={option} type="button"
                   className={tab === option ? 'selected' : ''}
                   onClick={() => { setTab(option); setSelected(null); setMessage('') }}
@@ -375,6 +378,13 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
                 setSelected(null)
                 setDirty(true)
                 setMessage('PC storage updated in memory. Export to keep the changes.')
+              }} />
+            )}
+
+            {tab === 'gifts' && snapshot.save.hasMysteryGift && (
+              <MysteryGiftPanel onChanged={() => {
+                setDirty(true)
+                setMessage('Mystery Gift album updated in memory. Export to keep the changes.')
               }} />
             )}
 
