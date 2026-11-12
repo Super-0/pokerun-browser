@@ -101,3 +101,35 @@ export async function verifyBlackTrainerRoundTrip() {
   await engine.game.close()
   return { money, generation, exportedBytes: exported.bytes.length }
 }
+
+
+/** Only for ROM-free browser UI tests; no user save or game ROM. */
+export async function createBlankBlackSave(): Promise<Uint8Array> {
+  const engine = createEngine({ lazy: true })
+  const version = (await engine.game.blankVersions()).find(item => item.name === 'Black')
+  if (!version) throw new Error('No Black save template found.')
+  await engine.game.loadBlank(version.id)
+  const output = await engine.game.export()
+  await engine.game.close()
+  return output.bytes
+}
+
+export async function verifyBlackItemRoundTrip() {
+  const engine = createEngine({ lazy: true })
+  const version = (await engine.game.blankVersions()).find(item => item.name === 'Black')
+  if (!version) throw new Error('No Black save template found.')
+  await engine.game.loadBlank(version.id)
+  const bag = await engine.inventory.get()
+  const pouch = bag.find(p => p.addable.some(item => item.maxCount >= 2))
+  if (!pouch) throw new Error('No editable item pouch available.')
+  const item = pouch.addable.find(candidate => candidate.maxCount >= 2)!
+  await engine.inventory.setItem({ pouch: pouch.name, itemId: item.id }, 2)
+  const after = await engine.inventory.get()
+  const applied = after.find(p => p.name === pouch.name)?.items.find(entry => entry.id === item.id)?.count
+  const exported = await engine.game.export()
+  await engine.game.load(exported.bytes, 'Black.sav')
+  const restored = (await engine.inventory.get())
+    .find(p => p.name === pouch.name)?.items.find(entry => entry.id === item.id)?.count
+  await engine.game.close()
+  return { applied, restored, pouch: pouch.name, itemId: item.id }
+}
