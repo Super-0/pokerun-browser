@@ -38,15 +38,16 @@ Then open the localhost URL Vite prints.
 5. Active Run opens with mGBA for GB/GBC/GBA games and the experimental melonDS bridge for `.nds` games.
 6. Open **DEV GAME STATE SIMULATOR** at the bottom to simulate route changes, encounters, damage, deaths, and badges.
 
-## Save Editor (experimental)
+## Save Editor (experimental: Generation I–V)
 
-The **SAVE EDITOR** link on Home is immediately before **MULTIPLAYER**. Import an exported battery-save file (not a ROM or emulator save state). PokéRun inspects the file bytes locally and automatically selects a supported save layout. Filenames do **not** determine the game type.
+**SAVE EDITOR** is immediately left of **MULTIPLAYER** on Home. Import an exported battery save in the browser. The editor uses the PKHeX.Everywhere engine to detect the game and read its actual save layout; filename extensions alone are not trusted.
 
-- **Editable now:** 128 KiB Generation III Pokémon Ruby/Sapphire, Emerald, and FireRed/LeafGreen saves with valid sector signatures/checksums. Editing currently supports money only, including the variant-specific XOR security keys. Identical-layout pairs cannot be differentiated reliably from the save alone and are labeled as pairs.
-- **Read-only:** Other or ambiguous formats (including common GB/GBC- and DS-sized saves), corrupted Gen III sectors, and DeSmuME saves. File-size recognition is only a hint, **not** proof of which game created a save. PokéRun does not guess or write unsupported formats.
-- **Safety:** The source bytes remain untouched, an explicit backup can be downloaded, and edited exports are validated before download. Neither local PokéRun runs nor multiplayer battery-save storage are changed. To use an export, import it separately into your emulator.
+- **Generations 1–5:** trainer name/money, party Pokémon, and PC boxes are available when PKHeX recognizes the file. You can change Pokémon nicknames and levels, then export an edited copy. Unsupported/ambiguous or invalid formats fail closed.
+- **Safety:** original uploaded bytes are preserved separately, with a backup download. The Save Editor does not write into your current PokéRun run, ROM storage, or multiplayer profiles; you must import the exported save into your emulator yourself.
+- **Testing:** ROM-free blank-save round trips for generations 1–5, plus failure-path checks. Real saves from each game and actual emulator import/export require manual validation before considering the editor production-ready.
+- **License:** PKHeX.Everywhere and its PKHeX.Core runtime are GPL-3.0-or-later. **Do not merge this experimental branch into a proprietary/distribution build without reviewing the GPL obligations and project licensing.**
 
-This is a deliberately limited, safe first version. Generation I/II, Generation IV/V, full Pokémon editing, and direct-in-app save replacement require game-specific parsers and tests.
+See [Save Editor implementation notes](docs/SAVE_EDITOR.md) for the engine boundary, coverage and checklist.
 
 ## Core architecture
 
