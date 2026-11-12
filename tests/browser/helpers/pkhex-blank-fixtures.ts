@@ -1,4 +1,4 @@
-import { createEngine } from '@pkhex-everywhere/engine'
+import { createEngine, draftHandle } from '@pkhex-everywhere/engine'
 
 /** ROM-free test exercise for PKHeX across five generation families. */
 export async function verifyPkhexBlankSaveExports() {
@@ -181,7 +181,7 @@ export async function verifyBlackAdvancedPokemonRoundTrip() {
   const created = await engine.box.addEncounter(encounters[0].index)
   const original = await engine.pokemon.details(created.at)
   await engine.pokemon.edit(created.at)
-  await engine.pokemon.update({ source: 'draft', slot: 0 }, {
+  await engine.pokemon.update(draftHandle, {
     isShiny: !original.isShiny,
     originalTrainerName: 'POKERUN',
   })
