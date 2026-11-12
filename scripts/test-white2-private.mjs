@@ -212,6 +212,7 @@ if (mode === 'greeting') {
   assert(tradesPerSession === 1 || typeof driver.attemptAnotherTrade === 'function',
     'The private driver must implement attemptAnotherTrade for a second exchange.')
   run = await mkdtemp(join(privateRoot, 'white2-run-'))
+  process.env.POKERUN_WHITE2_RUN_DIR = run
   const runProfile = join(run, 'profile', 'Default')
   await mkdir(runProfile, { recursive: true })
   // Chromium can rebuild its caches. Clone only the two stores that contain

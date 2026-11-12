@@ -10,6 +10,7 @@ const run = join(privateRoot, `white2-remote-run-${Math.random().toString(36).sl
 const origin = process.env.POKERUN_REMOTE_URL ?? 'http://127.0.0.1:4181'
 process.env.POKERUN_WHITE2_UNATTENDED = '1'
 process.env.POKERUN_EXPECT_WHITE2 = 'trade-confirmed'
+process.env.POKERUN_WHITE2_RUN_DIR = run
 const driver = await import(new URL('../local-test-assets/white2-greeting-driver.mjs', import.meta.url))
 const contexts = []
 const pages = []
@@ -98,7 +99,12 @@ try {
       player2: localStorage.getItem('pokerun-multiplayer-dev-save-player-2-v1'),
     })).catch(() => null)
     if (diagnostics) await writeFile(join(run, `p${index + 1}-diagnostics.json`), JSON.stringify(diagnostics, null, 2))
-    const panel = await page.locator('.multiplayer-session-debug').innerText().catch(() => '')
+    const section = page.locator('section.multiplayer-session-debug')
+      .filter({ hasText: 'WHITE 2 • NATIVE MULTIPLAYER TEST' })
+    await section.locator('details').evaluateAll(details => {
+      for (const detail of details) detail.open = true
+    }).catch(() => undefined)
+    const panel = await section.innerText().catch(() => '')
     if (panel) await writeFile(join(run, `p${index + 1}-panel.txt`), panel)
     for (const [screen, canvas] of (await page.locator('canvas.melonds-screen').all()).entries()) {
       await canvas.screenshot({ path: join(run, `p${index + 1}-ds-${screen}.png`) }).catch(() => undefined)

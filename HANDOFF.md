@@ -83,6 +83,56 @@ The bounded retry captured both DS screen pairs at the initial Fight menu and af
 
 A third fresh session completed the match in two turns. Both DS screens showed the same knockout and complementary loss and victory messages. After declining the Battle Video, both games returned to the Colosseum and went back into team selection for a rematch. The private runner still reported a timeout while the session stayed open to test leaving the Colosseum. Its paired result screenshots are under `local-test-assets/white2-run-VeswLe/`. Exiting the Colosseum back to the Union Room or overworld remains to be verified.
 
+## Isolated-process remote radio boundary
+
+At `bae6ecb`, the synthetic WebSocket relay probe still passed ordered,
+byte-preserved envelopes. A bounded real two-process attempt with the same
+worker runtime and fresh verified checkpoint copies reached the Union Room
+positioning stage but did not establish native association. The first repeat
+captured the existing native panel counters under
+`local-test-assets/white2-remote-run-dxeb7c/`; the earlier comparison is under
+`local-test-assets/white2-remote-run-qxet7y/`.
+
+The earliest observed divergence is native/game traffic generation, not relay
+delivery: both pages reported zero browser-frame rejection, roughly 60 DS
+frames/s, and accepted/IRQ'd beacon traffic. Both pages reported zero
+authentication, association-request, association-response, and data
+hardware traffic. The remote run therefore never reached native association;
+the harness's previous `nativeAssociation` field was an attempted-stage marker,
+not proof of association. No greeting, Trade menu, or trade was claimed.
+
+The private harness now expands the native wireless diagnostic section before
+capturing failure evidence. No emulator scheduling, frame serialization, role,
+channel, or transport correction was made. The next experiment must explain
+why isolated-process game state emits only beacons despite successful relay
+and beacon RX before any native timing change is considered.
+
+Two fresh local controls with the same private Python environment also stopped
+at the greeting window before authentication (`white2-run-cOZvAr` and
+`white2-run-zlOmC6`): both stayed near 60 FPS and recorded beacon RX/IRQ but
+zero authentication, association, and data traffic. This means the current
+driver checkpoint/state transition is itself intermittent; the earlier
+`white2-run-F3o8U4` remains the known-good local comparison, not a proof that
+the remote transport alone causes the missing transition. No remote-specific
+correction is justified until a local control reaches the same interaction
+state in a fresh paired trace.
+
+The private driver now writes a bounded `stage-trace.json` plus per-player
+before/after screenshots for checkpoint restore, Union Room entry, positioning,
+host greeting input, guest trade acceptance, and reciprocal confirmation. Each
+record includes the intended action, wall/frame-clock observations, parsed
+player coordinates/facing, visible game state, DS health, and the native panel
+counters without packet contents. The runner passes its disposable run
+directory to the driver and keeps the trace with the other ignored evidence.
+
+Five fresh local sessions then completed genuine `trade-confirmed` outcomes:
+`white2-run-k5guHT`, `white2-run-98AETe`, `white2-run-bjFf3w`,
+`white2-run-RKNnKp`, and `white2-run-XtRvJB`. Every result independently
+verified reciprocal party exchange, both persisted batteries changed, and
+footer validation. The fourth run required the driver's existing
+state-bounded host-prompt observation once; it did not use a blind retry.
+No native emulator or remote transport code was changed.
+
 ## Verification for this worktree
 
 On macOS with Node.js 24.13.0, `npm ci` and `npm run verify` passed (8 unit tests, production build with the bundle-size warning, and 5 Chromium tests). A second `npm run test:browser` passed on the same port. The clean pinned melonDS build passed with Emscripten 3.1.74, and `npm run test:native` verified stamp `0x50524B4A`, queue observation and monotonic clock alignment in Chromium. The optional worker build also completed two ROM-free worker frames with `POKERUN_WORKER_RADIO=1 npm run test:native`. The updated branch was not run on Windows or WSL. The real White 2 greeting captures are described above. The hosted ROM-free checks and a clean Ubuntu Emscripten 3.1.74 worker build both passed at `231a7a9`. Linux Chromium loaded runtime `0x50524b4a`, observed the expected synthetic queue row with zero drops and both timestamps inside their browser bounds, and completed two worker frames. The previously reported Codespace assertion combined queue and clock errors, so its stack trace alone does not establish which check failed. Follow the [Codespaces runbook](docs/PRK80_GREETING_RUNBOOK.md#manual-testing-in-github-codespaces) to reproduce in the normal lobby.
