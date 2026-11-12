@@ -8,6 +8,7 @@ interface Props {
   runs: RunState[]
   onNewRun: () => void
   onOpenRun: (run: RunState) => void
+  onSaveEditor: () => void
   onMultiplayer: () => void
   onMyRuns: () => void
   onSettings: () => void
@@ -23,7 +24,7 @@ function runLabel(run: RunState) {
   return 'RUN ' + String(run.runNumber).padStart(3, '0')
 }
 
-export function HomeScreen({ runs, onNewRun, onOpenRun, onMultiplayer, onMyRuns, onSettings }: Props) {
+export function HomeScreen({ runs, onNewRun, onOpenRun, onSaveEditor, onMultiplayer, onMyRuns, onSettings }: Props) {
   const ordered = [...runs]
     .filter(run => Boolean(gameById[run.gameId]))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -45,6 +46,7 @@ export function HomeScreen({ runs, onNewRun, onOpenRun, onMultiplayer, onMyRuns,
           onHome={() => {}}
           right={(
             <>
+              <button className="text-action" onClick={onSaveEditor}>SAVE EDITOR</button>
               <button className="text-action" onClick={onMultiplayer}>MULTIPLAYER</button>
               <button className="text-action" onClick={onSettings}>SETTINGS</button>
             </>
