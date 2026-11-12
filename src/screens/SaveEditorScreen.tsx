@@ -202,7 +202,7 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
         <div className="editor-page-heading">
           <div className="editor-heading-copy">
             <div className="editor-kicker"><span className="editor-kicker-dot"/> POKÉRUN UTILITIES / LOCAL TOOLS</div>
-            <h1>SAVE EDITOR<span className="editor-heading-accent">_</span></h1>
+            <h1>SAVE EDITOR<span className="editor-heading-accent" aria-hidden="true">_</span></h1>
             <p>A safer way to work with your Pokémon saves. Everything stays in this browser.</p>
           </div>
           <PixelButton tone="ghost" onClick={onHome}>BACK TO HOME</PixelButton>
@@ -237,7 +237,7 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
             <PixelButton tone="ghost" disabled={busy} onClick={() => fileInput.current?.click()}>
               {busy ? 'LOADING...' : 'IMPORT SAVE'}
             </PixelButton>
-            {snapshot && <PixelButton tone="ghost" disabled={!originalBytes || busy}
+            {originalBytes && <PixelButton tone="ghost" disabled={!originalBytes || busy}
               onClick={() => originalBytes && originalFile && download(originalBytes, backupName(originalFile.name))}>
               DOWNLOAD BACKUP
             </PixelButton>}
