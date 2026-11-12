@@ -174,7 +174,7 @@ export async function applyPokemonPatch(handle: PokemonHandle, patch: PokemonPat
     (!Number.isSafeInteger(patch.metLevel) || patch.metLevel < 0 || patch.metLevel > 100)) {
     throw new Error('Met level must be from 0 to 100.')
   }
-  if (patch.metDate && !/^20\\d{2}-\\d{2}-\\d{2}$/.test(patch.metDate)) {
+  if (patch.metDate && !/^20\d{2}-\d{2}-\d{2}$/.test(patch.metDate)) {
     throw new Error('Met date must use YYYY-MM-DD between 2000 and 2099.')
   }
   const allowedChoices: Array<[string, number | null | undefined, number[]]> = [
