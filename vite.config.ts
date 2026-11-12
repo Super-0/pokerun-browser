@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import pkhexEngine from '@pkhex-everywhere/engine/vite'
 
 const crossOriginIsolationHeaders = {
   'Cross-Origin-Opener-Policy': 'same-origin',
@@ -41,7 +42,7 @@ Object.defineProperty(Module, 'wasmMemory', {
 }
 
 export default defineConfig({
-  plugins: [pokerunMgbaMemoryBridge, react()],
+  plugins: [pokerunMgbaMemoryBridge, react(), pkhexEngine()],
   server: {
     headers: crossOriginIsolationHeaders,
     fs: { deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', '**/local-test-assets/**'] },
