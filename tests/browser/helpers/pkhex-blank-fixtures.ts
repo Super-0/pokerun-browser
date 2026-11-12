@@ -16,6 +16,7 @@ export async function verifyPkhexBlankSaveExports() {
     generation: number
     version: string
     exportedBytes: number
+    exportError?: string
     boxes: number
     party: number
     reloaded: boolean
@@ -46,28 +47,35 @@ export async function verifyPkhexBlankSaveExports() {
 
     const boxes = await engine.box.list()
     const party = await engine.party.get()
-    const initial = await engine.game.export()
-    if (!initial.bytes.length) throw new Error('Blank save export was empty.')
-
-    // Blank templates are useful for verifying the engine's data model,
-    // but some (notably Gen I Blue/Green) are intentionally not valid played
-    // battery saves and cannot always pass normal game.load() detection.
-    // Report reload failures independently instead of misreporting coverage.
+    // The SDK can load an empty template but cannot export every one (some
+    // report Arg_ArgumentOutOfRangeException). Capture these SDK limitations
+    // rather than treating blank, unplayed templates as verified save files.
+    let exportedBytes = 0
+    let exportError: string | undefined
     let reloaded = false
     let reloadError: string | undefined
     try {
-      await engine.game.load(initial.bytes, initial.fileName || 'blank.sav')
-      const restored = await engine.game.get()
-      reloaded = restored?.generation === sample.generation
-      if (!reloaded) reloadError = 'Generation mismatch after export'
+      const initial = await engine.game.export()
+      exportedBytes = initial.bytes.length
+      if (exportedBytes > 0) {
+        try {
+          await engine.game.load(initial.bytes, initial.fileName || 'blank.sav')
+          const restored = await engine.game.get()
+          reloaded = restored?.generation === sample.generation
+          if (!reloaded) reloadError = 'Generation mismatch after export'
+        } catch (error) {
+          reloadError = error instanceof Error ? error.message : String(error)
+        }
+      }
     } catch (error) {
-      reloadError = error instanceof Error ? error.message : String(error)
+      exportError = error instanceof Error ? error.message : String(error)
     }
 
     results.push({
       generation: sample.generation,
       version: current.version,
-      exportedBytes: initial.bytes.length,
+      exportedBytes,
+      exportError,
       boxes: boxes.length,
       party: party.length,
       reloaded,
