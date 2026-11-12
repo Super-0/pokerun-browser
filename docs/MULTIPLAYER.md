@@ -94,7 +94,8 @@ boundary can instead use Vite's existing HMR WebSocket relay:
 VITE_POKERUN_REMOTE_MULTIPLAYER=1 npm run dev:multiplayer
 ```
 
-Open each player from the same dev server with `?transport=network`. The relay
+Open each player from the same dev server with `transport=network` and
+`radioIsolation=1` in the player URL. The relay
 serializes radio bytes as base64 and forwards only the existing hello/bye/frame
 envelopes; ROMs, saves, and player data are not transmitted. The server does
 not persist packets or provide authentication, room authority, replay
@@ -102,12 +103,11 @@ protection, or reconnection recovery. Malformed payloads are discarded, and
 the native link still enforces peer identity, nonce, sequence, frame-size, and
 timestamp checks.
 
-This is a transport proof of concept, not a remote-trade claim. Vite/HMR
-WebSocket delivery can add latency and jitter, while the worker-radio runtime
-waits only within its existing bounded local timing model. A genuine
-two-computer White 2 trade requires measured latency/jitter evidence and a
-dedicated authenticated relay/session service before this flag should be used
-outside development.
+This development relay has carried a genuine White 2 Union Room trade between
+isolated Chromium processes on the same Mac. Vite/HMR WebSocket delivery can add
+latency and jitter, while the worker-radio runtime uses its existing bounded
+timing model. Trading across physical computers and remote battles still need
+gameplay verification.
 
 `npm run test:remote:radio` verifies binary frame-envelope delivery between two
 isolated Chromium processes and reports observed relay latency. Its synthetic
@@ -127,15 +127,17 @@ PATH="$PWD/local-test-assets/.venv/bin:$PATH" \
 npm run test:white2:remote-native
 ```
 
-It uses two isolated Chromium profiles and the existing verified checkpoints.
-The highest verified stage is native link/association setup with both emulators
-at roughly 59–61 FPS and zero browser-frame rejection; the current bounded run
-does not yet complete the in-game greeting or a trade. Evidence remains under
-the ignored `local-test-assets/` directory.
+The runner uses two isolated Chromium processes and disposable copies of the
+verified checkpoints. It restores both games at their entrance counters with
+PRK75 isolation active, links the radio, and then stages both games on Union
+Room map 422. The private driver reads the DS canvas for game dialogs and the
+location element for map IDs. The runner requires hardware reception of an
+association response and verifies the reciprocal exchange in both persisted
+saves. Evidence stays in the ignored `local-test-assets/` directory.
 
 When browser storage is intentionally isolated, pass the host's displayed room
 code explicitly to the guest, for example
-`?transport=network&player=2&room=ABC123`. This avoids relying on shared
+`?transport=network&player=2&radioIsolation=1&room=ABC123`. This avoids relying on shared
 `localStorage`; `npm run test:remote:pairing` automates room creation, joining,
 and host/guest role assertions.
 

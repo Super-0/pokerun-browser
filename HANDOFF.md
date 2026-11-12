@@ -133,6 +133,106 @@ footer validation. The fourth run required the driver's existing
 state-bounded host-prompt observation once; it did not use a blind retry.
 No native emulator or remote transport code was changed.
 
+## Verified same-Mac WebSocket Union Room trade
+
+Two independent Chromium processes on one Mac completed genuine White 2
+Union Room trades over the Vite WebSocket relay. The local BroadcastChannel
+control also completed a genuine trade. The evidence covers native association,
+the Trade menu, and reciprocal exchange in both persisted, checksum-valid
+batteries. A trade between physical computers, a battle over the relay, and
+trade or battle outside the Union Room remain unverified.
+
+Baseline `41a8b7e` on macOS arm64 with Node 24.13.0 and npm 11.6.2 restored
+both checkpoints and entered the room but could not face a native peer.
+`local-test-assets/white2-remote-run-pere8d/` shows beacon reception with
+zero authentication, association, or data frames.
+
+The prepared checkpoints are at the entrance counters on maps 435 and 41.
+Room entry happens after linking the radio. The prior preparation assertion
+expected room entry before starting the radio. The private driver also
+searched the entire HTML body for game errors, matching the research panel's
+goal text before any game error appeared. The paired DS screenshots show the
+counter and room floor. The prior driver produced `422X` by concatenating
+the map label with the X coordinate label. Read map 422 from the dedicated
+location element and read game dialogs from the DS canvas.
+
+The remote runner explicitly enables PRK75 isolation for both players, waits
+for both emulators to run at 1×, and restores the counter saves before starting
+radio. The older remote URL left the injected actor and interaction key
+capture active. The runner checks the two distinct slots, linked firmware
+roles, Union Room map, native association counters, and the persisted exchange
+using the same party and battery validation as the local runner. The corrected
+private driver is installed under ignored `local-test-assets/`. A separate
+local backup of both driver revisions is under
+`local-test-assets/driver-backups/`. The original checkpoints were preserved.
+
+A fresh loopback run of `npm run test:white2:remote-native`, with Pillow on
+PATH and the dev relay at `http://127.0.0.1:4181`, reached the native Trade
+menu, received one native association response, and verified both persisted
+parties exchanged one member. Both battery files changed and passed footer
+validation. Both emulators maintained 59.93–59.97 DS frames/s during staging
+and gameplay. Evidence is in `local-test-assets/white2-remote-run-mtHceA/`.
+The existing runtime and transports were used for this run.
+
+The normal-interface BroadcastChannel control reused the running development
+server at `/?app=1` to keep the checkpoint origin on port 4181. Its first
+fresh profile (`local-test-assets/white2-run-qvSYLw/`) entered map 422 but
+failed to open the native greeting. The host finished at a different position
+from the successful trace, and the gameplay sample recorded only beacon RX.
+The repeat (`local-test-assets/white2-run-GQNVVZ/`) received one association
+response and passed both persisted party and battery checks at 59.82–59.92 DS
+frames/s. Both timing traces were complete.
+
+A fresh remote repeat (`local-test-assets/white2-remote-run-ROoWIY/`)
+entered map 422 and stopped before the invitation. The positioning heuristic
+averaged cyan scenery with the peer and red pixels on the peer with the host.
+The revised private driver samples the area around the centered host and
+checks that the host faces the rendered peer before attempting the greeting.
+The runner records map entry independently of this positioning check.
+
+An overlapping remote and local test dropped both controls below the 55 FPS
+floor. The remote side (`local-test-assets/white2-remote-run-54I75O/`)
+passed positioning, recorded a native association response, and submitted both
+trade confirmations. The runner stopped at the health assertion before
+verifying persisted saves. The local control stopped at its baseline health
+check (`local-test-assets/white2-run-dm4f52/`). Run the private scenarios
+serially on this machine.
+
+The first serial repeat with a concurrent map wait
+(`local-test-assets/white2-remote-run-ubEPRc/`) confirmed the trade in-game
+and failed the health gate at 48.07/49.50 FPS. The runner now samples the
+rendered map after staging instead of running a frame-driven waiter during
+entry. It records the persisted exchange and frame health independently.
+The serial repeat with this change
+(`local-test-assets/white2-remote-run-wzmVWw/`) passed at 59.96/59.97 FPS.
+It verified one association response, one reciprocal persisted trade, both
+changed batteries with valid footers, and zero browser errors.
+
+The final serial local control with the same revised driver
+(`local-test-assets/white2-run-LJEz69/`) verified the reciprocal persisted
+trade, valid footers, and one association response at 59.97 FPS on both DS
+instances. Both timing traces were complete and neither page reported an
+uncaught error. The local control used the usual normal-interface workflow
+through the already-running server's `/?app=1` entry point.
+
+`npm run verify` passed 11 unit tests, the production build, and 5 browser tests.
+`test:remote:pairing` passed with `POKERUN_REMOTE_URL=http://127.0.0.1:4181/multiplayer-dev.html`.
+`test:remote:radio` passed with `POKERUN_REMOTE_URL=http://127.0.0.1:4181`,
+preserving all 20 envelopes in order. The native worker smoke check ran on
+alternate loopback port 4182 and verified runtime `0x50524b4a`, the queue
+clock, and two completed worker frames. These are local results.
+
+The post-integration run on `tooling/shared-dev-tests` passed
+`npm run test:white2:remote-native` with the private Pillow environment and
+the Vite relay on `http://127.0.0.1:4181`. Both emulators entered map 422,
+received one native association response between them, and completed a
+reciprocal persisted exchange. Both batteries changed and passed footer
+validation. Frame rates were 59.94 and 59.96 FPS, with no uncaught browser
+errors. Evidence is in `local-test-assets/white2-remote-run-n2aQs5/`.
+The same checkout passed `npm run verify` and both relay probes. The next
+experiment is one physical two-computer trade with the dev relay reachable
+only through a private connection.
+
 ## Verification for this worktree
 
 On macOS with Node.js 24.13.0, `npm ci` and `npm run verify` passed (8 unit tests, production build with the bundle-size warning, and 5 Chromium tests). A second `npm run test:browser` passed on the same port. The clean pinned melonDS build passed with Emscripten 3.1.74, and `npm run test:native` verified stamp `0x50524B4A`, queue observation and monotonic clock alignment in Chromium. The optional worker build also completed two ROM-free worker frames with `POKERUN_WORKER_RADIO=1 npm run test:native`. The updated branch was not run on Windows or WSL. The real White 2 greeting captures are described above. The hosted ROM-free checks and a clean Ubuntu Emscripten 3.1.74 worker build both passed at `231a7a9`. Linux Chromium loaded runtime `0x50524b4a`, observed the expected synthetic queue row with zero drops and both timestamps inside their browser bounds, and completed two worker frames. The previously reported Codespace assertion combined queue and clock errors, so its stack trace alone does not establish which check failed. Follow the [Codespaces runbook](docs/PRK80_GREETING_RUNBOOK.md#manual-testing-in-github-codespaces) to reproduce in the normal lobby.
