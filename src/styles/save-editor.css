@@ -1,0 +1,137 @@
+/* Save editor reuses PokéRun's established typography, panels and pixel borders. */
+.save-editor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+  gap: 18px;
+}
+
+.save-editor-panel {
+  min-height: 312px;
+  padding: 24px;
+  background: rgba(248, 252, 247, .97);
+}
+
+.save-editor-panel h2 {
+  margin: 14px 0;
+  font-size: 19px;
+}
+
+.save-editor-panel > p {
+  font-size: 11px;
+  line-height: 1.6;
+  color: #4e6b86;
+}
+
+.save-editor-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.save-editor-note {
+  margin-top: 20px;
+  padding-top: 15px;
+  border-top: 2px dashed #91a8b9;
+  color: #4e6b86;
+  font-size: 10px;
+  line-height: 1.7;
+}
+
+.save-editor-record {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 9px 0;
+  border-bottom: 2px dashed #91a8b9;
+}
+
+.save-editor-record > span,
+.save-editor-field strong {
+  font-family: 'Silkscreen', sans-serif;
+  font-size: 10px;
+}
+
+.save-editor-record > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.save-editor-field {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 22px 0;
+}
+
+.save-editor-field input {
+  width: min(100%, 260px);
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 3px solid var(--ink);
+  border-radius: 0;
+  background: var(--panel-blue);
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.save-editor-field small {
+  color: #4e6b86;
+  font-size: 10px;
+}
+
+.save-editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.save-editor-actions .pixel-button:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.save-editor-placeholder {
+  display: grid;
+  align-content: center;
+  min-height: 200px;
+  text-align: center;
+  color: #4e6b86;
+}
+
+.save-editor-placeholder strong {
+  font-family: 'Silkscreen', sans-serif;
+  color: var(--ink);
+}
+
+.save-editor-placeholder p {
+  margin: 12px 0 0;
+  font-size: 11px;
+}
+
+.save-editor-error, .save-editor-success {
+  margin: 15px 0 0 !important;
+  font-size: 10px !important;
+  font-weight: 700;
+}
+
+.save-editor-error { color: #a13a42 !important; }
+.save-editor-success { color: #337a4c !important; }
+
+.save-editor-footnote {
+  max-width: 900px;
+  margin: 22px 10px 0;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.7;
+}
+
+@media (max-width: 1000px) {
+  .save-editor-layout { grid-template-columns: minmax(0, 1fr); }
+}
