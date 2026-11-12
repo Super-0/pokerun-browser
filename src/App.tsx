@@ -4,6 +4,7 @@ import { romSessionStore } from './core/rom/RomSessionStore'
 import { gameById } from './data/games'
 import { ActiveRunScreen } from './screens/ActiveRunScreen'
 import { HomeScreen } from './screens/HomeScreen'
+import { GameLibraryScreen } from './screens/GameLibraryScreen'
 import { MyRunsScreen } from './screens/MyRunsScreen'
 import { MultiplayerScreen } from './screens/MultiplayerScreen'
 import { NewRunScreen } from './screens/NewRunScreen'
@@ -16,6 +17,7 @@ export default function App() {
   const [selectedGame, setSelectedGame] = useState<GameDefinition | null>(null)
   const [activeRunId, setActiveRunId] = useState<string | null>(null)
   const [showMyRuns, setShowMyRuns] = useState(false)
+  const [showGameLibrary, setShowGameLibrary] = useState(false)
   const [showMultiplayer, setShowMultiplayer] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const activeRun = useMemo(() => runs.find(run => run.id === activeRunId) ?? null, [runs, activeRunId])
@@ -23,6 +25,7 @@ export default function App() {
   useEffect(() => saveRuns(runs), [runs])
 
   function chooseGame(game: GameDefinition) {
+    setShowGameLibrary(false)
     setShowSettings(false)
     setShowMyRuns(false)
     setShowMultiplayer(false)
@@ -31,6 +34,7 @@ export default function App() {
   }
 
   function openRun(run: RunState) {
+    setShowGameLibrary(false)
     setShowSettings(false)
     setShowMyRuns(false)
     setShowMultiplayer(false)
@@ -39,6 +43,7 @@ export default function App() {
   }
 
   function goHome() {
+    setShowGameLibrary(false)
     setShowSettings(false)
     setShowMyRuns(false)
     setShowMultiplayer(false)
@@ -47,6 +52,7 @@ export default function App() {
   }
 
   function openMyRuns() {
+    setShowGameLibrary(false)
     setShowSettings(false)
     setSelectedGame(null)
     setActiveRunId(null)
@@ -55,11 +61,21 @@ export default function App() {
   }
 
   function openMultiplayer() {
+    setShowGameLibrary(false)
     setShowSettings(false)
     setShowMyRuns(false)
     setSelectedGame(null)
     setActiveRunId(null)
     setShowMultiplayer(true)
+  }
+
+  function openGameLibrary() {
+    setShowSettings(false)
+    setShowMyRuns(false)
+    setShowMultiplayer(false)
+    setSelectedGame(null)
+    setActiveRunId(null)
+    setShowGameLibrary(true)
   }
 
   function openSettings() {
@@ -86,6 +102,7 @@ export default function App() {
     return <MyRunsScreen
       runs={runs}
       onHome={goHome}
+      onBrowseGames={openGameLibrary}
       onOpenRun={openRun}
       onNewRun={chooseGame}
       onSettings={openSettings}
@@ -96,10 +113,20 @@ export default function App() {
     return <MultiplayerScreen onHome={goHome} onMyRuns={openMyRuns} onSettings={openSettings} />
   }
 
+  if (showGameLibrary) {
+    return <GameLibraryScreen
+      runs={runs}
+      onChooseGame={chooseGame}
+      onHome={goHome}
+      onSettings={openSettings}
+    />
+  }
+
   if (!selectedGame) {
     return <HomeScreen
       runs={runs}
-      onChooseGame={chooseGame}
+      onNewRun={openGameLibrary}
+      onOpenRun={openRun}
       onMultiplayer={openMultiplayer}
       onMyRuns={openMyRuns}
       onSettings={openSettings}
@@ -120,6 +147,7 @@ export default function App() {
   return <NewRunScreen
     game={selectedGame}
     onHome={goHome}
+    onChangeGame={openGameLibrary}
     onSettings={openSettings}
     onStart={startRun}
   />

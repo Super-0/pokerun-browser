@@ -7,12 +7,13 @@ import '../styles/my-runs.css'
 interface Props {
   runs: RunState[]
   onHome: () => void
+  onBrowseGames: () => void
   onOpenRun: (run: RunState) => void
   onNewRun: (game: GameDefinition) => void
   onSettings: () => void
 }
 
-export function MyRunsScreen({ runs, onHome, onOpenRun, onNewRun, onSettings }: Props) {
+export function MyRunsScreen({ runs, onHome, onBrowseGames, onOpenRun, onNewRun, onSettings }: Props) {
   const ordered = [...runs].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 
   return (
@@ -26,14 +27,14 @@ export function MyRunsScreen({ runs, onHome, onOpenRun, onNewRun, onSettings }: 
             <h1>MY RUNS</h1>
             <p>Continue a saved run or start another run for the same game.</p>
           </div>
-          <PixelButton tone="ghost" onClick={onHome}>GAME LIBRARY</PixelButton>
+          <PixelButton tone="ghost" onClick={onHome}>HOME</PixelButton>
         </section>
 
         {ordered.length === 0 ? (
           <section className="runs-empty pixel-border">
             <h2>NO RUNS YET</h2>
-            <p>Choose a game from the library to start your first run.</p>
-            <PixelButton onClick={onHome}>CHOOSE A GAME</PixelButton>
+            <p>Choose a game from the New Run library to start your first run.</p>
+            <PixelButton onClick={onBrowseGames}>+ NEW RUN</PixelButton>
           </section>
         ) : (
           <section className="runs-list">

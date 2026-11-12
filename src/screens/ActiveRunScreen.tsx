@@ -181,7 +181,7 @@ export function ActiveRunScreen({ game, run, onHome, onMyRuns, onSettings, onCha
             <div className="run-menu-actions">
               <PixelButton onClick={() => setMenuOpen(false)}>RESUME</PixelButton>
               <PixelButton tone="ghost" onClick={onMyRuns}>MY RUNS</PixelButton>
-              <PixelButton tone="ghost" onClick={onHome}>GAME LIBRARY</PixelButton>
+              <PixelButton tone="ghost" onClick={onHome}>HOME</PixelButton>
               <PixelButton tone="ghost" onClick={onSettings}>APP SETTINGS</PixelButton>
             </div>
           </section>

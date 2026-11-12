@@ -1,4 +1,7 @@
-.game-backdrop.universal-pixel-backdrop {
+/* Shared PokéRun wallpaper: keep the same landscape across launcher, library,
+   saved runs, settings and the game player, without changing screen components. */
+.game-backdrop.universal-pixel-backdrop,
+.home-screen .home-sky {
   position: absolute;
   inset: 0;
   overflow: hidden;
@@ -10,6 +13,12 @@
   background-size: cover;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+}
+
+/* The old CSS water and grass bands would cover up the wallpaper. */
+.home-screen .home-water,
+.home-screen .home-grass {
+  display: none;
 }
 
 .game-backdrop.universal-pixel-backdrop::before,

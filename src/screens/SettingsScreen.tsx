@@ -27,9 +27,9 @@ export function SettingsScreen({ onBack, onHome, onMyRuns }: Props) {
         <section className="settings-page-grid">
           <article className="settings-page-card pixel-border">
             <h2>NAVIGATION</h2>
-            <p>Jump between your library and saved runs without changing any run data.</p>
+            <p>Return home or review your saved runs without changing any run data.</p>
             <div className="settings-page-actions">
-              <PixelButton onClick={onHome}>GAME LIBRARY</PixelButton>
+              <PixelButton onClick={onHome}>HOME</PixelButton>
               <PixelButton tone="ghost" onClick={onMyRuns}>MY RUNS</PixelButton>
             </div>
           </article>

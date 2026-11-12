@@ -31,9 +31,9 @@ Then open the localhost URL Vite prints.
 
 ## Prototype flow
 
-1. Choose a game on Home.
-2. If that game has no saved run, New Run opens.
-3. Choose Vanilla/Randomized, seed, and ruleset.
+1. Home features the latest saved run and a compact list of other runs. Select **Continue** to resume one.
+2. Select **New Run** to browse the generation-grouped game library, then choose a game.
+3. Choose Vanilla/Randomized, seed, and ruleset, and provide your own ROM.
 4. Start the run.
 5. Active Run opens with mGBA for GB/GBC/GBA games and the experimental melonDS bridge for `.nds` games.
 6. Open **DEV GAME STATE SIMULATOR** at the bottom to simulate route changes, encounters, damage, deaths, and badges.

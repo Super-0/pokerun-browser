@@ -12,6 +12,7 @@ import '../styles/run-settings.css'
 interface Props {
   game: GameDefinition
   onHome: () => void
+  onChangeGame: () => void
   onSettings: () => void
   onStart: (runType: RunState['runType'], settings: RunSettings, seed: string, rom: LoadedRom) => void
 }
@@ -20,7 +21,7 @@ function makeSeed() {
   return Math.random().toString(16).slice(2, 9).toUpperCase()
 }
 
-export function NewRunScreen({ game, onHome, onSettings, onStart }: Props) {
+export function NewRunScreen({ game, onHome, onChangeGame, onSettings, onStart }: Props) {
   const [runType, setRunType] = useState<RunState['runType']>('Randomized')
   const [settings, setSettings] = useState<RunSettings>({ ...DEFAULT_RUN_SETTINGS })
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -92,7 +93,7 @@ export function NewRunScreen({ game, onHome, onSettings, onStart }: Props) {
             <h1>{game.title.toUpperCase()}</h1>
             <p>GEN {game.generation} • {game.region.toUpperCase()} • {game.platform} • {runtime.emulator.toUpperCase()}</p>
           </div>
-          <button className="game-chip pixel-border" onClick={onHome}>CHANGE GAME</button>
+          <button className="game-chip pixel-border" onClick={onChangeGame}>CHANGE GAME</button>
         </section>
 
         <div className="setup-layout">
