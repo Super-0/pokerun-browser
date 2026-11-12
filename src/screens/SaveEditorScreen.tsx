@@ -209,12 +209,20 @@ export function SaveEditorScreen({ onHome, onSettings }: Props) {
               onClick={() => originalBytes && originalFile && download(originalBytes, backupName(originalFile.name))}>
               DOWNLOAD BACKUP
             </PixelButton>
+            <PixelButton tone="ghost" disabled={!originalFile || !dirty || busy} onClick={() => {
+              if (originalFile && window.confirm('Discard all changes since this save was imported?')) {
+                void load(originalFile)
+              }
+            }}>DISCARD EDITS</PixelButton>
             <PixelButton disabled={!snapshot || !dirty || busy} onClick={() => void exportEdited()}>
               EXPORT EDITED SAVE
             </PixelButton>
           </div>
         </section>
 
+        {snapshot && <div className="save-editor-edit-status" role="status">
+          {dirty ? 'UNEXPORTED CHANGES — DOWNLOAD THE EDITED SAVE TO KEEP THEM' : 'NO UNEXPORTED CHANGES'}
+        </div>}
         {error && <p className="save-editor-error pixel-border" role="alert">{error}</p>}
         {message && <p className="save-editor-success pixel-border" role="status">{message}</p>}
 
