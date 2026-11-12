@@ -216,7 +216,7 @@ test('advanced PC tools are exposed for a recognized save @integration', async (
   await expect(page.getByText('PC BOX TOOLS')).toBeVisible()
   await expect(page.getByRole('button', { name: 'CLONE TO PC' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'EXPORT .PK FILE' })).toBeDisabled()
-  await expect(page.getByRole('button', { name: 'CHOOSE POKÉMON FILE' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'CHOOSE POKÉMON FILE', exact: true })).toBeVisible()
   await expect(page.getByText('CREATE FROM AN ENCOUNTER')).toBeVisible()
   await expect(page.getByPlaceholder('Search species or nickname across every PC box...')).toBeVisible()
 })
