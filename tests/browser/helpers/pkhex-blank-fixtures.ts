@@ -3,7 +3,6 @@ import { createEngine } from '@pkhex-everywhere/engine'
 /** ROM-free test exercise for PKHeX across five generation families. */
 export async function verifyPkhexBlankSaveRoundTrips() {
   const engine = createEngine({ lazy: true })
-  await engine.ready
   const versions = await engine.game.blankVersions()
 
   const samples = [
